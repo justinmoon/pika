@@ -21,7 +21,7 @@ fn ffi_app_bootstrap_and_set_name() {
 
     let initial = app.state();
     assert_eq!(initial.rev, 0);
-    assert!(initial.greeting.contains("Hello from Rust"));
+    assert_eq!(initial.greeting, "Rapture ready");
 
     app.dispatch(AppAction::SetName {
         name: "Rapture".to_string(),
@@ -30,5 +30,5 @@ fn ffi_app_bootstrap_and_set_name() {
     wait_for(Duration::from_secs(2), || app.state().rev >= 1);
     let updated = app.state();
     assert_eq!(updated.rev, 1);
-    assert!(updated.greeting.contains("Rapture"));
+    assert_eq!(updated.greeting, "Rapture ready, Rapture");
 }

@@ -1,33 +1,100 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use flume::{Receiver, Sender};
 
+pub mod channel_groups;
+pub mod chat;
+pub mod control;
+pub mod permissions;
+pub mod reconcile;
+pub mod sim;
+mod storage;
+
+use control::{ApplyOutcome, ControlEnvelope, ControlState};
+use storage::ControlStore;
+
 uniffi::setup_scaffolding!();
 
-// ── State ───────────────────────────────────────────────────────────────────
+const DEFAULT_GREETING: &str = "Rapture ready";
 
-#[derive(uniffi::Record, Clone, Debug)]
+static NEXT_OP_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct GuildSummary {
+    pub guild_id: String,
+    pub name: String,
+    pub channel_count: u32,
+    pub member_count: u32,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct AppState {
     pub rev: u64,
     pub greeting: String,
+    pub guilds: Vec<GuildSummary>,
+    pub toast: Option<String>,
 }
 
 impl AppState {
     fn empty() -> Self {
         Self {
             rev: 0,
-            greeting: "Hello from Rust! 🦀".to_string(),
+            greeting: DEFAULT_GREETING.to_string(),
+            guilds: vec![],
+            toast: None,
         }
     }
 }
 
-// ── Actions & Updates ───────────────────────────────────────────────────────
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ChannelKind {
+    Text,
+    Voice,
+    Private,
+    Thread,
+}
 
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppAction {
-    SetName { name: String },
+    SetName {
+        name: String,
+    },
+    CreateGuild {
+        guild_id: String,
+        name: String,
+        actor_pubkey: String,
+    },
+    CreateChannel {
+        guild_id: String,
+        channel_id: String,
+        name: String,
+        kind: ChannelKind,
+        actor_pubkey: String,
+    },
+    InviteMember {
+        guild_id: String,
+        member_pubkey: String,
+        actor_pubkey: String,
+    },
+    SetMemberRoles {
+        guild_id: String,
+        member_pubkey: String,
+        role_ids: Vec<String>,
+        actor_pubkey: String,
+    },
+    SetChannelPermissions {
+        guild_id: String,
+        channel_id: String,
+        allow_roles: Vec<String>,
+        deny_roles: Vec<String>,
+        allow_users: Vec<String>,
+        deny_users: Vec<String>,
+        actor_pubkey: String,
+    },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -35,14 +102,10 @@ pub enum AppUpdate {
     FullState(AppState),
 }
 
-// ── Callback interface ──────────────────────────────────────────────────────
-
 #[uniffi::export(callback_interface)]
 pub trait AppReconciler: Send + Sync + 'static {
     fn reconcile(&self, update: AppUpdate);
 }
-
-// ── FFI entry point ─────────────────────────────────────────────────────────
 
 enum CoreMsg {
     Action(AppAction),
@@ -60,18 +123,29 @@ pub struct FfiApp {
 impl FfiApp {
     #[uniffi::constructor]
     pub fn new(data_dir: String) -> Arc<Self> {
-        let _ = data_dir; // reserved for future use
-
         let (update_tx, update_rx) = flume::unbounded();
         let (core_tx, core_rx) = flume::unbounded::<CoreMsg>();
         let shared_state = Arc::new(RwLock::new(AppState::empty()));
 
         let shared_for_core = shared_state.clone();
         thread::spawn(move || {
-            let mut state = AppState::empty();
-            let mut rev: u64 = 0;
+            let mut control_state = ControlState::default();
+            let mut greeting = DEFAULT_GREETING.to_string();
+            let mut toast: Option<String> = None;
 
-            // Emit initial state.
+            let store = ControlStore::new(PathBuf::from(&data_dir));
+            match store.load_state() {
+                Ok(loaded) => {
+                    control_state = loaded;
+                }
+                Err(e) => {
+                    toast = Some(format!("failed to load control state: {e}"));
+                }
+            }
+
+            let mut rev = control_state.seen_op_ids.len() as u64;
+            let mut state = build_state(rev, &greeting, &control_state, toast.take());
+
             {
                 let snapshot = state.clone();
                 match shared_for_core.write() {
@@ -83,23 +157,112 @@ impl FfiApp {
 
             while let Ok(msg) = core_rx.recv() {
                 match msg {
-                    CoreMsg::Action(action) => match action {
-                        AppAction::SetName { name } => {
-                            rev += 1;
-                            state.rev = rev;
-                            if name.trim().is_empty() {
-                                state.greeting = "Hello from Rust! 🦀".to_string();
-                            } else {
-                                state.greeting = format!("Hello, {}! 🦀", name.trim());
+                    CoreMsg::Action(action) => {
+                        let mut local_toast: Option<String> = None;
+                        match action {
+                            AppAction::SetName { name } => {
+                                if name.trim().is_empty() {
+                                    greeting = DEFAULT_GREETING.to_string();
+                                } else {
+                                    greeting = format!("Rapture ready, {}", name.trim());
+                                }
                             }
-                            let snapshot = state.clone();
-                            match shared_for_core.write() {
-                                Ok(mut g) => *g = snapshot.clone(),
-                                Err(p) => *p.into_inner() = snapshot.clone(),
+                            AppAction::CreateGuild {
+                                guild_id,
+                                name,
+                                actor_pubkey,
+                            } => {
+                                let op = ControlEnvelope::guild_create(
+                                    next_op_id(),
+                                    now_ms(),
+                                    guild_id,
+                                    actor_pubkey,
+                                    name,
+                                );
+                                local_toast = apply_control_op(&store, &mut control_state, op);
                             }
-                            let _ = update_tx.send(AppUpdate::FullState(snapshot));
+                            AppAction::CreateChannel {
+                                guild_id,
+                                channel_id,
+                                name,
+                                kind,
+                                actor_pubkey,
+                            } => {
+                                let op = ControlEnvelope::channel_create(
+                                    next_op_id(),
+                                    now_ms(),
+                                    guild_id,
+                                    actor_pubkey,
+                                    channel_id,
+                                    name,
+                                    kind,
+                                );
+                                local_toast = apply_control_op(&store, &mut control_state, op);
+                            }
+                            AppAction::InviteMember {
+                                guild_id,
+                                member_pubkey,
+                                actor_pubkey,
+                            } => {
+                                let op = ControlEnvelope::member_add(
+                                    next_op_id(),
+                                    now_ms(),
+                                    guild_id,
+                                    actor_pubkey,
+                                    member_pubkey,
+                                );
+                                local_toast = apply_control_op(&store, &mut control_state, op);
+                            }
+                            AppAction::SetMemberRoles {
+                                guild_id,
+                                member_pubkey,
+                                role_ids,
+                                actor_pubkey,
+                            } => {
+                                let op = ControlEnvelope::member_roles_set(
+                                    next_op_id(),
+                                    now_ms(),
+                                    guild_id,
+                                    actor_pubkey,
+                                    member_pubkey,
+                                    role_ids,
+                                );
+                                local_toast = apply_control_op(&store, &mut control_state, op);
+                            }
+                            AppAction::SetChannelPermissions {
+                                guild_id,
+                                channel_id,
+                                allow_roles,
+                                deny_roles,
+                                allow_users,
+                                deny_users,
+                                actor_pubkey,
+                            } => {
+                                let op = ControlEnvelope::channel_permissions_set(
+                                    next_op_id(),
+                                    now_ms(),
+                                    guild_id,
+                                    actor_pubkey,
+                                    channel_id,
+                                    allow_roles,
+                                    deny_roles,
+                                    allow_users,
+                                    deny_users,
+                                );
+                                local_toast = apply_control_op(&store, &mut control_state, op);
+                            }
                         }
-                    },
+
+                        rev += 1;
+                        state = build_state(rev, &greeting, &control_state, local_toast);
+
+                        let snapshot = state.clone();
+                        match shared_for_core.write() {
+                            Ok(mut g) => *g = snapshot.clone(),
+                            Err(p) => *p.into_inner() = snapshot.clone(),
+                        }
+                        let _ = update_tx.send(AppUpdate::FullState(snapshot));
+                    }
                 }
             }
         });
@@ -139,4 +302,66 @@ impl FfiApp {
             }
         });
     }
+}
+
+fn apply_control_op(
+    store: &ControlStore,
+    control_state: &mut ControlState,
+    op: ControlEnvelope,
+) -> Option<String> {
+    match control_state.apply(op.clone()) {
+        Ok(ApplyOutcome::Applied) => {
+            if let Err(e) = store.append_op(&op) {
+                return Some(format!("failed to append op: {e}"));
+            }
+            if let Err(e) = store.write_snapshot(control_state) {
+                return Some(format!("failed to write snapshot: {e}"));
+            }
+            None
+        }
+        Ok(ApplyOutcome::Duplicate) => Some("duplicate op ignored".to_string()),
+        Err(e) => Some(e.to_string()),
+    }
+}
+
+fn build_state(
+    rev: u64,
+    greeting: &str,
+    control_state: &ControlState,
+    toast: Option<String>,
+) -> AppState {
+    let mut guilds: Vec<GuildSummary> = control_state
+        .guilds
+        .values()
+        .map(|g| GuildSummary {
+            guild_id: g.guild_id.clone(),
+            name: g.name.clone(),
+            channel_count: g.channels.len() as u32,
+            member_count: g.members.len() as u32,
+        })
+        .collect();
+    guilds.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.guild_id.cmp(&b.guild_id))
+    });
+
+    AppState {
+        rev,
+        greeting: greeting.to_string(),
+        guilds,
+        toast,
+    }
+}
+
+fn next_op_id() -> String {
+    let id = NEXT_OP_ID.fetch_add(1, Ordering::SeqCst);
+    format!("local-op-{id}")
+}
+
+fn now_ms() -> i64 {
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0));
+    d.as_millis() as i64
 }

@@ -30,7 +30,14 @@ ui-test-android:
 bootstrap-smoke:
   cargo test --manifest-path rust/Cargo.toml --test bootstrap_smoke
 
+rust-tests:
+  cargo test --manifest-path rust/Cargo.toml --test control_ops --test permission_matrix --test app_flows --test reconcile_membership --test chat_ops
+
+ui-e2e-local:
+  RAPTURE_E2E_LOCAL=1 cargo test --manifest-path rust/Cargo.toml --test e2e_local_relay -- --ignored --nocapture
+
 pre-merge:
   just bootstrap-smoke
+  just rust-tests
   cargo check --manifest-path Cargo.toml
   @echo "pre-merge (rapture) complete"

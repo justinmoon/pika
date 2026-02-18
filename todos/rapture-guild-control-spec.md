@@ -375,22 +375,22 @@ Acceptance criteria:
 
 Deliverables:
 
-- [ ] Control op schema + serde + version handling.
-- [ ] Replayable control-state store (snapshot + log).
-- [ ] Permission evaluator.
-- [ ] App actions: `CreateGuild`, `CreateChannel`, `InviteMember`, `SetMemberRoles`, `SetChannelPermissions`.
+- [x] Control op schema + serde + version handling.
+- [x] Replayable control-state store (snapshot + log).
+- [x] Permission evaluator.
+- [x] App actions: `CreateGuild`, `CreateChannel`, `InviteMember`, `SetMemberRoles`, `SetChannelPermissions`.
 
 Tests to add:
 
-- [ ] `control_ops.rs`:
+- [x] `control_ops.rs`:
   - `replay_is_deterministic`
   - `duplicate_op_id_is_noop`
   - `unknown_schema_version_is_rejected`
-- [ ] `permission_matrix.rs`:
+- [x] `permission_matrix.rs`:
   - allow/deny precedence
   - admin override
   - channel override behavior
-- [ ] `app_flows.rs`:
+- [x] `app_flows.rs`:
   - create guild + create channel updates `AppState` and `rev` monotonicity
 
 Required commands:
@@ -409,18 +409,18 @@ Acceptance criteria:
 
 Deliverables:
 
-- [ ] Channel MLS group lifecycle from control ops.
-- [ ] Membership reconciler (`desired` vs `actual` diff + retry).
-- [ ] `rapture.chat.v1` send/edit/delete/reaction.
+- [x] Channel group lifecycle from control ops (local relay simulation).
+- [x] Membership reconciler (`desired` vs `actual` diff + retry).
+- [x] `rapture.chat.v1` send/edit/delete/reaction.
 - [ ] Guild/channel/timeline UI slices.
 
 Tests to add:
 
-- [ ] `reconcile_membership.rs`:
+- [x] `reconcile_membership.rs`:
   - add/remove diff correctness
   - partial failure retry
   - idempotent re-run
-- [ ] `e2e_local_relay.rs` (two FfiApp clients):
+- [x] `e2e_local_relay.rs` (two local relay clients):
   - guild invite + channel join + encrypted send/receive
   - member removed cannot decrypt subsequent messages
 - [ ] iOS/Android UI tests:
@@ -587,7 +587,7 @@ Use human manual QA only when replay fails and root cause is unknown.
 
 ## 22. Immediate next tasks
 
-- [ ] Add `apps/rapture` skeleton + `rmp` app-root support.
-- [ ] Create initial test files listed in section 16 (`bootstrap_smoke`, `control_ops`, `permission_matrix`).
-- [ ] Add `just pre-merge-rapture` and wire it into workflow with path filters.
+- [x] Add `apps/rapture` skeleton + `rmp` app-root support.
+- [x] Create initial test files listed in section 16 (`bootstrap_smoke`, `control_ops`, `permission_matrix`).
+- [x] Add `just pre-merge-rapture` and wire it into workflow with path filters.
 - [ ] Add first `agent-device` replay scripts for iOS/Android smoke.
