@@ -15,6 +15,7 @@ RMP checks are integrated into the repo's single CI entrypoint, not a separate w
 - Required status: `pre-merge`
 - Internal lanes:
   - `check-pika`: existing app checks via `just pre-merge-pika`
+  - `check-rapture`: Rapture phase-0 bootstrap checks via `just pre-merge-rapture`
   - `check-rmp`: RMP template/CLI checks via `just pre-merge-rmp`
 - PR approval gate:
   - if PR actor is `justinmoon`, pre-merge lanes run immediately
@@ -24,6 +25,11 @@ RMP checks are integrated into the repo's single CI entrypoint, not a separate w
 
 - `rmp init` scaffolding (default, android-only, ios-only)
 - generated project Rust core compilation (`cargo check -p pika_core`)
+
+`just pre-merge-rapture` is Linux-safe and validates:
+
+- Rapture FfiApp bootstrap smoke test (`bootstrap_smoke`)
+- Rapture workspace compiles (`cargo check --manifest-path apps/rapture/Cargo.toml`)
 
 ## Nightly
 

@@ -16,10 +16,11 @@ fn main() -> ExitCode {
     let args = cli::Cli::parse();
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let requested_root = args.root.clone().map(PathBuf::from);
     let res: Result<(), cli::CliError> = match args.cmd {
         cli::Cmd::Init(i) => init::init(&cwd, args.json, args.verbose, i),
         cmd => {
-            let root = match config::find_workspace_root(&cwd) {
+            let root = match config::resolve_workspace_root(&cwd, requested_root.as_deref()) {
                 Ok(v) => v,
                 Err(e) => return cli::render_err(args.json, e),
             };

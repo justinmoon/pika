@@ -97,7 +97,7 @@ pub fn bindings(
         crate::cli::BindingsTarget::Swift => {
             let _ = ios.ok_or_else(|| CliError::user("rmp.toml missing [ios] section"))?;
             if args.clean {
-                clean_ios(root, verbose)?;
+                clean_ios(root, &core_lib, verbose)?;
             }
             if args.check {
                 check_ios_sources(root, &cfg, verbose)?;
@@ -129,7 +129,7 @@ pub fn bindings(
             let _ = ios.ok_or_else(|| CliError::user("rmp.toml missing [ios] section"))?;
             let _ = android.ok_or_else(|| CliError::user("rmp.toml missing [android] section"))?;
             if args.clean {
-                clean_ios(root, verbose)?;
+                clean_ios(root, &core_lib, verbose)?;
                 clean_android(root, verbose)?;
             }
             if args.check {
@@ -309,14 +309,14 @@ fn generate_android_sources(
     Ok(())
 }
 
-fn clean_ios(root: &Path, verbose: bool) -> Result<(), CliError> {
+fn clean_ios(root: &Path, core_lib: &str, verbose: bool) -> Result<(), CliError> {
     human_log(verbose, "clean ios bindings + build outputs");
     let bindings = root.join("ios/Bindings");
-    for f in [
-        "pika_core.swift",
-        "pika_coreFFI.h",
-        "pika_coreFFI.modulemap",
-    ] {
+    let ffi = format!("{core_lib}FFI");
+    let swift = format!("{core_lib}.swift");
+    let header = format!("{ffi}.h");
+    let modulemap = format!("{ffi}.modulemap");
+    for f in [swift.as_str(), header.as_str(), modulemap.as_str()] {
         let p = bindings.join(f);
         let _ = std::fs::remove_file(p);
     }
@@ -488,8 +488,11 @@ fn build_ios_xcframework(
 
     // Ensure headers exist from UniFFI swift generation.
     let bindings_dir = root.join("ios/Bindings");
-    let hdr = bindings_dir.join("pika_coreFFI.h");
-    let mm = bindings_dir.join("pika_coreFFI.modulemap");
+    let ffi_name = format!("{core_lib}FFI");
+    let hdr_name = format!("{ffi_name}.h");
+    let mm_name = format!("{ffi_name}.modulemap");
+    let hdr = bindings_dir.join(&hdr_name);
+    let mm = bindings_dir.join(&mm_name);
     if !hdr.is_file() || !mm.is_file() {
         return Err(CliError::operational(
             "missing ios/Bindings headers; run `rmp bindings swift` first",
@@ -498,7 +501,7 @@ fn build_ios_xcframework(
 
     // Assemble xcframework.
     let build_dir = root.join("ios/.build");
-    let headers_dir = build_dir.join("headers/pika_coreFFI");
+    let headers_dir = build_dir.join(format!("headers/{ffi_name}"));
     let frameworks_dir = root.join("ios/Frameworks");
     let _ = std::fs::remove_dir_all(&build_dir);
     let _ = std::fs::remove_dir_all(&frameworks_dir);
@@ -507,7 +510,7 @@ fn build_ios_xcframework(
     std::fs::create_dir_all(&frameworks_dir)
         .map_err(|e| CliError::operational(format!("failed to create ios/Frameworks: {e}")))?;
 
-    std::fs::copy(&hdr, headers_dir.join("pika_coreFFI.h"))
+    std::fs::copy(&hdr, headers_dir.join(&hdr_name))
         .map_err(|e| CliError::operational(format!("copy header: {e}")))?;
     std::fs::copy(&mm, headers_dir.join("module.modulemap"))
         .map_err(|e| CliError::operational(format!("copy modulemap: {e}")))?;

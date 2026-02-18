@@ -2,6 +2,8 @@
 
 End-to-end encrypted messaging for iOS and Android, built on [MLS](https://messaginglayersecurity.rocks/) over [Nostr](https://nostr.com/).
 
+This repo also includes a Phase 0 scaffold for `Rapture` in `apps/rapture/`.
+
 > [!WARNING]
 > Alpha software. This project was largely vibe-coded and likely contains privacy and security flaws. Do not use it for sensitive or production workloads.
 
@@ -31,6 +33,8 @@ Pika uses the [Marmot protocol](https://github.com/marmot-protocol/mdk) to layer
 
 ```
 pika/
+├── apps/
+│   └── rapture/       Rapture app scaffold (Phase 0)
 ├── rust/              Rust core library (pika_core) — MLS, Nostr, app state
 ├── ios/               iOS app (SwiftUI, XcodeGen)
 ├── android/           Android app (Kotlin, Gradle)

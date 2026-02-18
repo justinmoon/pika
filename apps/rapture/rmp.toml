@@ -1,0 +1,13 @@
+[project]
+name = "rapture"
+org = "com.justinmoon"
+
+[core]
+crate = "rapture_core"
+bindings = "uniffi"
+
+[ios]
+bundle_id = "com.justinmoon.rapture"
+
+[android]
+app_id = "com.justinmoon.rapture"

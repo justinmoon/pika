@@ -19,6 +19,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub verbose: bool,
 
+    /// Project root containing rmp.toml (defaults to current directory).
+    #[arg(long, global = true)]
+    pub root: Option<String>,
+
     #[command(subcommand)]
     pub cmd: Cmd,
 }

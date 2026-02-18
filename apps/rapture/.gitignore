@@ -1,0 +1,13 @@
+/target
+.DS_Store
+*.swp
+*.swo
+ios/Bindings/
+ios/Frameworks/
+ios/.build/
+ios/*.xcodeproj
+android/app/src/main/jniLibs/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

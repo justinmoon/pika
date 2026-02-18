@@ -1,0 +1,3 @@
+[bindings.kotlin]
+package_name = "com.justinmoon.rapture.rust"
+cdylib_name = "rapture_core"
