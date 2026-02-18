@@ -16,8 +16,46 @@ on:
         default: pre-merge
 
 jobs:
-  check-pika:
+  select-lanes:
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    runs-on: ubuntu-latest
+    outputs:
+      selected_lanes: ${{ steps.select.outputs.selected_lanes }}
+      run_pika: ${{ steps.select.outputs.run_pika }}
+      run_marmotd: ${{ steps.select.outputs.run_marmotd }}
+      run_rmp: ${{ steps.select.outputs.run_rmp }}
+      run_rapture: ${{ steps.select.outputs.run_rapture }}
+      run_notifications: ${{ steps.select.outputs.run_notifications }}
+      any_lane: ${{ steps.select.outputs.any_lane }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: select
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ./scripts/ci/select-lanes.sh --all >> "$GITHUB_OUTPUT"
+          else
+            ./scripts/ci/select-lanes.sh \
+              --from "${{ github.event.pull_request.base.sha }}" \
+              --to "${{ github.event.pull_request.head.sha }}" \
+              >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: |
+          echo "Selected lanes: ${{ steps.select.outputs.selected_lanes }}"
+
+  lane-selection-self-test:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/ci/tests/test-select-lanes.sh
+
+  check-pika:
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')) && needs.select-lanes.outputs.run_pika == 'true'
+    needs: [select-lanes]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +83,8 @@ jobs:
       - run: nix develop .#default -c just pre-merge-pika
 
   check-marmotd:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')) && needs.select-lanes.outputs.run_marmotd == 'true'
+    needs: [select-lanes]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     environment:
       name: ${{ github.event_name == 'pull_request' && github.actor != 'justinmoon' && github.actor != 'futurepaul' && github.actor != 'AnthonyRonning' && github.actor != 'benthecarman' && 'ci-approval' || 'ci-auto' }}
@@ -75,7 +114,8 @@ jobs:
       - run: nix develop .#default -c just pre-merge-marmotd
 
   check-rmp:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')) && needs.select-lanes.outputs.run_rmp == 'true'
+    needs: [select-lanes]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -103,7 +143,8 @@ jobs:
       - run: nix develop .#rmp -c just pre-merge-rmp
 
   check-rapture:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')) && needs.select-lanes.outputs.run_rapture == 'true'
+    needs: [select-lanes]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -131,7 +172,8 @@ jobs:
       - run: nix develop .#default -c just pre-merge-rapture
 
   check-notifications:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')) && needs.select-lanes.outputs.run_notifications == 'true'
+    needs: [select-lanes]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -160,30 +202,38 @@ jobs:
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [check-pika, check-marmotd, check-rmp, check-rapture, check-notifications]
+    needs: [select-lanes, lane-selection-self-test, check-pika, check-marmotd, check-rmp, check-rapture, check-notifications]
     runs-on: ubuntu-latest
     steps:
       - run: |
-          if [[ "${{ needs.check-pika.result }}" != "success" ]]; then
-            echo "check-pika failed"
+          allow_success_or_skipped() {
+            local result="$1"
+            local name="$2"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "$name failed: $result"
+                exit 1
+                ;;
+            esac
+          }
+
+          if [[ "${{ needs.select-lanes.result }}" != "success" ]]; then
+            echo "select-lanes failed: ${{ needs.select-lanes.result }}"
             exit 1
           fi
-          if [[ "${{ needs.check-marmotd.result }}" != "success" ]]; then
-            echo "check-marmotd failed"
+          if [[ "${{ needs.lane-selection-self-test.result }}" != "success" ]]; then
+            echo "lane-selection-self-test failed: ${{ needs.lane-selection-self-test.result }}"
             exit 1
           fi
-          if [[ "${{ needs.check-rmp.result }}" != "success" ]]; then
-            echo "check-rmp failed"
-            exit 1
-          fi
-          if [[ "${{ needs.check-rapture.result }}" != "success" ]]; then
-            echo "check-rapture failed"
-            exit 1
-          fi
-          if [[ "${{ needs.check-notifications.result }}" != "success" ]]; then
-            echo "check-notifications failed"
-            exit 1
-          fi
+
+          allow_success_or_skipped "${{ needs.check-pika.result }}" "check-pika"
+          allow_success_or_skipped "${{ needs.check-marmotd.result }}" "check-marmotd"
+          allow_success_or_skipped "${{ needs.check-rmp.result }}" "check-rmp"
+          allow_success_or_skipped "${{ needs.check-rapture.result }}" "check-rapture"
+          allow_success_or_skipped "${{ needs.check-notifications.result }}" "check-notifications"
+
+          echo "selected lanes: ${{ needs.select-lanes.outputs.selected_lanes }}"
 
   nightly-linux:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')

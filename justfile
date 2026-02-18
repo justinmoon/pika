@@ -170,6 +170,10 @@ pre-merge-rmp:
   just rmp-init-smoke-ci
   @echo "pre-merge-rmp complete"
 
+# CI lane-selection fixture tests.
+ci-lane-selection-test:
+  ./scripts/ci/tests/test-select-lanes.sh
+
 # CI-safe pre-merge for the Rapture app lane (Phase 0).
 pre-merge-rapture:
   just rapture pre-merge

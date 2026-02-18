@@ -506,12 +506,12 @@ Deliverables:
   - `pre-merge-pika`
   - `pre-merge-rapture`
   - shared/service lanes
-- [ ] Add path-filtered execution in `.github/workflows/pre-merge.yml`.
+- [x] Add path-filtered execution in `.github/workflows/pre-merge.yml`.
 
 Tests to add:
 
-- [ ] CI lane-selection test fixture (script + expected outputs) for path filters.
-- [ ] One workflow self-test that proves:
+- [x] CI lane-selection test fixture (script + expected outputs) for path filters.
+- [x] One workflow self-test that proves:
   - Rapture-only change skips Pika lane
   - shared change runs both lanes
 
@@ -519,6 +519,7 @@ Required commands:
 
 - `just pre-merge-rapture`
 - `just pre-merge-pika`
+- `just ci-lane-selection-test`
 - `just pre-merge` (full gate before merge to `master`)
 
 Acceptance criteria:
