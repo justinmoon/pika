@@ -13,6 +13,7 @@ pub mod permissions;
 pub mod reconcile;
 pub mod sim;
 mod storage;
+pub mod voice;
 
 use control::{ApplyOutcome, ControlEnvelope, ControlState};
 use storage::ControlStore;

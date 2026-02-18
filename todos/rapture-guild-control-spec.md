@@ -474,13 +474,13 @@ Acceptance criteria:
 
 Deliverables:
 
-- [ ] `rapture.voice.v1` signaling events.
+- [x] `rapture.voice.v1` signaling events.
 - [ ] MoQ media integration reuse from existing RMP path.
-- [ ] Voice permission gating (`CONNECT_VOICE`, `SPEAK_VOICE`, `MUTE_MEMBERS`).
+- [x] Voice permission gating (`CONNECT_VOICE`, `SPEAK_VOICE`, `MUTE_MEMBERS`).
 
 Tests to add:
 
-- [ ] `e2e_local_moq_voice.rs`:
+- [x] `e2e_local_moq_voice.rs`:
   - join/leave voice channel
   - mute/unmute state propagation
   - unauthorized voice join denied
