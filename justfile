@@ -49,12 +49,12 @@ info:
   @echo
   @echo "Rapture (phase 0)"
   @echo "  Run iOS simulator:"
-  @echo "    just rapture-run-ios"
+  @echo "    just rapture run-ios"
   @echo "  Run Android emulator:"
-  @echo "    just rapture-run-android"
+  @echo "    just rapture run-android"
   @echo "  Launch smoke (iOS/Android):"
-  @echo "    just rapture-ui-test-ios"
-  @echo "    just rapture-ui-test-android"
+  @echo "    just rapture ui-test-ios"
+  @echo "    just rapture ui-test-android"
 
 
 # Run the new Rust `rmp` CLI.
@@ -63,29 +63,7 @@ rmp *ARGS:
 
 # Run `rmp` against the Rapture app root.
 rapture *ARGS:
-  cargo run -p rmp-cli -- --root apps/rapture {{ARGS}}
-
-# Generate Rapture bindings for both platforms.
-rapture-bindings:
-  just rapture bindings all
-
-# Build, install, and launch the Rapture iOS app.
-rapture-run-ios *ARGS:
-  just rapture bindings swift
-  just rapture run ios {{ARGS}}
-
-# Build, install, and launch the Rapture Android app.
-rapture-run-android *ARGS:
-  just rapture bindings kotlin
-  just rapture run android {{ARGS}}
-
-# Rapture iOS launch smoke test.
-rapture-ui-test-ios:
-  just rapture-run-ios
-
-# Rapture Android launch smoke test.
-rapture-ui-test-android:
-  just rapture-run-android
+  just --justfile apps/rapture/justfile {{ARGS}}
 
 # Smoke test `rmp init` output locally (scaffold + doctor + core check).
 rmp-init-smoke NAME="rmp-smoke" ORG="com.example":
@@ -194,8 +172,7 @@ pre-merge-rmp:
 
 # CI-safe pre-merge for the Rapture app lane (Phase 0).
 pre-merge-rapture:
-  cargo test --manifest-path apps/rapture/rust/Cargo.toml --test bootstrap_smoke
-  cargo check --manifest-path apps/rapture/Cargo.toml
+  just rapture pre-merge
   @echo "pre-merge-rapture complete"
 
 # Single CI entrypoint for the whole repo.

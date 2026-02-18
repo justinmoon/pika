@@ -17,6 +17,15 @@ titles+=("just commands")
 cmds+=("just --list")
 descs+=("Available tasks.")
 
+shopt -s nullglob
+for app_justfile in "${repo_root}"/apps/*/justfile; do
+  app_name="$(basename "$(dirname "${app_justfile}")")"
+  titles+=("${app_name} just commands")
+  cmds+=("just --justfile apps/${app_name}/justfile --list")
+  descs+=("Available tasks for apps/${app_name}.")
+done
+shopt -u nullglob
+
 # --- Docs ---
 
 if [[ -d "${repo_root}/docs" ]]; then

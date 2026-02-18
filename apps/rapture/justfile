@@ -3,14 +3,34 @@ set shell := ["bash", "-c"]
 default:
   @just --list
 
-doctor:
-  rmp doctor
+# Run root rmp-cli against apps/rapture.
+rmp *ARGS:
+  cargo run --manifest-path ../../Cargo.toml -p rmp-cli -- --root . {{ARGS}}
 
-bindings:
-  rmp bindings all
+doctor:
+  just rmp doctor
+
+bindings TARGET="all":
+  just rmp bindings {{TARGET}}
 
 run-ios:
-  rmp run ios
+  just bindings swift
+  just rmp run ios
 
 run-android:
-  rmp run android
+  just bindings kotlin
+  just rmp run android
+
+ui-test-ios:
+  just run-ios
+
+ui-test-android:
+  just run-android
+
+bootstrap-smoke:
+  cargo test --manifest-path rust/Cargo.toml --test bootstrap_smoke
+
+pre-merge:
+  just bootstrap-smoke
+  cargo check --manifest-path Cargo.toml
+  @echo "pre-merge (rapture) complete"
