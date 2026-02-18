@@ -12,6 +12,7 @@ android/.gradle/
 android/**/build/
 android/app/src/main/jniLibs/
 android/local.properties
+apps/pika/android/local.properties
 *.jks
 !*.jks.age
 

@@ -29,7 +29,7 @@ recipe enforces this with a branch check.
 ### Version source of truth
 
 - Version lives in `VERSION` (format `x.y.z`).
-- Android reads it in `android/app/build.gradle.kts`.
+- Android reads it in `apps/pika/android/app/build.gradle.kts`.
 - `versionCode` is `major*10000 + minor*100 + patch`.
 - Helper script:
   - `./scripts/version-read --name`
@@ -69,10 +69,10 @@ gh release view v0.3.0
 
 ### Signing inputs
 
-- Commit only encrypted keystore: `android/pika-release.jks.age`.
+- Commit only encrypted keystore: `apps/pika/android/pika-release.jks.age`.
 - Commit only encrypted signing env: `secrets/android-signing.env.age`.
 - Commit only encrypted Zapstore signing env: `secrets/zapstore-signing.env.age`.
-- Keep plaintext `android/pika-release.jks` out of git.
+- Keep plaintext `apps/pika/android/pika-release.jks` out of git.
 - Keep plaintext Zapstore signing env (`secrets/zapstore-signing.env`) out of git.
 - Encrypt all encrypted artifacts to all required recipients (source of truth: `scripts/release-age-recipients`):
   - YubiKey primary: `age1yubikey1q0zhu9e7zrj48zmnpx4fg07c0drt9f57e26uymgxa4h3fczwutzjjp5a6y5`
@@ -101,7 +101,7 @@ gh release view v0.3.0
    - private key (`AGE-SECRET-KEY-...`) for GitHub secret `AGE_SECRET_KEY`
    - public recipient (`age1...`) for `scripts/release-age-recipients`
 2. Re-encrypt all release artifacts to the three recipients in `scripts/release-age-recipients`:
-   - `android/pika-release.jks.age`
+  - `apps/pika/android/pika-release.jks.age`
    - `secrets/android-signing.env.age`
    - `secrets/zapstore-signing.env.age`
 3. Update GitHub Actions repo secret:

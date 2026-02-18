@@ -258,7 +258,7 @@ rust-build-host:
 
 # Generate Kotlin bindings via UniFFI.
 gen-kotlin: rust-build-host
-  mkdir -p android/app/src/main/java/com/pika/app/rust
+  mkdir -p apps/pika/android/app/src/main/java/com/pika/app/rust
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   TARGET_DIR="target/$PROFILE"; \
@@ -270,12 +270,12 @@ gen-kotlin: rust-build-host
   cargo run -q -p uniffi-bindgen -- generate \
     --library "$LIB" \
     --language kotlin \
-    --out-dir android/app/src/main/java \
+    --out-dir apps/pika/android/app/src/main/java \
     --no-format \
-    --config rust/uniffi.toml
+    --config apps/pika/rust/uniffi.toml
 
 # Cross-compile Rust core for Android (arm64, armv7, x86_64).
-# Note: this clears `android/app/src/main/jniLibs` so output matches the requested ABI set.
+# Note: this clears `apps/pika/android/app/src/main/jniLibs` so output matches the requested ABI set.
 android-rust:
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
@@ -284,19 +284,19 @@ android-rust:
     release|debug) ;; \
     *) echo "error: unsupported PIKA_RUST_PROFILE: $PROFILE (expected debug or release)"; exit 2 ;; \
   esac; \
-  rm -rf android/app/src/main/jniLibs; \
-  mkdir -p android/app/src/main/jniLibs; \
-  cmd=(cargo ndk -o android/app/src/main/jniLibs -P 26); \
+  rm -rf apps/pika/android/app/src/main/jniLibs; \
+  mkdir -p apps/pika/android/app/src/main/jniLibs; \
+  cmd=(cargo ndk -o apps/pika/android/app/src/main/jniLibs -P 26); \
   for abi in $ABIS; do cmd+=(-t "$abi"); done; \
   cmd+=(build -p pika_core); \
   if [ "$PROFILE" = "release" ]; then cmd+=(--release); fi; \
   "${cmd[@]}"
 
-# Write android/local.properties with SDK path.
+# Write apps/pika/android/local.properties with SDK path.
 android-local-properties:
   SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"; \
   if [ -z "$SDK" ]; then echo "ANDROID_HOME/ANDROID_SDK_ROOT not set (run inside nix develop)"; exit 1; fi; \
-  printf "sdk.dir=%s\n" "$SDK" > android/local.properties
+  printf "sdk.dir=%s\n" "$SDK" > apps/pika/android/local.properties
 
 # Build signed Android release APK (arm64-v8a) and copy to dist/.
 android-release:
@@ -304,8 +304,8 @@ android-release:
   abis="arm64-v8a"; \
   version="$(./scripts/version-read --name)"; \
   just gen-kotlin; \
-  rm -rf android/app/src/main/jniLibs; \
-  mkdir -p android/app/src/main/jniLibs; \
+  rm -rf apps/pika/android/app/src/main/jniLibs; \
+  mkdir -p apps/pika/android/app/src/main/jniLibs; \
   IFS=',' read -r -a abi_list <<<"$abis"; \
   cargo_args=(); \
   for abi in "${abi_list[@]}"; do \
@@ -317,14 +317,14 @@ android-release:
     esac; \
   done; \
   if [ "${#cargo_args[@]}" -eq 0 ]; then echo "error: no ABI targets configured"; exit 2; fi; \
-  cargo ndk -o android/app/src/main/jniLibs -P 26 "${cargo_args[@]}" build -p pika_core --release; \
+  cargo ndk -o apps/pika/android/app/src/main/jniLibs -P 26 "${cargo_args[@]}" build -p pika_core --release; \
   just android-local-properties; \
   ./scripts/decrypt-keystore; \
   keystore_password="$(./scripts/read-keystore-password)"; \
-  (cd android && PIKA_KEYSTORE_PASSWORD="$keystore_password" ./gradlew :app:assembleRelease); \
+  (cd apps/pika/android && PIKA_KEYSTORE_PASSWORD="$keystore_password" ./gradlew :app:assembleRelease); \
   unset keystore_password; \
   mkdir -p dist; \
-  cp android/app/build/outputs/apk/release/app-release.apk "dist/pika-${version}-${abis}.apk"; \
+  cp apps/pika/android/app/build/outputs/apk/release/app-release.apk "dist/pika-${version}-${abis}.apk"; \
   echo "ok: built dist/pika-${version}-${abis}.apk"
 
 # Encrypt Zapstore signing value to `secrets/zapstore-signing.env.age`.
@@ -341,17 +341,17 @@ zapstore-publish APK:
 
 # Build Android debug APK.
 android-assemble: gen-kotlin android-rust android-local-properties
-  cd android && ./gradlew :app:assembleDebug
+  cd apps/pika/android && ./gradlew :app:assembleDebug
 
 # Build and install Android debug APK on connected device.
 android-install: gen-kotlin android-rust android-local-properties
-  cd android && ./gradlew :app:installDebug
+  cd apps/pika/android && ./gradlew :app:installDebug
 
 # Run Android instrumentation tests (requires running emulator/device).
 android-ui-test: gen-kotlin android-rust android-local-properties
   ./tools/android-ensure-debug-installable
   SERIAL="$(./tools/android-pick-serial)"; \
-  ANDROID_SERIAL="$SERIAL" cd android && ./gradlew :app:connectedDebugAndroidTest
+  ANDROID_SERIAL="$SERIAL" cd apps/pika/android && ./gradlew :app:connectedDebugAndroidTest
 
 # Android E2E: local Nostr relay + local Rust bot. Requires emulator.
 android-ui-e2e-local:
@@ -392,7 +392,7 @@ release VERSION:
 
 # Generate Swift bindings via UniFFI.
 ios-gen-swift: rust-build-host
-  mkdir -p ios/Bindings ios/NSEBindings
+  mkdir -p apps/pika/ios/Bindings apps/pika/ios/NSEBindings
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   TARGET_DIR="target/$PROFILE"; \
@@ -404,9 +404,9 @@ ios-gen-swift: rust-build-host
   cargo run -q -p uniffi-bindgen -- generate \
     --library "$LIB" \
     --language swift \
-    --out-dir ios/Bindings \
-    --config rust/uniffi.toml
-  python3 -c 'from pathlib import Path; import re; p=Path("ios/Bindings/pika_core.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
+    --out-dir apps/pika/ios/Bindings \
+    --config apps/pika/rust/uniffi.toml
+  python3 -c 'from pathlib import Path; import re; p=Path("apps/pika/ios/Bindings/pika_core.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   TARGET_DIR="target/$PROFILE"; \
@@ -418,9 +418,9 @@ ios-gen-swift: rust-build-host
   cargo run -q -p uniffi-bindgen -- generate \
     --library "$NSE_LIB" \
     --language swift \
-    --out-dir ios/NSEBindings \
+    --out-dir apps/pika/ios/NSEBindings \
     --config crates/pika-nse/uniffi.toml
-  python3 -c 'from pathlib import Path; import re; p=Path("ios/NSEBindings/pika_nse.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
+  python3 -c 'from pathlib import Path; import re; p=Path("apps/pika/ios/NSEBindings/pika_nse.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
 
 # Cross-compile Rust core for iOS (device + simulator).
 # Keep `PIKA_IOS_RUST_TARGETS` aligned with destination (device vs simulator) to avoid link errors.
@@ -472,41 +472,41 @@ ios-xcframework: ios-gen-swift ios-rust
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   TARGETS="${PIKA_IOS_RUST_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"; \
-  rm -rf ios/Frameworks/PikaCore.xcframework ios/Frameworks/PikaNSE.xcframework ios/.build; \
-  mkdir -p ios/.build/headers/pika_coreFFI ios/.build/nse-headers/pika_nseFFI ios/Frameworks; \
-  cp ios/Bindings/pika_coreFFI.h ios/.build/headers/pika_coreFFI/pika_coreFFI.h; \
-  cp ios/Bindings/pika_coreFFI.modulemap ios/.build/headers/pika_coreFFI/module.modulemap; \
-  cp ios/NSEBindings/pika_nseFFI.h ios/.build/nse-headers/pika_nseFFI/pika_nseFFI.h; \
-  cp ios/NSEBindings/pika_nseFFI.modulemap ios/.build/nse-headers/pika_nseFFI/module.modulemap; \
+  rm -rf apps/pika/ios/Frameworks/PikaCore.xcframework apps/pika/ios/Frameworks/PikaNSE.xcframework apps/pika/ios/.build; \
+  mkdir -p apps/pika/ios/.build/headers/pika_coreFFI apps/pika/ios/.build/nse-headers/pika_nseFFI apps/pika/ios/Frameworks; \
+  cp apps/pika/ios/Bindings/pika_coreFFI.h apps/pika/ios/.build/headers/pika_coreFFI/pika_coreFFI.h; \
+  cp apps/pika/ios/Bindings/pika_coreFFI.modulemap apps/pika/ios/.build/headers/pika_coreFFI/module.modulemap; \
+  cp apps/pika/ios/NSEBindings/pika_nseFFI.h apps/pika/ios/.build/nse-headers/pika_nseFFI/pika_nseFFI.h; \
+  cp apps/pika/ios/NSEBindings/pika_nseFFI.modulemap apps/pika/ios/.build/nse-headers/pika_nseFFI/module.modulemap; \
   cmd=(./tools/xcode-run xcodebuild -create-xcframework); \
   nse_cmd=(./tools/xcode-run xcodebuild -create-xcframework); \
   for target in $TARGETS; do \
     lib="target/$target/$PROFILE/libpika_core.a"; \
     if [ ! -f "$lib" ]; then echo "error: missing iOS static lib: $lib"; exit 1; fi; \
-    cmd+=(-library "$lib" -headers ios/.build/headers); \
+    cmd+=(-library "$lib" -headers apps/pika/ios/.build/headers); \
     nse_lib="target/$target/$PROFILE/libpika_nse.a"; \
     if [ ! -f "$nse_lib" ]; then echo "error: missing iOS static lib: $nse_lib"; exit 1; fi; \
-    nse_cmd+=(-library "$nse_lib" -headers ios/.build/nse-headers); \
+    nse_cmd+=(-library "$nse_lib" -headers apps/pika/ios/.build/nse-headers); \
   done; \
-  cmd+=(-output ios/Frameworks/PikaCore.xcframework); \
+  cmd+=(-output apps/pika/ios/Frameworks/PikaCore.xcframework); \
   "${cmd[@]}"; \
-  nse_cmd+=(-output ios/Frameworks/PikaNSE.xcframework); \
+  nse_cmd+=(-output apps/pika/ios/Frameworks/PikaNSE.xcframework); \
   "${nse_cmd[@]}"
 
 # Generate Xcode project via xcodegen.
 ios-xcodeproj:
-  cd ios && rm -rf Pika.xcodeproj && xcodegen generate
+  cd apps/pika/ios && rm -rf Pika.xcodeproj && xcodegen generate
 
 # Build iOS app for simulator.
 ios-build-sim: ios-xcframework ios-xcodeproj
   SIM_ARCH="${PIKA_IOS_SIM_ARCH:-$( [ "$(uname -m)" = "x86_64" ] && echo x86_64 || echo arm64 )}"; \
-  ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -configuration Debug -sdk iphonesimulator -derivedDataPath ios/build build ARCHS="$SIM_ARCH" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
+  ./tools/xcode-run xcodebuild -project apps/pika/ios/Pika.xcodeproj -scheme Pika -configuration Debug -sdk iphonesimulator -derivedDataPath apps/pika/ios/build build ARCHS="$SIM_ARCH" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
 
 # Run iOS UI tests on simulator (skips E2E deployed-bot test).
 ios-ui-test: ios-xcframework ios-xcodeproj
   udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"; \
   if [ -z "$udid" ]; then echo "error: could not determine simulator udid"; exit 1; fi; \
-  ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -derivedDataPath ios/build -destination "id=$udid" test ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
+  ./tools/xcode-run xcodebuild -project apps/pika/ios/Pika.xcodeproj -scheme Pika -derivedDataPath apps/pika/ios/build -destination "id=$udid" test ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
     -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
 
 # iOS E2E: local Nostr relay + local Rust bot.

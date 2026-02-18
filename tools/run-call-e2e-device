@@ -37,7 +37,7 @@ echo "==> Running call E2E on device $UDID..."
 PIKA_TEST_NSEC="$PIKA_TEST_NSEC" \
   PIKA_BOT_NPUB="$BOT_NPUB" \
   ./tools/xcode-run xcodebuild test \
-    -project ios/Pika.xcodeproj \
+    -project apps/pika/ios/Pika.xcodeproj \
     -scheme Pika \
     -destination "id=$UDID" \
     -allowProvisioningUpdates \

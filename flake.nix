@@ -55,23 +55,53 @@
         ]);
 
         # `rmp` runner on PATH inside `nix develop` without packaging the full Rust workspace.
-        # Wrapper builds the workspace binary then execs it.
+        # Wrapper builds the workspace binary then execs it with an app root.
         rmp = pkgs.writeShellScriptBin "rmp" ''
           set -euo pipefail
 
-          # Find workspace root by walking up to `rmp.toml`.
-          root="$PWD"
-          while [ "$root" != "/" ] && [ ! -f "$root/rmp.toml" ]; do
-            root="$(dirname "$root")"
+          # Find app root (has rmp.toml) and workspace root (has Cargo.toml).
+          search="$PWD"
+          preferred_app="''${RMP_APP:-pika}"
+          app_root=""
+          workspace_root=""
+          while [ "$search" != "/" ]; do
+            if [ -f "$search/Cargo.toml" ] && [ -z "$workspace_root" ]; then
+              workspace_root="$search"
+            fi
+            if [ -f "$search/rmp.toml" ]; then
+              app_root="$search"
+              break
+            fi
+            if [ -f "$search/apps/$preferred_app/rmp.toml" ]; then
+              app_root="$search/apps/$preferred_app"
+              [ -z "$workspace_root" ] && workspace_root="$search"
+              break
+            fi
+            if [ -f "$search/apps/pika/rmp.toml" ]; then
+              app_root="$search/apps/pika"
+              [ -z "$workspace_root" ] && workspace_root="$search"
+              break
+            fi
+            if [ -f "$search/apps/rapture/rmp.toml" ]; then
+              app_root="$search/apps/rapture"
+              [ -z "$workspace_root" ] && workspace_root="$search"
+              break
+            fi
+            search="$(dirname "$search")"
           done
-          if [ ! -f "$root/rmp.toml" ]; then
-            echo "error: could not find rmp.toml from $PWD" >&2
+
+          if [ -z "$app_root" ]; then
+            echo "error: could not find app rmp.toml from $PWD (set RMP_APP=pika|rapture if needed)" >&2
+            exit 2
+          fi
+          if [ -z "$workspace_root" ]; then
+            echo "error: could not find workspace Cargo.toml from $PWD" >&2
             exit 2
           fi
 
-          cd "$root"
+          cd "$workspace_root"
           cargo build -q -p rmp-cli
-          exec "$root/target/debug/rmp" "$@"
+          exec "$workspace_root/target/debug/rmp" --root "$app_root" "$@"
         '';
 
         dinghyLibSrc = pkgs.fetchCrate {
@@ -217,8 +247,8 @@
             fi
 
             # Help Gradle find the SDK/NDK without Android Studio.
-            mkdir -p android
-            cat > android/local.properties <<EOF
+            mkdir -p apps/pika/android
+            cat > apps/pika/android/local.properties <<EOF
             sdk.dir=$ANDROID_HOME
 EOF
 

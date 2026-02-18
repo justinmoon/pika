@@ -135,7 +135,7 @@ mark_for_path() {
       ;;
 
     # Pika app lane.
-    ios/*|android/*|rust/*|cli/*|tools/pika-run*|crates/pika-nse/*|crates/pika-tls/*|rmp.toml)
+    apps/pika/ios/*|apps/pika/android/*|apps/pika/rust/*|apps/pika/cli/*|apps/pika/uniffi-bindgen/*|apps/pika/rmp.toml|tools/pika-run*|crates/pika-nse/*|crates/pika-tls/*)
       run_pika=true
       return
       ;;

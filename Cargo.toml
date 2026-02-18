@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-  "rust",
-  "uniffi-bindgen",
-  "cli",
+  "apps/pika/rust",
+  "apps/pika/uniffi-bindgen",
+  "apps/pika/cli",
   "crates/pika-media",
   "crates/pika-nse",
   "crates/pika-tls",

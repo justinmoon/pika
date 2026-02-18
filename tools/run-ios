@@ -203,17 +203,17 @@ if [ "$MODE" = "device" ]; then
   signing_settings+=("PIKA_APP_GROUP=group.$IOS_BUNDLE_ID")
 
   ./tools/xcode-run xcodebuild \
-    -project ios/Pika.xcodeproj \
+    -project apps/pika/ios/Pika.xcodeproj \
     -scheme Pika \
     -configuration Debug \
     -sdk iphoneos \
     -destination "id=$UDID" \
-    -derivedDataPath ios/build-device \
+    -derivedDataPath apps/pika/ios/build-device \
     -allowProvisioningUpdates \
     "${signing_settings[@]}" \
     build
 
-  app_path="ios/build-device/Build/Products/Debug-iphoneos/Pika.app"
+  app_path="apps/pika/ios/build-device/Build/Products/Debug-iphoneos/Pika.app"
   if [ ! -d "$app_path" ]; then
     echo "error: missing built app at $app_path" >&2
     exit 1
@@ -339,13 +339,13 @@ fi
 
 just ios-build-sim
 
-app_path="ios/build/Build/Products/Debug-iphonesimulator/Pika.app"
+app_path="apps/pika/ios/build/Build/Products/Debug-iphonesimulator/Pika.app"
 if [ ! -d "$app_path" ]; then
   # Backward-compatible fallback for older local build layouts.
-  app_path="ios/build/Debug-iphonesimulator/Pika.app"
+  app_path="apps/pika/ios/build/Debug-iphonesimulator/Pika.app"
 fi
 if [ ! -d "$app_path" ]; then
-  echo "error: missing built app at ios/build/Build/Products/Debug-iphonesimulator/Pika.app" >&2
+  echo "error: missing built app at apps/pika/ios/build/Build/Products/Debug-iphonesimulator/Pika.app" >&2
   exit 1
 fi
 

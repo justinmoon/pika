@@ -263,7 +263,7 @@ case "$platform" in
     TEST_CLASS="${PIKA_ANDROID_E2E_TEST_CLASS:-com.pika.app.PikaE2eUiTest}"
     ./tools/android-emulator-ensure >/dev/null
     just gen-kotlin android-rust android-local-properties >/dev/null
-    (cd android && ./gradlew :app:connectedDebugAndroidTest \
+    (cd apps/pika/android && ./gradlew :app:connectedDebugAndroidTest \
       -Pandroid.testInstrumentationRunnerArguments.class="${TEST_CLASS}" \
       -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
       -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \
@@ -292,7 +292,7 @@ case "$platform" in
       PIKA_UI_E2E_RELAYS="${RELAY_URL}" \
       PIKA_UI_E2E_KP_RELAYS="${RELAY_URL}" \
       PIKA_UI_E2E_NSEC="${CLIENT_NSEC}" \
-      ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
+      ./tools/xcode-run xcodebuild -project apps/pika/ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
           -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
     ;;
   *)

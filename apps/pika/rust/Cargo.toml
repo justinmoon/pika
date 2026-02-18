@@ -23,8 +23,8 @@ mdk-storage-traits = { workspace = true }
 keyring-core = "0.7"
 nostr-sdk = { version = "0.44.1", features = ["nip59"] }
 nostr-blossom = "0.44.0"
-pika-media = { path = "../crates/pika-media", features = ["network"] }
-pika-tls = { path = "../crates/pika-tls" }
+pika-media = { path = "../../../crates/pika-media", features = ["network"] }
+pika-tls = { path = "../../../crates/pika-tls" }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }

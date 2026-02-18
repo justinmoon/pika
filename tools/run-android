@@ -187,7 +187,7 @@ fi
 # Build (via Gradle) then install deterministically onto the selected device.
 just android-assemble
 
-APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
+APK="$ROOT/apps/pika/android/app/build/outputs/apk/debug/app-debug.apk"
 if [ ! -f "$APK" ]; then
   echo "error: expected apk not found: $APK" >&2
   exit 1

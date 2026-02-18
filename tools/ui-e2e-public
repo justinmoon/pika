@@ -87,7 +87,7 @@ run_android() {
   if [[ "$SERIAL" != emulator-* ]]; then
     ./tools/android-ensure-unlocked "$SERIAL"
   fi
-  (cd android && ANDROID_SERIAL="$SERIAL" ./gradlew :app:connectedDebugAndroidTest \
+  (cd apps/pika/android && ANDROID_SERIAL="$SERIAL" ./gradlew :app:connectedDebugAndroidTest \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pika.app.PikaE2eUiTest \
     -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
     -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \
@@ -116,7 +116,7 @@ run_ios() {
     PIKA_UI_E2E_RELAYS="$relays" \
     PIKA_UI_E2E_KP_RELAYS="$kp_relays" \
     PIKA_UI_E2E_NSEC="$nsec" \
-    ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
+    ./tools/xcode-run xcodebuild -project apps/pika/ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
       PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
       -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
 }

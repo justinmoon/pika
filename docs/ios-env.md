@@ -71,7 +71,7 @@ When using a new bundle ID for the first time, Xcode's automatic signing
 - Development provisioning profiles
 
 This happens automatically during `just run-ios --device`. If the app group
-registration fails, open the Xcode project once (`open ios/Pika.xcodeproj`),
+registration fails, open the Xcode project once (`open apps/pika/ios/Pika.xcodeproj`),
 select each target under Signing & Capabilities, and let Xcode register the
 app group through its GUI.
 
@@ -86,11 +86,11 @@ build and run fine but won't receive pushes.
 | File | Role |
 |------|------|
 | `.env` | Per-developer config (gitignored) |
-| `ios/project.yml` | Xcodegen project spec; defines `PIKA_APP_BUNDLE_ID` and `PIKA_APP_GROUP` build settings |
-| `ios/Pika.entitlements` | Main app entitlements (uses build setting variables) |
-| `ios/NotificationService/NotificationService.entitlements` | NSE entitlements |
-| `ios/Info.plist` | Exposes `PikaAppGroup` and `PikaKeychainGroup` for Swift runtime |
-| `ios/NotificationService/Info.plist` | Same for the NSE |
+| `apps/pika/ios/project.yml` | Xcodegen project spec; defines `PIKA_APP_BUNDLE_ID` and `PIKA_APP_GROUP` build settings |
+| `apps/pika/ios/Pika.entitlements` | Main app entitlements (uses build setting variables) |
+| `apps/pika/ios/NotificationService/NotificationService.entitlements` | NSE entitlements |
+| `apps/pika/ios/Info.plist` | Exposes `PikaAppGroup` and `PikaKeychainGroup` for Swift runtime |
+| `apps/pika/ios/NotificationService/Info.plist` | Same for the NSE |
 | `tools/run-ios` | Build script; reads `.env`, passes settings to xcodebuild |
 
 ## Switching Between Teams
