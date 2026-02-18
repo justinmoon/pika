@@ -60,6 +60,15 @@ titles+=("agent-device help")
 cmds+=("npx --yes agent-device --help")
 descs+=("Device automation for manual QA on iOS/Android.")
 
+shopt -s nullglob
+replay_scripts=("${repo_root}"/scripts/agent-device/*.json)
+if [[ ${#replay_scripts[@]} -gt 0 ]]; then
+  titles+=("agent-device replay scripts")
+  cmds+=("for f in scripts/agent-device/*.json; do case \"\$f\" in *ios*) echo \"npx --yes agent-device --platform ios replay \$f\" ;; *android*) echo \"npx --yes agent-device --platform android replay \$f\" ;; *) echo \"npx --yes agent-device replay \$f\" ;; esac; done")
+  descs+=("Deterministic replay commands available in this repo.")
+fi
+shopt -u nullglob
+
 # --- Run all in parallel ---
 
 outs=()

@@ -475,13 +475,13 @@ Acceptance criteria:
 Deliverables:
 
 - [x] `rapture.voice.v1` signaling events.
-- [ ] MoQ media integration reuse from existing RMP path.
+- [x] MoQ media integration reuse from existing RMP path.
 - [x] Voice permission gating (`CONNECT_VOICE`, `SPEAK_VOICE`, `MUTE_MEMBERS`).
 
 Tests to add:
 
 - [x] `e2e_local_moq_voice.rs`:
-  - join/leave voice channel
+  - join/leave voice channel + bidirectional media frame delivery
   - mute/unmute state propagation
   - unauthorized voice join denied
 - [ ] iOS/Android `RaptureVoice*` tests for join/leave/mute UI behavior.
@@ -489,8 +489,8 @@ Tests to add:
 Required commands:
 
 - `RAPTURE_E2E_MOQ=1 cargo test -p rapture_core --test e2e_local_moq_voice -- --ignored --nocapture`
-- `just rapture-ui-test-ios`
-- `just rapture-ui-test-android`
+- `just rapture ui-test-ios`
+- `just rapture ui-test-android`
 
 Acceptance criteria:
 

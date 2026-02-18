@@ -14,6 +14,7 @@ pub mod reconcile;
 pub mod sim;
 mod storage;
 pub mod voice;
+pub mod voice_media;
 
 use control::{ApplyOutcome, ControlEnvelope, ControlState};
 use storage::ControlStore;

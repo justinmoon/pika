@@ -1,10 +1,18 @@
+use std::time::Duration;
+
+use pika_media::session::InMemoryRelay;
 use rapture_core::control::{ControlEnvelope, ControlState};
 use rapture_core::permissions::{
     has_permission, Permission, PERM_CONNECT_VOICE, PERM_MUTE_MEMBERS, PERM_SPEAK_VOICE,
     PERM_VIEW_CHANNEL,
 };
 use rapture_core::voice::{VoiceEnvelope, VoiceError, VoicePermissionLookup, VoiceState};
+use rapture_core::voice_media::{connect_in_memory_peer, default_broadcast_base};
 use rapture_core::ChannelKind;
+
+const RELAY_AUTH: &str = "capv1_1111111111111111111111111111111111111111111111111111111111111111";
+const READY_TIMEOUT: Duration = Duration::from_millis(300);
+const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[test]
 #[ignore = "requires RAPTURE_E2E_MOQ=1"]
@@ -57,6 +65,63 @@ fn join_leave_voice_channel() {
             &perms,
         )
         .expect("bob join");
+
+    let (session_id, moq_url) = {
+        let room = voice.room("g-1", "v-1").expect("room");
+        (
+            room.active_session_id.clone().expect("active session id"),
+            room.moq_url.clone().expect("moq url"),
+        )
+    };
+    let broadcast_base = default_broadcast_base("g-1", "v-1", &session_id);
+    let relay = InMemoryRelay::new();
+    let alice_peer = connect_in_memory_peer(
+        relay.clone(),
+        &moq_url,
+        RELAY_AUTH,
+        &broadcast_base,
+        "alice",
+    )
+    .expect("alice media peer");
+    let bob_peer = connect_in_memory_peer(relay, &moq_url, RELAY_AUTH, &broadcast_base, "bob")
+        .expect("bob media peer");
+    let alice_rx = alice_peer
+        .subscribe_to(&bob_peer.participant_label)
+        .expect("alice subscribe to bob");
+    let bob_rx = bob_peer
+        .subscribe_to(&alice_peer.participant_label)
+        .expect("bob subscribe to alice");
+    alice_rx
+        .wait_ready(READY_TIMEOUT)
+        .expect("alice subscription ready");
+    bob_rx
+        .wait_ready(READY_TIMEOUT)
+        .expect("bob subscription ready");
+
+    let bob_payload = vec![7_u8, 9_u8, 11_u8];
+    let bob_delivered = bob_peer
+        .publish_audio_frame(1, 20_000, bob_payload.clone())
+        .expect("bob publish");
+    assert_eq!(bob_delivered, 1, "bob publish should reach alice");
+    let bob_to_alice = alice_rx
+        .recv_timeout(FRAME_TIMEOUT)
+        .expect("alice receives bob frame");
+    assert_eq!(bob_to_alice.seq, 1);
+    assert_eq!(bob_to_alice.timestamp_us, 20_000);
+    assert_eq!(bob_to_alice.payload, bob_payload);
+
+    let alice_payload = vec![1_u8, 3_u8, 5_u8];
+    let alice_delivered = alice_peer
+        .publish_audio_frame(2, 40_000, alice_payload.clone())
+        .expect("alice publish");
+    assert_eq!(alice_delivered, 1, "alice publish should reach bob");
+    let alice_to_bob = bob_rx
+        .recv_timeout(FRAME_TIMEOUT)
+        .expect("bob receives alice frame");
+    assert_eq!(alice_to_bob.seq, 2);
+    assert_eq!(alice_to_bob.timestamp_us, 40_000);
+    assert_eq!(alice_to_bob.payload, alice_payload);
+
     voice
         .apply(
             VoiceEnvelope::participant_leave(
