@@ -34,6 +34,8 @@ pub struct GuildState {
     pub name: String,
     pub created_by: String,
     pub members: BTreeSet<String>,
+    #[serde(default)]
+    pub banned_members: BTreeSet<String>,
     pub roles: BTreeMap<String, RoleState>,
     pub member_roles: BTreeMap<String, BTreeSet<String>>,
     pub channels: BTreeMap<String, ChannelState>,
@@ -91,6 +93,8 @@ pub enum ControlBody {
     MemberAdd { member_pubkey: String },
     #[serde(rename = "member.remove")]
     MemberRemove { member_pubkey: String },
+    #[serde(rename = "member.ban")]
+    MemberBan { member_pubkey: String },
     #[serde(rename = "member.roles.set")]
     MemberRolesSet {
         member_pubkey: String,
@@ -110,6 +114,11 @@ pub enum ControlBody {
         allow_users: Vec<String>,
         deny_users: Vec<String>,
     },
+    #[serde(rename = "channel.member.remove")]
+    ChannelMemberRemove {
+        channel_id: String,
+        member_pubkey: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +135,11 @@ pub enum ControlError {
     GuildExists(String),
     #[error("guild not found: {0}")]
     GuildNotFound(String),
+    #[error("channel already exists: {guild_id}/{channel_id}")]
+    ChannelExists {
+        guild_id: String,
+        channel_id: String,
+    },
     #[error("channel not found: {guild_id}/{channel_id}")]
     ChannelNotFound {
         guild_id: String,
@@ -135,6 +149,12 @@ pub enum ControlError {
     RoleNotFound { guild_id: String, role_id: String },
     #[error("member not found: {guild_id}/{member}")]
     MemberNotFound { guild_id: String, member: String },
+    #[error("member already exists: {guild_id}/{member}")]
+    MemberExists { guild_id: String, member: String },
+    #[error("member already banned: {guild_id}/{member}")]
+    MemberAlreadyBanned { guild_id: String, member: String },
+    #[error("member is banned: {guild_id}/{member}")]
+    MemberBanned { guild_id: String, member: String },
     #[error("permission denied: actor {actor} lacks {permission}")]
     PermissionDenied { actor: String, permission: String },
 }
@@ -216,6 +236,23 @@ impl ControlEnvelope {
         }
     }
 
+    pub fn member_ban(
+        op_id: String,
+        ts_ms: i64,
+        guild_id: String,
+        actor: String,
+        member_pubkey: String,
+    ) -> Self {
+        Self {
+            schema: CONTROL_SCHEMA_V1.to_string(),
+            guild_id,
+            actor,
+            op_id,
+            ts_ms,
+            body: ControlBody::MemberBan { member_pubkey },
+        }
+    }
+
     pub fn member_roles_set(
         op_id: String,
         ts_ms: i64,
@@ -287,6 +324,27 @@ impl ControlEnvelope {
             },
         }
     }
+
+    pub fn channel_member_remove(
+        op_id: String,
+        ts_ms: i64,
+        guild_id: String,
+        actor: String,
+        channel_id: String,
+        member_pubkey: String,
+    ) -> Self {
+        Self {
+            schema: CONTROL_SCHEMA_V1.to_string(),
+            guild_id,
+            actor,
+            op_id,
+            ts_ms,
+            body: ControlBody::ChannelMemberRemove {
+                channel_id,
+                member_pubkey,
+            },
+        }
+    }
 }
 
 impl ControlState {
@@ -330,6 +388,18 @@ impl ControlState {
             ControlBody::MemberAdd { member_pubkey } => {
                 let guild = self.guild_mut(&envelope.guild_id)?;
                 require_permission(guild, &envelope.actor, None, Permission::ManageRoles)?;
+                if guild.banned_members.contains(&member_pubkey) {
+                    return Err(ControlError::MemberBanned {
+                        guild_id: envelope.guild_id,
+                        member: member_pubkey,
+                    });
+                }
+                if guild.members.contains(&member_pubkey) {
+                    return Err(ControlError::MemberExists {
+                        guild_id: envelope.guild_id,
+                        member: member_pubkey,
+                    });
+                }
                 guild.members.insert(member_pubkey.clone());
                 let roles = guild
                     .member_roles
@@ -348,6 +418,23 @@ impl ControlState {
                 }
                 guild.members.remove(&member_pubkey);
                 guild.member_roles.remove(&member_pubkey);
+            }
+            ControlBody::MemberBan { member_pubkey } => {
+                let guild = self.guild_mut(&envelope.guild_id)?;
+                require_permission(guild, &envelope.actor, None, Permission::BanMembers)?;
+                if guild.banned_members.contains(&member_pubkey) {
+                    return Err(ControlError::MemberAlreadyBanned {
+                        guild_id: envelope.guild_id,
+                        member: member_pubkey,
+                    });
+                }
+                guild.banned_members.insert(member_pubkey.clone());
+                guild.members.remove(&member_pubkey);
+                guild.member_roles.remove(&member_pubkey);
+                for channel in guild.channels.values_mut() {
+                    channel.policy.allow_users.remove(&member_pubkey);
+                    channel.policy.deny_users.insert(member_pubkey.clone());
+                }
             }
             ControlBody::MemberRolesSet {
                 member_pubkey,
@@ -382,6 +469,12 @@ impl ControlState {
             } => {
                 let guild = self.guild_mut(&envelope.guild_id)?;
                 require_permission(guild, &envelope.actor, None, Permission::ManageChannels)?;
+                if guild.channels.contains_key(&channel_id) {
+                    return Err(ControlError::ChannelExists {
+                        guild_id: envelope.guild_id,
+                        channel_id,
+                    });
+                }
                 guild.channels.insert(
                     channel_id.clone(),
                     ChannelState {
@@ -414,6 +507,27 @@ impl ControlState {
                     allow_users: allow_users.into_iter().collect(),
                     deny_users: deny_users.into_iter().collect(),
                 };
+            }
+            ControlBody::ChannelMemberRemove {
+                channel_id,
+                member_pubkey,
+            } => {
+                let guild = self.guild_mut(&envelope.guild_id)?;
+                require_permission(guild, &envelope.actor, None, Permission::ManageChannels)?;
+                if !guild.members.contains(&member_pubkey) {
+                    return Err(ControlError::MemberNotFound {
+                        guild_id: envelope.guild_id,
+                        member: member_pubkey,
+                    });
+                }
+                let channel = guild.channels.get_mut(&channel_id).ok_or_else(|| {
+                    ControlError::ChannelNotFound {
+                        guild_id: envelope.guild_id.clone(),
+                        channel_id: channel_id.clone(),
+                    }
+                })?;
+                channel.policy.allow_users.remove(&member_pubkey);
+                channel.policy.deny_users.insert(member_pubkey);
             }
         }
 
@@ -493,6 +607,7 @@ fn new_guild(guild_id: String, name: String, creator: String) -> GuildState {
         name,
         created_by: creator,
         members,
+        banned_members: BTreeSet::new(),
         roles,
         member_roles,
         channels: BTreeMap::new(),

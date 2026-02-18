@@ -6,6 +6,7 @@ import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import kotlin.collections.emptyList
 import com.justinmoon.rapture.rust.AppAction
 import com.justinmoon.rapture.rust.AppReconciler
 import com.justinmoon.rapture.rust.AppState
@@ -18,7 +19,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
     private var lastRevApplied: ULong = 0UL
 
     var state: AppState by mutableStateOf(
-        AppState(rev = 0UL, greeting = ""),
+        AppState(rev = 0UL, greeting = "", guilds = emptyList(), toast = null),
     )
         private set
 

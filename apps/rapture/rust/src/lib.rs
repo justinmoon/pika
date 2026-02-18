@@ -80,6 +80,16 @@ pub enum AppAction {
         member_pubkey: String,
         actor_pubkey: String,
     },
+    KickMember {
+        guild_id: String,
+        member_pubkey: String,
+        actor_pubkey: String,
+    },
+    BanMember {
+        guild_id: String,
+        member_pubkey: String,
+        actor_pubkey: String,
+    },
     SetMemberRoles {
         guild_id: String,
         member_pubkey: String,
@@ -93,6 +103,12 @@ pub enum AppAction {
         deny_roles: Vec<String>,
         allow_users: Vec<String>,
         deny_users: Vec<String>,
+        actor_pubkey: String,
+    },
+    RemoveMemberFromChannel {
+        guild_id: String,
+        channel_id: String,
+        member_pubkey: String,
         actor_pubkey: String,
     },
 }
@@ -213,6 +229,34 @@ impl FfiApp {
                                 );
                                 local_toast = apply_control_op(&store, &mut control_state, op);
                             }
+                            AppAction::KickMember {
+                                guild_id,
+                                member_pubkey,
+                                actor_pubkey,
+                            } => {
+                                let op = ControlEnvelope::member_remove(
+                                    next_op_id(),
+                                    now_ms(),
+                                    guild_id,
+                                    actor_pubkey,
+                                    member_pubkey,
+                                );
+                                local_toast = apply_control_op(&store, &mut control_state, op);
+                            }
+                            AppAction::BanMember {
+                                guild_id,
+                                member_pubkey,
+                                actor_pubkey,
+                            } => {
+                                let op = ControlEnvelope::member_ban(
+                                    next_op_id(),
+                                    now_ms(),
+                                    guild_id,
+                                    actor_pubkey,
+                                    member_pubkey,
+                                );
+                                local_toast = apply_control_op(&store, &mut control_state, op);
+                            }
                             AppAction::SetMemberRoles {
                                 guild_id,
                                 member_pubkey,
@@ -248,6 +292,22 @@ impl FfiApp {
                                     deny_roles,
                                     allow_users,
                                     deny_users,
+                                );
+                                local_toast = apply_control_op(&store, &mut control_state, op);
+                            }
+                            AppAction::RemoveMemberFromChannel {
+                                guild_id,
+                                channel_id,
+                                member_pubkey,
+                                actor_pubkey,
+                            } => {
+                                let op = ControlEnvelope::channel_member_remove(
+                                    next_op_id(),
+                                    now_ms(),
+                                    guild_id,
+                                    actor_pubkey,
+                                    channel_id,
+                                    member_pubkey,
                                 );
                                 local_toast = apply_control_op(&store, &mut control_state, op);
                             }

@@ -138,3 +138,74 @@ fn replay_restores_guild_and_channel_from_disk() {
     assert_eq!(s2.guilds[0].guild_id, "g-1");
     assert_eq!(s2.guilds[0].channel_count, 1);
 }
+
+#[test]
+fn denied_actions_surface_error_without_mutating_state() {
+    let dir = tempdir().expect("tempdir");
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+
+    app.dispatch(AppAction::CreateGuild {
+        guild_id: "g-1".to_string(),
+        name: "Guild One".to_string(),
+        actor_pubkey: "alice".to_string(),
+    });
+    wait_until("guild created", Duration::from_secs(2), || {
+        app.state().guilds.len() == 1
+    });
+
+    app.dispatch(AppAction::InviteMember {
+        guild_id: "g-1".to_string(),
+        member_pubkey: "carol".to_string(),
+        actor_pubkey: "alice".to_string(),
+    });
+    wait_until("carol invited", Duration::from_secs(2), || {
+        app.state()
+            .guilds
+            .iter()
+            .find(|g| g.guild_id == "g-1")
+            .map(|g| g.member_count == 2)
+            .unwrap_or(false)
+    });
+
+    let rev_before_denied_channel = app.state().rev;
+    app.dispatch(AppAction::CreateChannel {
+        guild_id: "g-1".to_string(),
+        channel_id: "c-denied".to_string(),
+        name: "denied".to_string(),
+        kind: ChannelKind::Text,
+        actor_pubkey: "bob".to_string(),
+    });
+    wait_until(
+        "denied channel attempt processed",
+        Duration::from_secs(2),
+        || app.state().rev > rev_before_denied_channel,
+    );
+
+    let s1 = app.state();
+    assert_eq!(s1.guilds[0].channel_count, 0);
+    assert!(s1
+        .toast
+        .as_deref()
+        .unwrap_or("")
+        .contains("permission denied"));
+
+    let rev_before_denied_kick = app.state().rev;
+    app.dispatch(AppAction::KickMember {
+        guild_id: "g-1".to_string(),
+        member_pubkey: "carol".to_string(),
+        actor_pubkey: "bob".to_string(),
+    });
+    wait_until(
+        "denied kick attempt processed",
+        Duration::from_secs(2),
+        || app.state().rev > rev_before_denied_kick,
+    );
+
+    let s2 = app.state();
+    assert_eq!(s2.guilds[0].member_count, 2);
+    assert!(s2
+        .toast
+        .as_deref()
+        .unwrap_or("")
+        .contains("permission denied"));
+}

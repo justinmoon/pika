@@ -1,4 +1,4 @@
-use rapture_core::control::{ControlEnvelope, ControlState};
+use rapture_core::control::{ControlEnvelope, ControlError, ControlState};
 use rapture_core::permissions::{has_permission, Permission, PERM_SEND_MESSAGE, PERM_VIEW_CHANNEL};
 use rapture_core::ChannelKind;
 
@@ -78,6 +78,54 @@ fn channel_allow_user_grants_without_base_role() {
         Some("c-1"),
         Permission::SendMessage
     ));
+}
+
+#[test]
+fn unauthorized_actor_cannot_set_channel_permissions() {
+    let mut state = base_state();
+    let err = state
+        .apply(ControlEnvelope::channel_permissions_set(
+            "op-perm-4".to_string(),
+            13,
+            "g-1".to_string(),
+            "bob".to_string(),
+            "c-1".to_string(),
+            vec![],
+            vec![],
+            vec!["bob".to_string()],
+            vec![],
+        ))
+        .expect_err("unauthorized actor should be denied");
+
+    assert_eq!(
+        err,
+        ControlError::PermissionDenied {
+            actor: "bob".to_string(),
+            permission: "ManageChannels".to_string(),
+        }
+    );
+}
+
+#[test]
+fn unauthorized_actor_cannot_kick_member() {
+    let mut state = base_state();
+    let err = state
+        .apply(ControlEnvelope::member_remove(
+            "op-perm-5".to_string(),
+            14,
+            "g-1".to_string(),
+            "bob".to_string(),
+            "carol".to_string(),
+        ))
+        .expect_err("unauthorized actor should be denied");
+
+    assert_eq!(
+        err,
+        ControlError::PermissionDenied {
+            actor: "bob".to_string(),
+            permission: "KickMembers".to_string(),
+        }
+    );
 }
 
 fn base_state() -> ControlState {

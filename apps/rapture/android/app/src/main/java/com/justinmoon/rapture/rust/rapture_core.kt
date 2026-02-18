@@ -1026,6 +1026,29 @@ private class JavaLangRefCleanable(
 /**
  * @suppress
  */
+public object FfiConverterUInt: FfiConverter<UInt, Int> {
+    override fun lift(value: Int): UInt {
+        return value.toUInt()
+    }
+
+    override fun read(buf: ByteBuffer): UInt {
+        return lift(buf.getInt())
+    }
+
+    override fun lower(value: UInt): Int {
+        return value.toInt()
+    }
+
+    override fun allocationSize(value: UInt) = 4UL
+
+    override fun write(value: UInt, buf: ByteBuffer) {
+        buf.putInt(value.toInt())
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterULong: FfiConverter<ULong, Long> {
     override fun lift(value: Long): ULong {
         return value.toULong()
@@ -1395,6 +1418,10 @@ data class AppState (
     var `rev`: kotlin.ULong
     , 
     var `greeting`: kotlin.String
+    , 
+    var `guilds`: List<GuildSummary>
+    , 
+    var `toast`: kotlin.String?
     
 ){
     
@@ -1413,17 +1440,71 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
         return AppState(
             FfiConverterULong.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterSequenceTypeGuildSummary.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
     override fun allocationSize(value: AppState) = (
             FfiConverterULong.allocationSize(value.`rev`) +
-            FfiConverterString.allocationSize(value.`greeting`)
+            FfiConverterString.allocationSize(value.`greeting`) +
+            FfiConverterSequenceTypeGuildSummary.allocationSize(value.`guilds`) +
+            FfiConverterOptionalString.allocationSize(value.`toast`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
             FfiConverterULong.write(value.`rev`, buf)
             FfiConverterString.write(value.`greeting`, buf)
+            FfiConverterSequenceTypeGuildSummary.write(value.`guilds`, buf)
+            FfiConverterOptionalString.write(value.`toast`, buf)
+    }
+}
+
+
+
+data class GuildSummary (
+    var `guildId`: kotlin.String
+    , 
+    var `name`: kotlin.String
+    , 
+    var `channelCount`: kotlin.UInt
+    , 
+    var `memberCount`: kotlin.UInt
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeGuildSummary: FfiConverterRustBuffer<GuildSummary> {
+    override fun read(buf: ByteBuffer): GuildSummary {
+        return GuildSummary(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: GuildSummary) = (
+            FfiConverterString.allocationSize(value.`guildId`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterUInt.allocationSize(value.`channelCount`) +
+            FfiConverterUInt.allocationSize(value.`memberCount`)
+    )
+
+    override fun write(value: GuildSummary, buf: ByteBuffer) {
+            FfiConverterString.write(value.`guildId`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterUInt.write(value.`channelCount`, buf)
+            FfiConverterUInt.write(value.`memberCount`, buf)
     }
 }
 
@@ -1433,6 +1514,102 @@ sealed class AppAction {
     
     data class SetName(
         val `name`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class CreateGuild(
+        val `guildId`: kotlin.String, 
+        val `name`: kotlin.String, 
+        val `actorPubkey`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class CreateChannel(
+        val `guildId`: kotlin.String, 
+        val `channelId`: kotlin.String, 
+        val `name`: kotlin.String, 
+        val `kind`: com.justinmoon.rapture.rust.ChannelKind, 
+        val `actorPubkey`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class InviteMember(
+        val `guildId`: kotlin.String, 
+        val `memberPubkey`: kotlin.String, 
+        val `actorPubkey`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class KickMember(
+        val `guildId`: kotlin.String, 
+        val `memberPubkey`: kotlin.String, 
+        val `actorPubkey`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class BanMember(
+        val `guildId`: kotlin.String, 
+        val `memberPubkey`: kotlin.String, 
+        val `actorPubkey`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class SetMemberRoles(
+        val `guildId`: kotlin.String, 
+        val `memberPubkey`: kotlin.String, 
+        val `roleIds`: List<kotlin.String>, 
+        val `actorPubkey`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class SetChannelPermissions(
+        val `guildId`: kotlin.String, 
+        val `channelId`: kotlin.String, 
+        val `allowRoles`: List<kotlin.String>, 
+        val `denyRoles`: List<kotlin.String>, 
+        val `allowUsers`: List<kotlin.String>, 
+        val `denyUsers`: List<kotlin.String>, 
+        val `actorPubkey`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class RemoveMemberFromChannel(
+        val `guildId`: kotlin.String, 
+        val `channelId`: kotlin.String, 
+        val `memberPubkey`: kotlin.String, 
+        val `actorPubkey`: kotlin.String) : AppAction()
         
     {
         
@@ -1459,6 +1636,54 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             1 -> AppAction.SetName(
                 FfiConverterString.read(buf),
                 )
+            2 -> AppAction.CreateGuild(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            3 -> AppAction.CreateChannel(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterTypeChannelKind.read(buf),
+                FfiConverterString.read(buf),
+                )
+            4 -> AppAction.InviteMember(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            5 -> AppAction.KickMember(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            6 -> AppAction.BanMember(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            7 -> AppAction.SetMemberRoles(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterSequenceString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            8 -> AppAction.SetChannelPermissions(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterSequenceString.read(buf),
+                FfiConverterSequenceString.read(buf),
+                FfiConverterSequenceString.read(buf),
+                FfiConverterSequenceString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            9 -> AppAction.RemoveMemberFromChannel(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -1471,6 +1696,86 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`name`)
             )
         }
+        is AppAction.CreateGuild -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`guildId`)
+                + FfiConverterString.allocationSize(value.`name`)
+                + FfiConverterString.allocationSize(value.`actorPubkey`)
+            )
+        }
+        is AppAction.CreateChannel -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`guildId`)
+                + FfiConverterString.allocationSize(value.`channelId`)
+                + FfiConverterString.allocationSize(value.`name`)
+                + FfiConverterTypeChannelKind.allocationSize(value.`kind`)
+                + FfiConverterString.allocationSize(value.`actorPubkey`)
+            )
+        }
+        is AppAction.InviteMember -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`guildId`)
+                + FfiConverterString.allocationSize(value.`memberPubkey`)
+                + FfiConverterString.allocationSize(value.`actorPubkey`)
+            )
+        }
+        is AppAction.KickMember -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`guildId`)
+                + FfiConverterString.allocationSize(value.`memberPubkey`)
+                + FfiConverterString.allocationSize(value.`actorPubkey`)
+            )
+        }
+        is AppAction.BanMember -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`guildId`)
+                + FfiConverterString.allocationSize(value.`memberPubkey`)
+                + FfiConverterString.allocationSize(value.`actorPubkey`)
+            )
+        }
+        is AppAction.SetMemberRoles -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`guildId`)
+                + FfiConverterString.allocationSize(value.`memberPubkey`)
+                + FfiConverterSequenceString.allocationSize(value.`roleIds`)
+                + FfiConverterString.allocationSize(value.`actorPubkey`)
+            )
+        }
+        is AppAction.SetChannelPermissions -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`guildId`)
+                + FfiConverterString.allocationSize(value.`channelId`)
+                + FfiConverterSequenceString.allocationSize(value.`allowRoles`)
+                + FfiConverterSequenceString.allocationSize(value.`denyRoles`)
+                + FfiConverterSequenceString.allocationSize(value.`allowUsers`)
+                + FfiConverterSequenceString.allocationSize(value.`denyUsers`)
+                + FfiConverterString.allocationSize(value.`actorPubkey`)
+            )
+        }
+        is AppAction.RemoveMemberFromChannel -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`guildId`)
+                + FfiConverterString.allocationSize(value.`channelId`)
+                + FfiConverterString.allocationSize(value.`memberPubkey`)
+                + FfiConverterString.allocationSize(value.`actorPubkey`)
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -1478,6 +1783,70 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             is AppAction.SetName -> {
                 buf.putInt(1)
                 FfiConverterString.write(value.`name`, buf)
+                Unit
+            }
+            is AppAction.CreateGuild -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`guildId`, buf)
+                FfiConverterString.write(value.`name`, buf)
+                FfiConverterString.write(value.`actorPubkey`, buf)
+                Unit
+            }
+            is AppAction.CreateChannel -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`guildId`, buf)
+                FfiConverterString.write(value.`channelId`, buf)
+                FfiConverterString.write(value.`name`, buf)
+                FfiConverterTypeChannelKind.write(value.`kind`, buf)
+                FfiConverterString.write(value.`actorPubkey`, buf)
+                Unit
+            }
+            is AppAction.InviteMember -> {
+                buf.putInt(4)
+                FfiConverterString.write(value.`guildId`, buf)
+                FfiConverterString.write(value.`memberPubkey`, buf)
+                FfiConverterString.write(value.`actorPubkey`, buf)
+                Unit
+            }
+            is AppAction.KickMember -> {
+                buf.putInt(5)
+                FfiConverterString.write(value.`guildId`, buf)
+                FfiConverterString.write(value.`memberPubkey`, buf)
+                FfiConverterString.write(value.`actorPubkey`, buf)
+                Unit
+            }
+            is AppAction.BanMember -> {
+                buf.putInt(6)
+                FfiConverterString.write(value.`guildId`, buf)
+                FfiConverterString.write(value.`memberPubkey`, buf)
+                FfiConverterString.write(value.`actorPubkey`, buf)
+                Unit
+            }
+            is AppAction.SetMemberRoles -> {
+                buf.putInt(7)
+                FfiConverterString.write(value.`guildId`, buf)
+                FfiConverterString.write(value.`memberPubkey`, buf)
+                FfiConverterSequenceString.write(value.`roleIds`, buf)
+                FfiConverterString.write(value.`actorPubkey`, buf)
+                Unit
+            }
+            is AppAction.SetChannelPermissions -> {
+                buf.putInt(8)
+                FfiConverterString.write(value.`guildId`, buf)
+                FfiConverterString.write(value.`channelId`, buf)
+                FfiConverterSequenceString.write(value.`allowRoles`, buf)
+                FfiConverterSequenceString.write(value.`denyRoles`, buf)
+                FfiConverterSequenceString.write(value.`allowUsers`, buf)
+                FfiConverterSequenceString.write(value.`denyUsers`, buf)
+                FfiConverterString.write(value.`actorPubkey`, buf)
+                Unit
+            }
+            is AppAction.RemoveMemberFromChannel -> {
+                buf.putInt(9)
+                FfiConverterString.write(value.`guildId`, buf)
+                FfiConverterString.write(value.`channelId`, buf)
+                FfiConverterString.write(value.`memberPubkey`, buf)
+                FfiConverterString.write(value.`actorPubkey`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -1548,6 +1917,42 @@ public object FfiConverterTypeAppUpdate : FfiConverterRustBuffer<AppUpdate>{
 
 
 
+enum class ChannelKind {
+    
+    TEXT,
+    VOICE,
+    PRIVATE,
+    THREAD;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeChannelKind: FfiConverterRustBuffer<ChannelKind> {
+    override fun read(buf: ByteBuffer) = try {
+        ChannelKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: ChannelKind) = 4UL
+
+    override fun write(value: ChannelKind, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
 
 public interface AppReconciler {
     
@@ -1604,4 +2009,92 @@ internal object uniffiCallbackInterfaceAppReconciler {
  * @suppress
  */
 public object FfiConverterTypeAppReconciler: FfiConverterCallbackInterface<AppReconciler>()
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
+    override fun read(buf: ByteBuffer): kotlin.String? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterString.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.String?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterString.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.String?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
+    override fun read(buf: ByteBuffer): List<kotlin.String> {
+        val len = buf.getInt()
+        return List<kotlin.String>(len) {
+            FfiConverterString.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.String>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterString.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.String>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeGuildSummary: FfiConverterRustBuffer<List<GuildSummary>> {
+    override fun read(buf: ByteBuffer): List<GuildSummary> {
+        val len = buf.getInt()
+        return List<GuildSummary>(len) {
+            FfiConverterTypeGuildSummary.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<GuildSummary>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeGuildSummary.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<GuildSummary>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeGuildSummary.write(it, buf)
+        }
+    }
+}
 

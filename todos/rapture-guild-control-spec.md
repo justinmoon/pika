@@ -446,14 +446,14 @@ Acceptance criteria:
 
 Deliverables:
 
-- [ ] Enforce permissions in dispatch + replay apply path.
-- [ ] Admin/mod actions (kick/ban/remove from channel).
-- [ ] Conflict/idempotency handling with clear error surfaces.
+- [x] Enforce permissions in dispatch + replay apply path.
+- [x] Admin/mod actions (kick/ban/remove from channel).
+- [x] Conflict/idempotency handling with clear error surfaces.
 
 Tests to add:
 
-- [ ] `permission_matrix.rs` negative tests for unauthorized actions.
-- [ ] `control_ops.rs` tests for invalid actor/op rejection.
+- [x] `permission_matrix.rs` negative tests for unauthorized actions.
+- [x] `control_ops.rs` tests for invalid actor/op rejection.
 - [ ] UI tests for denied actions:
   - non-admin cannot see/manage controls
   - denied send fails with visible error state
