@@ -725,16 +725,27 @@ fn emulator_avd_name(serial: &str) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);
-    let avd = s.lines().last()?.trim();
-    if avd.is_empty() || avd.eq_ignore_ascii_case("ok") {
-        return None;
+    for line in s.lines() {
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if candidate.eq_ignore_ascii_case("ok") {
+            continue;
+        }
+        if candidate.to_ascii_lowercase().starts_with("ko:") {
+            continue;
+        }
+        return Some(candidate.to_string());
     }
-    Some(avd.to_string())
+    None
 }
 
 fn emulator_is_headless_only(avd: &str) -> Result<bool, CliError> {
-    // Mirrors previous shell behavior:
-    // headless qemu exists AND no emulator frontend process exists for this AVD.
+    // Detect both launch styles:
+    // - `emulator -avd <name> ...`
+    // - `emulator @<name> ...`
+    // Also treat `-no-window` frontend runs as headless for interactive dev UX.
     let mut cmd = Command::new("ps");
     cmd.arg("ax").arg("-o").arg("command=");
     let out = run_capture(cmd)?;
@@ -744,19 +755,25 @@ fn emulator_is_headless_only(avd: &str) -> Result<bool, CliError> {
         ));
     }
 
-    let needle = format!("-avd {avd}");
+    let needle_avd = format!("-avd {avd}");
+    let needle_at = format!("@{avd}");
     let mut has_headless_qemu = false;
     let mut has_frontend = false;
     let s = String::from_utf8_lossy(&out.stdout);
     for line in s.lines() {
-        if !line.contains(&needle) {
+        if !line.contains(&needle_avd) && !line.contains(&needle_at) {
             continue;
         }
-        if line.contains("qemu-system") && line.contains("headless") {
+        if line.contains("qemu-system")
+            && (line.contains("headless") || line.contains("-display none"))
+        {
             has_headless_qemu = true;
         }
         if line.contains("/emulator") || line.starts_with("emulator ") {
             has_frontend = true;
+            if line.contains("-no-window") || line.contains("-qt-hide-window") {
+                return Ok(true);
+            }
         }
     }
     Ok(has_headless_qemu && !has_frontend)

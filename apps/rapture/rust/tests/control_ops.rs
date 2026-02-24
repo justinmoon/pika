@@ -8,18 +8,56 @@ use rapture_core::ChannelKind;
 
 #[test]
 fn replay_is_deterministic() {
-    let mut s1 = ControlState::default();
-    let mut s2 = ControlState::default();
     let ops = sample_ops();
-
+    let mut arrival_order = ControlState::default();
     for op in &ops {
-        let out1 = s1.apply(op.clone()).expect("s1 apply");
-        let out2 = s2.apply(op.clone()).expect("s2 apply");
-        assert_eq!(out1, ApplyOutcome::Applied);
-        assert_eq!(out2, ApplyOutcome::Applied);
+        let out = arrival_order
+            .apply(op.clone())
+            .expect("arrival order apply");
+        assert_eq!(out, ApplyOutcome::Applied);
     }
 
-    assert_eq!(s1, s2);
+    let mut shuffled = ops.clone();
+    shuffled.reverse();
+    let replayed = ControlState::replay_sorted(&shuffled).expect("replay sorted");
+
+    assert_eq!(arrival_order, replayed);
+}
+
+#[test]
+fn replay_sorted_uses_timestamp_then_op_id() {
+    let ops = vec![
+        ControlEnvelope::guild_create(
+            "op-1".to_string(),
+            1,
+            "g-1".to_string(),
+            "alice".to_string(),
+            "Guild One".to_string(),
+        ),
+        ControlEnvelope::member_add(
+            "op-z".to_string(),
+            2,
+            "g-1".to_string(),
+            "alice".to_string(),
+            "bob".to_string(),
+        ),
+        ControlEnvelope::member_remove(
+            "op-a".to_string(),
+            2,
+            "g-1".to_string(),
+            "alice".to_string(),
+            "bob".to_string(),
+        ),
+    ];
+
+    let err = ControlState::replay_sorted(&ops).expect_err("lexicographic tie-break must apply");
+    assert_eq!(
+        err,
+        ControlError::MemberNotFound {
+            guild_id: "g-1".to_string(),
+            member: "bob".to_string(),
+        }
+    );
 }
 
 #[test]

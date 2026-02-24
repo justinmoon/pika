@@ -19,7 +19,16 @@ class AppManager private constructor(context: Context) : AppReconciler {
     private var lastRevApplied: ULong = 0UL
 
     var state: AppState by mutableStateOf(
-        AppState(rev = 0UL, greeting = "", guilds = emptyList(), toast = null),
+        AppState(
+            rev = 0UL,
+            greeting = "",
+            guilds = emptyList(),
+            selectedGuildId = null,
+            selectedChannelId = null,
+            timeline = emptyList(),
+            voiceRoom = null,
+            toast = null,
+        ),
     )
         private set
 

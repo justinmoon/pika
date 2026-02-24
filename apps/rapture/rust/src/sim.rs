@@ -32,6 +32,7 @@ pub enum SimError {
 #[derive(Debug, Clone, Default)]
 pub struct LocalRelay {
     control: ControlState,
+    control_ops: Vec<ControlEnvelope>,
     groups: ChannelGroupDirectory,
     clients: BTreeMap<String, SimClient>,
     next_chat_op: u64,
@@ -54,7 +55,15 @@ impl LocalRelay {
     }
 
     pub fn apply_control(&mut self, op: ControlEnvelope) -> Result<(), SimError> {
-        self.control.apply(op)?;
+        self.control_ops.push(op);
+        let rebuilt = match ControlState::replay_sorted(&self.control_ops) {
+            Ok(state) => state,
+            Err(err) => {
+                self.control_ops.pop();
+                return Err(SimError::Control(err));
+            }
+        };
+        self.control = rebuilt;
         self.groups.ensure_from_control(&self.control);
         self.reconcile_groups()?;
         Ok(())

@@ -17,9 +17,10 @@ run-ios:
   just bindings swift
   just rmp run ios
 
-run-android:
+run-android *ARGS:
+  ../../tools/android-emulator-ensure
   just bindings kotlin
-  just rmp run android
+  just rmp run android {{ARGS}}
 
 ui-test-ios:
   just run-ios
@@ -31,7 +32,7 @@ bootstrap-smoke:
   cargo test --manifest-path rust/Cargo.toml --test bootstrap_smoke
 
 rust-tests:
-  cargo test --manifest-path rust/Cargo.toml --test control_ops --test permission_matrix --test app_flows --test reconcile_membership --test chat_ops --test voice_ops
+  cargo test --manifest-path rust/Cargo.toml --lib --test control_ops --test permission_matrix --test app_flows --test reconcile_membership --test chat_ops --test voice_ops --test channel_groups
 
 ui-e2e-local:
   RAPTURE_E2E_LOCAL=1 cargo test --manifest-path rust/Cargo.toml --test e2e_local_relay -- --ignored --nocapture

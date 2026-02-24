@@ -1,6 +1,9 @@
+//! Simulation-only channel epoch key directory.
+//! Keys rotate on membership changes but this is not an MLS implementation.
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::control::ControlState;
 
@@ -45,7 +48,7 @@ impl ChannelGroupDirectory {
                         channel_id: channel_id.clone(),
                         epoch: 0,
                         members: BTreeSet::new(),
-                        key: derive_initial_key(guild_id, channel_id),
+                        key: random_key(),
                     },
                 );
             }
@@ -97,7 +100,7 @@ impl ChannelGroupDirectory {
 
         group.members = desired;
         group.epoch = group.epoch.saturating_add(1);
-        group.key = derive_rotated_key(group.key, group.epoch);
+        group.key = random_key();
         Ok(true)
     }
 
@@ -106,25 +109,9 @@ impl ChannelGroupDirectory {
     }
 }
 
-fn derive_initial_key(guild_id: &str, channel_id: &str) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"rapture.channel-group.init");
-    h.update(guild_id.as_bytes());
-    h.update([0]);
-    h.update(channel_id.as_bytes());
-    let out = h.finalize();
+fn random_key() -> [u8; 32] {
     let mut key = [0_u8; 32];
-    key.copy_from_slice(&out);
-    key
-}
-
-fn derive_rotated_key(previous_key: [u8; 32], epoch: u64) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"rapture.channel-group.rotate");
-    h.update(previous_key);
-    h.update(epoch.to_be_bytes());
-    let out = h.finalize();
-    let mut key = [0_u8; 32];
-    key.copy_from_slice(&out);
+    key[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    key[16..].copy_from_slice(Uuid::new_v4().as_bytes());
     key
 }

@@ -348,6 +348,22 @@ impl ControlEnvelope {
 }
 
 impl ControlState {
+    pub fn replay_sorted(ops: &[ControlEnvelope]) -> Result<Self, ControlError> {
+        let mut state = ControlState::default();
+        state.apply_sorted(ops)?;
+        Ok(state)
+    }
+
+    pub fn apply_sorted(&mut self, ops: &[ControlEnvelope]) -> Result<(), ControlError> {
+        let mut sorted = ops.to_vec();
+        sorted.sort_by(control_replay_order);
+
+        for envelope in sorted {
+            self.apply(envelope)?;
+        }
+        Ok(())
+    }
+
     pub fn apply(&mut self, envelope: ControlEnvelope) -> Result<ApplyOutcome, ControlError> {
         if envelope.schema != CONTROL_SCHEMA_V1 {
             return Err(ControlError::UnknownSchema(envelope.schema));
@@ -540,6 +556,10 @@ impl ControlState {
             .get_mut(guild_id)
             .ok_or_else(|| ControlError::GuildNotFound(guild_id.to_string()))
     }
+}
+
+fn control_replay_order(a: &ControlEnvelope, b: &ControlEnvelope) -> std::cmp::Ordering {
+    a.ts_ms.cmp(&b.ts_ms).then_with(|| a.op_id.cmp(&b.op_id))
 }
 
 fn require_permission(

@@ -29,6 +29,7 @@ RMP checks are integrated into the repo's single CI entrypoint, not a separate w
 `just pre-merge-rapture` is Linux-safe and validates:
 
 - Rapture FfiApp bootstrap smoke test (`bootstrap_smoke`)
+- Rapture Rust unit/integration suites (`--lib`, `control_ops`, `permission_matrix`, `app_flows`, `reconcile_membership`, `chat_ops`, `voice_ops`, `channel_groups`)
 - Rapture workspace compiles (`cargo check --manifest-path apps/rapture/Cargo.toml`)
 
 ## Nightly

@@ -337,258 +337,178 @@ Optional hardware smoke (`dinghy`, run nightly or pre-release):
 - Recipe to add: `just rapture-dinghy-smoke`
 - Command target: `cargo dinghy test -p rapture_core --lib`
 
-## 17. Implementation plan with concrete acceptance gates
+## 17. Rebaseline (2026-02-18)
 
-## Phase 0: Design lock + scaffolding
+This project is now best described as:
 
-Deliverables:
+- **Core/protocol ahead of UI**.
+- Rust control/chat/voice foundations are largely implemented and tested.
+- iOS + Android now expose a Discord-style structural shell (server rail, channel navigation, timeline/composer) backed by Rust timeline state.
 
-- [ ] Approve protocol envelope/op naming.
-- [ ] Keep this spec updated.
-- [ ] Add `apps/rapture` skeleton (Rust+iOS+Android).
-- [ ] Add app-root support in `rmp` (`--root apps/rapture` or equivalent).
-- [ ] Add basic recipes:
-  - `just rapture-run-ios`
-  - `just rapture-run-android`
-  - `just pre-merge-rapture`
+Current status by area:
 
-Tests to add:
+- [x] App scaffolding + `apps/rapture` + `just rapture ...` command surface.
+- [x] Deterministic control replay (`ts_ms`, `op_id`) across load/sim/live apply paths.
+- [x] Durable append-before-commit behavior for control ops.
+- [x] Unique op IDs (`uuid v4`) for local control actions.
+- [x] Randomized channel group key rotation in simulation harness (non-deterministic, not MLS-grade).
+- [x] iOS + Android UI support for:
+  - greeting/set-name
+  - create guild/channel
+  - invite/kick/ban member
+  - set member roles
+  - set channel permissions
+  - remove member from channel
+  - visible error/status toast + rev + guild summaries
+- [x] Timeline/chat UI (send/edit/delete/reactions) on iOS/Android via Rust `AppState.timeline`.
+- [x] Voice UI (join/leave/mute + speaking state) on iOS/Android via Rust `AppState.voice_room`.
+- [ ] Replayable `agent-device` JSON smoke scripts committed under `scripts/agent-device/`.
 
-- [ ] `apps/rapture/rust/tests/bootstrap_smoke.rs` (FfiApp create + state snapshot sanity).
-- [ ] iOS/Android one-test launch suites (app boots and renders default screen).
+## 18. Execution plan (UI-first from here)
 
-Required commands:
-
-- `cargo test -p rapture_core --test bootstrap_smoke`
-- `just rapture-run-ios`
-- `just rapture-run-android`
-- `just rapture-ui-test-ios`
-- `just rapture-ui-test-android`
-
-Acceptance criteria:
-
-- App launches on both platforms.
-- Rust bootstrap smoke test passes.
-- UI smoke tests pass on simulator/emulator with zero manual interaction.
-
-## Phase 1: Guild-control core
+## Sprint A (done): Control-plane parity in mobile UI
 
 Deliverables:
 
-- [x] Control op schema + serde + version handling.
-- [x] Replayable control-state store (snapshot + log).
-- [x] Permission evaluator.
-- [x] App actions: `CreateGuild`, `CreateChannel`, `InviteMember`, `SetMemberRoles`, `SetChannelPermissions`.
-
-Tests to add:
-
-- [x] `control_ops.rs`:
-  - `replay_is_deterministic`
-  - `duplicate_op_id_is_noop`
-  - `unknown_schema_version_is_rejected`
-- [x] `permission_matrix.rs`:
-  - allow/deny precedence
-  - admin override
-  - channel override behavior
-- [x] `app_flows.rs`:
-  - create guild + create channel updates `AppState` and `rev` monotonicity
+- [x] iOS + Android expose current control actions from `AppAction`.
+- [x] UI displays `AppState.rev`, guild summaries, and error toast.
+- [x] Emulator launch UX for `just rapture run-android` behaves like React Native/Flutter expectations (auto-start visible emulator if needed).
 
 Required commands:
 
-- `cargo test -p rapture_core --test control_ops`
-- `cargo test -p rapture_core --test permission_matrix`
-- `cargo test -p rapture_core --test app_flows`
+- `just rapture run-ios`
+- `just rapture run-android`
+- `just --justfile apps/rapture/justfile pre-merge`
 
 Acceptance criteria:
 
-- All control operations are replayable and idempotent.
-- Permission checks are deterministic and enforced in action handling.
-- FfiApp state transitions match expected snapshots.
+- Both apps launch and dispatch all control actions without terminal-only tooling.
+- Permission failures surface in-app via toast.
 
-## Phase 2: Channel groups + text messaging
+## Sprint B (done): Timeline/chat UI slice
 
 Deliverables:
 
-- [x] Channel group lifecycle from control ops (local relay simulation).
-- [x] Membership reconciler (`desired` vs `actual` diff + retry).
-- [x] `rapture.chat.v1` send/edit/delete/reaction.
-- [ ] Guild/channel/timeline UI slices.
+- [x] Add channel/timeline state projections for frontend consumption.
+- [x] Add iOS + Android timeline UI for send/read/edit/delete/reactions.
+- [x] Wire local encrypted channel flow to visible UI (not just Rust tests).
 
-Tests to add:
+Required tests/commands:
 
-- [x] `reconcile_membership.rs`:
-  - add/remove diff correctness
-  - partial failure retry
-  - idempotent re-run
-- [x] `e2e_local_relay.rs` (two local relay clients):
-  - guild invite + channel join + encrypted send/receive
-  - member removed cannot decrypt subsequent messages
-- [ ] iOS/Android UI tests:
-  - create guild
-  - create channel
-  - send/receive message in channel
-
-Required commands:
-
-- `cargo test -p rapture_core --test reconcile_membership`
-- `RAPTURE_E2E_LOCAL=1 cargo test -p rapture_core --test e2e_local_relay -- --ignored --nocapture`
-- `just rapture-ui-test-ios`
-- `just rapture-ui-test-android`
-- `just rapture-ui-e2e-local` (local relay + local bot path)
+- `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test chat_ops`
+- `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test app_flows timeline_send_edit_react_delete_round_trip`
+- `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test app_flows timeline_permissions_are_enforced`
+- `just rapture run-ios`
+- `just rapture run-android`
+- `just --justfile apps/rapture/justfile pre-merge`
 
 Acceptance criteria:
 
-- Two-client encrypted channel messaging passes deterministically on local relay.
-- Access revocation is cryptographically enforced in tests.
-- Platform UI tests pass for guild/channel happy path.
+- `timeline_send_edit_react_delete_round_trip` passes and verifies send/edit/reaction/remove/delete through `FfiApp`.
+- `timeline_permissions_are_enforced` passes and verifies denied send before membership + allowed send after invite.
+- Both mobile apps launch and render the same Rust-selected guild/channel timeline slice (no platform-local timeline source).
+- Existing encrypted multi-client relay guard remains covered by `RAPTURE_E2E_LOCAL=1 cargo test --manifest-path apps/rapture/rust/Cargo.toml --test e2e_local_relay -- --ignored --nocapture`.
 
-## Phase 3: Permissions hardening
+## Sprint C (done): Voice UI slice
 
 Deliverables:
 
-- [x] Enforce permissions in dispatch + replay apply path.
-- [x] Admin/mod actions (kick/ban/remove from channel).
-- [x] Conflict/idempotency handling with clear error surfaces.
+- [x] Add iOS + Android voice controls (join/leave/mute/speaking state).
+- [x] Surface voice permission denials in UI.
 
-Tests to add:
+Required tests/commands:
 
-- [x] `permission_matrix.rs` negative tests for unauthorized actions.
-- [x] `control_ops.rs` tests for invalid actor/op rejection.
-- [ ] UI tests for denied actions:
-  - non-admin cannot see/manage controls
-  - denied send fails with visible error state
-
-Required commands:
-
-- `cargo test -p rapture_core --test permission_matrix`
-- `cargo test -p rapture_core --test control_ops`
-- `just rapture-ui-test-ios`
-- `just rapture-ui-test-android`
+- `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test voice_ops`
+- `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test app_flows voice_join_mute_leave_updates_state`
+- `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test app_flows voice_permission_denial_surfaces_toast`
+- `just rapture run-ios`
+- `just rapture run-android`
+- `just --justfile apps/rapture/justfile pre-merge`
 
 Acceptance criteria:
 
-- Unauthorized actions are rejected both pre-apply and replay-time.
-- UI reflects denied permissions without inconsistent state.
+- `voice_join_mute_leave_updates_state` passes and verifies session start/join/mute/speaking/leave through `FfiApp`.
+- `voice_permission_denial_surfaces_toast` passes and verifies denied voice join is surfaced as UI toast.
+- iOS + Android render and dispatch voice controls from the same Rust `voice_room` projection.
+- Existing MoQ integration remains covered by `RAPTURE_E2E_MOQ=1 cargo test --manifest-path apps/rapture/rust/Cargo.toml --test e2e_local_moq_voice -- --ignored --nocapture`.
 
-## Phase 4: Voice signaling + MoQ
+## Sprint D (after UI parity): Monorepo reshape
 
 Deliverables:
 
-- [x] `rapture.voice.v1` signaling events.
-- [x] MoQ media integration reuse from existing RMP path.
-- [x] Voice permission gating (`CONNECT_VOICE`, `SPEAK_VOICE`, `MUTE_MEMBERS`).
-
-Tests to add:
-
-- [x] `e2e_local_moq_voice.rs`:
-  - join/leave voice channel + bidirectional media frame delivery
-  - mute/unmute state propagation
-  - unauthorized voice join denied
-- [ ] iOS/Android `RaptureVoice*` tests for join/leave/mute UI behavior.
-
-Required commands:
-
-- `RAPTURE_E2E_MOQ=1 cargo test -p rapture_core --test e2e_local_moq_voice -- --ignored --nocapture`
-- `just rapture ui-test-ios`
-- `just rapture ui-test-android`
+- [ ] Decide timing for moving Pika fully to `apps/pika`.
+- [x] Path-filtered CI lane selection remains in place.
+- [ ] Keep lane ownership clear (`pre-merge-pika`, `pre-merge-rapture`, shared lanes).
 
 Acceptance criteria:
 
-- Two-client local voice signaling + media path succeeds.
-- Voice permission denial is covered by automated tests.
+- Rapture-only PRs run only relevant lanes.
+- Shared changes fan out correctly.
 
-## Phase 5: Monorepo + CI completion
-
-Deliverables:
-
-- [ ] Move Pika into `apps/pika` (after Rapture stable).
-- [ ] Add/maintain lane recipes:
-  - `pre-merge-pika`
-  - `pre-merge-rapture`
-  - shared/service lanes
-- [x] Add path-filtered execution in `.github/workflows/pre-merge.yml`.
-
-Tests to add:
-
-- [x] CI lane-selection test fixture (script + expected outputs) for path filters.
-- [x] One workflow self-test that proves:
-  - Rapture-only change skips Pika lane
-  - shared change runs both lanes
-
-Required commands:
-
-- `just pre-merge-rapture`
-- `just pre-merge-pika`
-- `just ci-lane-selection-test`
-- `just pre-merge` (full gate before merge to `master`)
-
-Acceptance criteria:
-
-- Rapture-only PRs do not run unrelated heavy lanes.
-- Shared changes correctly fan out to both app lanes.
-- Single required GitHub status remains `pre-merge`.
-
-## 18. Command checklist for PRs
+## 19. Command checklist for PRs (updated)
 
 Minimum for Rapture feature PRs:
 
 1. `cargo test -p rapture_core --lib --tests`
-2. `just rapture-ui-test-ios`
-3. `just rapture-ui-test-android`
-4. `just pre-merge-rapture`
+2. `just --justfile apps/rapture/justfile pre-merge`
 
-For protocol/membership/voice changes:
+For chat/timeline changes:
 
-1. `RAPTURE_E2E_LOCAL=1 cargo test -p rapture_core --test e2e_local_relay -- --ignored --nocapture`
-2. `RAPTURE_E2E_MOQ=1 cargo test -p rapture_core --test e2e_local_moq_voice -- --ignored --nocapture`
-3. `just rapture-ui-e2e-local`
+1. `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test chat_ops`
+2. `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test app_flows timeline_send_edit_react_delete_round_trip`
+3. `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test app_flows timeline_permissions_are_enforced`
+4. `RAPTURE_E2E_LOCAL=1 cargo test --manifest-path apps/rapture/rust/Cargo.toml --test e2e_local_relay -- --ignored --nocapture`
 
-For release candidates:
+For voice changes:
 
-1. `just pre-merge`
-2. `just rapture-dinghy-smoke` (if available)
-3. `agent-device replay` smoke flows on both platforms (see section 19)
+1. `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test voice_ops`
+2. `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test app_flows voice_join_mute_leave_updates_state`
+3. `cargo test --manifest-path apps/rapture/rust/Cargo.toml --test app_flows voice_permission_denial_surfaces_toast`
+4. `RAPTURE_E2E_MOQ=1 cargo test --manifest-path apps/rapture/rust/Cargo.toml --test e2e_local_moq_voice -- --ignored --nocapture`
 
-## 19. Scripted QA (no ad-hoc manual clicking)
+Before merge to `master`:
 
-Add replayable flows so QA is mostly one-command:
+1. `just pre-merge-rapture`
+2. `just pre-merge` (repo-wide gate)
 
-- iOS:
-  - `npx --yes agent-device --platform ios replay scripts/agent-device/rapture-ios-smoke.json`
-- Android:
-  - `npx --yes agent-device --platform android replay scripts/agent-device/rapture-android-smoke.json`
+## 20. QA strategy
 
-Minimum replay assertions:
+Default:
 
-- Create account/login.
+- Automated Rust tests + platform UI tests + scripted device flows.
+
+Fallback:
+
+- Human manual QA only when scripted flow fails and root cause is unknown.
+
+Manual smoke assertions (current UI baseline):
+
+- Launch app.
 - Create guild.
 - Create channel.
-- Send one message.
-- Leave/reopen app and confirm state restore.
+- Send a message.
+- Edit the message.
+- Toggle `:+1:` reaction.
+- Delete the message.
+- Enter a voice channel, join voice, toggle mute/speaking, then leave.
+- Invite a non-voice user and verify denied voice join shows toast.
+- Trigger denied send action as a non-member and verify toast message.
+- Kill/relaunch app and verify guild/channel summary persists.
 
-Use human manual QA only when replay fails and root cause is unknown.
+## 21. Risks and mitigations
 
-## 20. Risks and mitigations
-
-- Membership fanout cost with many channels.
-  - Mitigation: lazy membership for inactive channels + channel count limits in MVP.
-- Control/data divergence.
-  - Mitigation: continuous reconciler + periodic full reconciliation pass.
-- Relay/order edge cases.
-  - Mitigation: idempotent ops (`op_id`) + stable ordering rules.
-- Role graph complexity.
-  - Mitigation: start with simple allow/deny precedence and no exotic inheritance.
-
-## 21. Open decisions
-
-- Payload encoding: JSON first vs protobuf/CBOR.
-- Thread model: separate channel group vs logical thread in parent timeline.
-- Max guild/channel/member limits for MVP guardrails.
-- Where to run reconciliation: client-only vs helper service in `marmotd`.
+- Core/UI drift.
+  - Mitigation: UI-first sprint gates; no “phase complete” without UI tests.
+- Replay/order regressions under distributed ingest.
+  - Mitigation: deterministic replay tests at control core + startup/load + live apply.
+- Crypto model confusion (simulation vs MLS).
+  - Mitigation: explicit labeling in code/docs; upgrade path to Marmot MLS integration.
 
 ## 22. Immediate next tasks
 
-- [x] Add `apps/rapture` skeleton + `rmp` app-root support.
-- [x] Create initial test files listed in section 16 (`bootstrap_smoke`, `control_ops`, `permission_matrix`).
-- [x] Add `just pre-merge-rapture` and wire it into workflow with path filters.
+- [x] Rebaseline plan to reflect core-ahead-of-UI reality.
+- [x] Ship control-plane UI slice on iOS + Android.
+- [x] Add chat timeline UI slice (Sprint B).
+- [x] Add voice UI slice (Sprint C).
+- [ ] Add first UI automated tests (`RaptureGuildFlow` iOS/Android).
 - [ ] Add first `agent-device` replay scripts for iOS/Android smoke.
