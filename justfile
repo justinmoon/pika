@@ -299,7 +299,7 @@ pre-merge-agent-contracts:
     cargo test -p pika-agent-microvm
     cargo test -p pika-agent-control-plane
     cargo test -p pika-agent-protocol
-    cargo test -p pika-server -- agent_control::tests
+    cargo test -p pika-server -- agent_control::tests agent_clients::
     @echo "pre-merge-agent-contracts complete"
 
 # CI-safe pre-merge for the RMP tooling lane.
