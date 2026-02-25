@@ -291,7 +291,7 @@ If --output is omitted, the original filename from the sender is used.")]
         exec: Option<String>,
     },
 
-    /// Manage AI agents (`fly`, `workers`, or `microvm`)
+    /// Manage AI agents (`fly` or `microvm`)
     Agent {
         #[command(subcommand)]
         cmd: AgentCommand,
@@ -365,7 +365,6 @@ enum AgentCommand {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum AgentProvider {
     Fly,
-    Workers,
     Microvm,
 }
 
@@ -1446,11 +1445,6 @@ fn validate_agent_new_request(
     brain: Option<&str>,
     microvm: &AgentNewMicrovmArgs,
 ) -> anyhow::Result<()> {
-    if provider == AgentProvider::Workers {
-        anyhow::bail!(
-            "provider 'workers' is temporarily disabled during the marmot refactor; use --provider fly or --provider microvm"
-        );
-    }
     if let Some(value) = brain.map(str::trim).filter(|v| !v.is_empty()) {
         anyhow::bail!(
             "--brain is no longer supported: provisioning is ACP-only. Remove --brain (received: {value})"
@@ -1699,7 +1693,6 @@ fn resolve_control_server_pubkey(control: &AgentControlArgs) -> anyhow::Result<P
 fn map_provider_kind(provider: AgentProvider) -> ProviderKind {
     match provider {
         AgentProvider::Fly => ProviderKind::Fly,
-        AgentProvider::Workers => ProviderKind::Workers,
         AgentProvider::Microvm => ProviderKind::Microvm,
     }
 }
@@ -1776,7 +1769,6 @@ async fn cmd_agent_new_remote(
     print(json!({
         "provider": match provider {
             AgentProvider::Fly => "fly",
-            AgentProvider::Workers => "workers",
             AgentProvider::Microvm => "microvm",
         },
         "protocol": "acp",
@@ -2274,18 +2266,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_new_existing_fly_and_workers_parse_unchanged() {
+    fn agent_new_existing_fly_parse_unchanged() {
         let (fly_provider, fly_runtime_class, fly_microvm) =
             parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly"]);
         assert_eq!(fly_provider, AgentProvider::Fly);
         assert_eq!(fly_runtime_class, None);
         assert!(fly_microvm.provided_flag_names().is_empty());
-
-        let (workers_provider, workers_runtime_class, workers_microvm) =
-            parse_agent_new(&["pikachat", "agent", "new", "--provider", "workers"]);
-        assert_eq!(workers_provider, AgentProvider::Workers);
-        assert_eq!(workers_runtime_class, None);
-        assert!(workers_microvm.provided_flag_names().is_empty());
     }
 
     #[test]
@@ -2317,16 +2303,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_new_workers_provider_is_temporarily_disabled() {
-        let err = validate_agent_new_args(&["pikachat", "agent", "new", "--provider", "workers"])
-            .expect_err("workers provider should be rejected");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("temporarily disabled"));
-        assert!(msg.contains("--provider fly"));
-        assert!(msg.contains("--provider microvm"));
-    }
-
-    #[test]
     fn agent_new_control_mode_is_strict_remote_only() {
         let mode = parse_agent_new_control_mode(&["pikachat", "agent", "new"]);
         assert_eq!(mode, AgentControlMode::Remote);
@@ -2346,11 +2322,11 @@ mod tests {
             "agent",
             "new",
             "--provider",
-            "workers",
+            "fly",
             "--runtime-class",
-            "workers-us-east",
+            "fly-us-east",
         ]);
-        assert_eq!(runtime_class.as_deref(), Some("workers-us-east"));
+        assert_eq!(runtime_class.as_deref(), Some("fly-us-east"));
     }
 
     #[test]
@@ -2360,20 +2336,20 @@ mod tests {
             "agent",
             "list-runtimes",
             "--provider",
-            "workers",
+            "fly",
             "--protocol",
             "acp",
             "--phase",
             "ready",
             "--runtime-class",
-            "workers-us-east",
+            "fly-us-east",
             "--limit",
             "5",
         ]);
-        assert_eq!(parsed.provider, Some(AgentProvider::Workers));
+        assert_eq!(parsed.provider, Some(AgentProvider::Fly));
         assert_eq!(parsed.protocol, Some(AgentProtocol::Acp));
         assert_eq!(parsed.phase, Some(AgentRuntimePhase::Ready));
-        assert_eq!(parsed.runtime_class.as_deref(), Some("workers-us-east"));
+        assert_eq!(parsed.runtime_class.as_deref(), Some("fly-us-east"));
         assert_eq!(parsed.limit, Some(5));
     }
 

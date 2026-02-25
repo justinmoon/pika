@@ -15,7 +15,6 @@ pub const ERROR_SCHEMA_V1: &str = "agent.control.error.v1";
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Fly,
-    Workers,
     Microvm,
 }
 
@@ -265,10 +264,10 @@ mod tests {
             "req-1".to_string(),
             "idem-1".to_string(),
             AgentControlCommand::Provision(ProvisionCommand {
-                provider: ProviderKind::Workers,
+                provider: ProviderKind::Fly,
                 protocol: ProtocolKind::Acp,
                 name: Some("agent".to_string()),
-                runtime_class: Some("workers-us-east".to_string()),
+                runtime_class: Some("fly-us-east".to_string()),
                 relay_urls: vec!["wss://us-east.nostr.pikachat.org".to_string()],
                 keep: false,
                 bot_secret_key_hex: None,
@@ -284,7 +283,7 @@ mod tests {
         assert_eq!(decoded.idempotency_key, "idem-1");
         match decoded.command {
             AgentControlCommand::Provision(provision) => {
-                assert_eq!(provision.provider, ProviderKind::Workers);
+                assert_eq!(provision.provider, ProviderKind::Fly);
                 assert_eq!(provision.protocol, ProtocolKind::Acp);
             }
             _ => panic!("expected provision command"),

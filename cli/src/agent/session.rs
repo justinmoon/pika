@@ -221,7 +221,7 @@ pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::
                 if let Some(started) = eof_wait_started
                     && started.elapsed() > plan.eof_reply_timeout
                 {
-                    anyhow::bail!("timed out waiting for workers relay reply");
+                    anyhow::bail!("timed out waiting for relay reply");
                 }
             }
             _ = tokio::signal::ctrl_c() => {
