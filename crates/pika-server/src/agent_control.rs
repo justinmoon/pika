@@ -2698,4 +2698,98 @@ mod tests {
             "runtime_not_found"
         );
     }
+
+    #[test]
+    fn provider_name_returns_expected_strings() {
+        assert_eq!(provider_name(ProviderKind::Fly), "fly");
+        assert_eq!(provider_name(ProviderKind::Microvm), "microvm");
+    }
+
+    #[test]
+    fn runtime_profile_defaults_to_provider_name_as_runtime_class() {
+        // Ensure no env vars are set for this test
+        std::env::remove_var("PIKA_AGENT_RUNTIME_CLASS");
+        std::env::remove_var("PIKA_AGENT_RUNTIME_CLASS_FLY");
+        std::env::remove_var("PIKA_AGENT_RUNTIME_CLASS_MICROVM");
+
+        let fly_profile = runtime_profile(ProviderKind::Fly);
+        assert_eq!(fly_profile.runtime_class, Some("fly".to_string()));
+        assert_eq!(fly_profile.region, None);
+        assert_eq!(fly_profile.capacity, Value::Null);
+        assert_eq!(fly_profile.policy_constraints, Value::Null);
+
+        let microvm_profile = runtime_profile(ProviderKind::Microvm);
+        assert_eq!(microvm_profile.runtime_class, Some("microvm".to_string()));
+    }
+
+    #[test]
+    fn env_string_for_provider_prefers_provider_specific_key() {
+        let unique = format!("TEST_ENV_STR_{}", rand::thread_rng().r#gen::<u32>());
+        let fly_key = format!("{unique}_FLY");
+
+        std::env::set_var(&unique, "generic");
+        std::env::set_var(&fly_key, "fly-specific");
+
+        let result = env_string_for_provider(ProviderKind::Fly, &unique);
+        assert_eq!(result, Some("fly-specific".to_string()));
+
+        std::env::remove_var(&unique);
+        std::env::remove_var(&fly_key);
+    }
+
+    #[test]
+    fn env_string_for_provider_falls_back_to_generic_key() {
+        let unique = format!("TEST_ENV_FALLBACK_{}", rand::thread_rng().r#gen::<u32>());
+        let microvm_key = format!("{unique}_MICROVM");
+
+        std::env::set_var(&unique, "generic-value");
+        std::env::remove_var(&microvm_key);
+
+        let result = env_string_for_provider(ProviderKind::Microvm, &unique);
+        assert_eq!(result, Some("generic-value".to_string()));
+
+        std::env::remove_var(&unique);
+    }
+
+    #[test]
+    fn env_string_for_provider_returns_none_when_unset() {
+        let unique = format!("TEST_ENV_NONE_{}", rand::thread_rng().r#gen::<u32>());
+        let fly_key = format!("{unique}_FLY");
+        std::env::remove_var(&unique);
+        std::env::remove_var(&fly_key);
+
+        let result = env_string_for_provider(ProviderKind::Fly, &unique);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn env_json_for_provider_parses_valid_json() {
+        let unique = format!("TEST_ENV_JSON_{}", rand::thread_rng().r#gen::<u32>());
+        std::env::set_var(&unique, r#"{"slots": 4}"#);
+
+        let result = env_json_for_provider(ProviderKind::Fly, &unique);
+        assert_eq!(result, json!({"slots": 4}));
+
+        std::env::remove_var(&unique);
+    }
+
+    #[test]
+    fn env_json_for_provider_wraps_invalid_json() {
+        let unique = format!("TEST_ENV_BADJSON_{}", rand::thread_rng().r#gen::<u32>());
+        std::env::set_var(&unique, "not-json");
+
+        let result = env_json_for_provider(ProviderKind::Fly, &unique);
+        assert_eq!(result, json!({"raw": "not-json"}));
+
+        std::env::remove_var(&unique);
+    }
+
+    #[test]
+    fn env_json_for_provider_returns_null_when_unset() {
+        let unique = format!("TEST_ENV_NOJSON_{}", rand::thread_rng().r#gen::<u32>());
+        std::env::remove_var(&unique);
+
+        let result = env_json_for_provider(ProviderKind::Fly, &unique);
+        assert_eq!(result, Value::Null);
+    }
 }
