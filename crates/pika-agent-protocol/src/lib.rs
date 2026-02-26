@@ -1,3 +1,5 @@
+pub mod projection;
+
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
