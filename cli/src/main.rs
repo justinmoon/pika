@@ -769,20 +769,7 @@ fn mime_from_extension(path: &Path) -> Option<&'static str> {
 }
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
-    let parsed: Vec<String> = values
-        .iter()
-        .filter_map(|raw| {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            Url::parse(trimmed).ok().map(|_| trimmed.to_string())
-        })
-        .collect();
-    if !parsed.is_empty() {
-        return parsed;
-    }
-    vec![default_primary_blossom_server().to_string()]
+    pika_relay_profiles::blossom_servers_or_default(values)
 }
 
 fn message_media_refs(

@@ -5793,6 +5793,9 @@ dependencies = [
 [[package]]
 name = "pika-relay-profiles"
 version = "0.1.0"
+dependencies = [
+ "url",
+]
 
 [[package]]
 name = "pika-server"

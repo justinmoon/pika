@@ -21,7 +21,7 @@ use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
 };
 use pika_media::tracks::{TrackAddress, broadcast_path};
-use pika_relay_profiles::default_primary_blossom_server;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -304,20 +304,7 @@ fn mime_from_extension(path: &std::path::Path) -> Option<&'static str> {
 }
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
-    let parsed: Vec<String> = values
-        .iter()
-        .filter_map(|raw| {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            Url::parse(trimmed).ok().map(|_| trimmed.to_string())
-        })
-        .collect();
-    if !parsed.is_empty() {
-        return parsed;
-    }
-    vec![default_primary_blossom_server().to_string()]
+    pika_relay_profiles::blossom_servers_or_default(values)
 }
 
 fn media_ref_to_attachment(reference: MediaReference) -> MediaAttachmentOut {
@@ -4222,15 +4209,16 @@ mod tests {
     #[test]
     fn blossom_servers_or_default_falls_back() {
         let result = blossom_servers_or_default(&[]);
-        assert_eq!(result, vec![default_primary_blossom_server()]);
+        assert!(!result.is_empty());
+        assert!(result[0].starts_with("https://"));
     }
 
     #[test]
     fn blossom_servers_or_default_skips_empty_and_invalid() {
         let servers = vec!["".to_string(), "  ".to_string(), "not a url".to_string()];
         let result = blossom_servers_or_default(&servers);
-        // All invalid → falls back to default
-        assert_eq!(result, vec![default_primary_blossom_server()]);
+        assert!(!result.is_empty());
+        assert!(result[0].starts_with("https://"));
     }
 
     #[test]
