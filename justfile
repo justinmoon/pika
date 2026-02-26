@@ -792,19 +792,21 @@ cli-smoke-media:
     ./tools/cli-smoke --with-media
 
 # Run `pikachat agent new --provider fly` with interactive chat (loads .env).
-
 # Pass --json for non-interactive, --keep to skip teardown.
-agent-fly RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" *ARGS="":
-    set -euo pipefail; \
-    if [ ! -f .env ]; then \
-      echo "error: missing .env in repo root"; \
-      echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"; \
-      exit 1; \
-    fi; \
-    set -a; \
-    source .env; \
-    set +a; \
-    just cli --relay "{{ RELAY_EU }}" --relay "{{ RELAY_US }}" agent new {{ ARGS }}
+
+# Override relays: RELAY_EU=... RELAY_US=... just agent-fly
+agent-fly *ARGS="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f .env ]; then
+      echo "error: missing .env in repo root"
+      echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"
+      exit 1
+    fi
+    set -a; source .env; set +a
+    RELAY_EU="${RELAY_EU:-wss://eu.nostr.pikachat.org}"
+    RELAY_US="${RELAY_US:-wss://us-east.nostr.pikachat.org}"
+    just cli --relay "$RELAY_EU" --relay "$RELAY_US" agent new {{ ARGS }}
 
 # Run the MicroVM provider demo (`pikachat agent new --provider microvm`).
 agent-microvm *ARGS="":
@@ -825,14 +827,17 @@ deploy-bot:
     fly deploy -c fly.pika-bot.toml
 
 # Deterministic PTY replay smoke test over Fly + MoQ (non-interactive).
-agent-replay-test RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
-    set -euo pipefail; \
-    mkdir -p .tmp; \
-    export PI_BRIDGE_REPLAY_FILE="/app/fixtures/pty/replay-ui-smoke.json"; \
-    export PIKA_AGENT_TEST_MODE=1; \
-    export PIKA_AGENT_TEST_TIMEOUT_SEC=45; \
-    export PIKA_AGENT_MAX_PREFIX_DROP_BYTES=0; \
-    export PIKA_AGENT_MAX_SUFFIX_DROP_BYTES=0; \
-    export PIKA_AGENT_CAPTURE_STDOUT_PATH="$PWD/.tmp/agent-replay-capture.bin"; \
-    export PIKA_AGENT_EXPECT_REPLAY_FILE="$PWD/tools/agent-pty/fixtures/replay-ui-smoke.json"; \
-    just agent-fly RELAY_EU="{{ RELAY_EU }}" RELAY_US="{{ RELAY_US }}"
+
+# Override relays: RELAY_EU=... RELAY_US=... just agent-replay-test
+agent-replay-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .tmp
+    export PI_BRIDGE_REPLAY_FILE="/app/fixtures/pty/replay-ui-smoke.json"
+    export PIKA_AGENT_TEST_MODE=1
+    export PIKA_AGENT_TEST_TIMEOUT_SEC=45
+    export PIKA_AGENT_MAX_PREFIX_DROP_BYTES=0
+    export PIKA_AGENT_MAX_SUFFIX_DROP_BYTES=0
+    export PIKA_AGENT_CAPTURE_STDOUT_PATH="$PWD/.tmp/agent-replay-capture.bin"
+    export PIKA_AGENT_EXPECT_REPLAY_FILE="$PWD/tools/agent-pty/fixtures/replay-ui-smoke.json"
+    just agent-fly
