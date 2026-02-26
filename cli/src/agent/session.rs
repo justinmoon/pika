@@ -8,6 +8,8 @@ use nostr_sdk::JsonUtil;
 use nostr_sdk::prelude::*;
 use tokio::io::AsyncBufReadExt;
 
+use pika_agent_protocol::projection::{ProjectedContent, project_message};
+
 use crate::agent::provider::{ChatLoopPlan, GroupCreatePlan, KeyPackageWaitPlan};
 use crate::{mdk_util, relay_util};
 
@@ -202,13 +204,22 @@ pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::
                     mdk.process_message(&event)
                     && msg.pubkey == bot_pubkey
                 {
-                    printed = true;
-                    if plan.wait_for_pending_replies_on_eof {
-                        pending_replies = pending_replies.saturating_sub(1);
+                    match project_message(&msg.content, plan.projection_mode) {
+                        ProjectedContent::Text(text) => {
+                            printed = true;
+                            if plan.wait_for_pending_replies_on_eof {
+                                pending_replies = pending_replies.saturating_sub(1);
+                            }
+                            eprint!("\r");
+                            println!("pi> {text}");
+                            println!();
+                        }
+                        ProjectedContent::Status(status) => {
+                            eprint!("\r{status}\r");
+                            std::io::stderr().flush().ok();
+                        }
+                        ProjectedContent::Hidden => {}
                     }
-                    eprint!("\r");
-                    println!("pi> {}", msg.content);
-                    println!();
                 }
                 if printed {
                     if !stdin_closed {
