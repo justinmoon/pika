@@ -791,8 +791,10 @@ cli-smoke:
 cli-smoke-media:
     ./tools/cli-smoke --with-media
 
-# Run `pikachat agent new` (loads FLY_API_TOKEN + ANTHROPIC_API_KEY from .env).
-agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
+# Run `pikachat agent new --provider fly` with interactive chat (loads .env).
+
+# Pass --json for non-interactive, --keep to skip teardown.
+agent-fly RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" *ARGS="":
     set -euo pipefail; \
     if [ ! -f .env ]; then \
       echo "error: missing .env in repo root"; \
@@ -802,11 +804,7 @@ agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nos
     set -a; \
     source .env; \
     set +a; \
-    just cli --relay "{{ RELAY_EU }}" --relay "{{ RELAY_US }}" agent new
-
-# Run the Fly provider demo (`pikachat agent new --provider fly`).
-agent-fly RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
-    just agent-fly-moq "{{ RELAY_EU }}" "{{ RELAY_US }}" "{{ MOQ_US }}" "{{ MOQ_EU }}"
+    just cli --relay "{{ RELAY_EU }}" --relay "{{ RELAY_US }}" agent new {{ ARGS }}
 
 # Run the MicroVM provider demo (`pikachat agent new --provider microvm`).
 agent-microvm *ARGS="":
@@ -837,4 +835,4 @@ agent-replay-test RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east
     export PIKA_AGENT_MAX_SUFFIX_DROP_BYTES=0; \
     export PIKA_AGENT_CAPTURE_STDOUT_PATH="$PWD/.tmp/agent-replay-capture.bin"; \
     export PIKA_AGENT_EXPECT_REPLAY_FILE="$PWD/tools/agent-pty/fixtures/replay-ui-smoke.json"; \
-    just agent-fly-moq "{{ RELAY_EU }}" "{{ RELAY_US }}" "{{ MOQ_US }}" "{{ MOQ_EU }}"
+    just agent-fly RELAY_EU="{{ RELAY_EU }}" RELAY_US="{{ RELAY_US }}"
