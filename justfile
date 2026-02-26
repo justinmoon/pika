@@ -768,15 +768,15 @@ relay-build:
 # ── Local backend (postgres + relay + pika-server) ──────────────────────────
 # Start local backend (postgres, pika-relay, pika-server with agent control).
 
-# State persists in .local-backend/. Press Ctrl-C to stop all services.
+# State persists in .pika-fixture/. Press Ctrl-C to stop all services.
 run-server:
-    ./scripts/local-backend.sh
+    cargo run -p pika-fixture -- up --profile backend
 
 # Run agent-fly against local backend (requires `just run-server` in another terminal).
 agent-fly-local *ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
-    eval "$(./scripts/local-backend.sh --env 2>/dev/null)"
+    eval "$(cargo run -q -p pika-fixture -- env)"
     if [ ! -f .env ]; then
       echo "error: missing .env in repo root"
       echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"
