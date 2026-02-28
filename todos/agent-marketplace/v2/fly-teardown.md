@@ -1,6 +1,6 @@
 # Fly Teardown Spec (MVP)
 
-Status: deferred reference mini-spec; active teardown implementation lives under v1.
+Status: active v2 teardown contract reference.
 
 ## 1. Goal
 

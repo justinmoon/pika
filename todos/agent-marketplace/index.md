@@ -6,15 +6,7 @@ Single authority:
 
 ## Active Track
 
-Implement **v1 first**.
-
-- [v1/overview.md](v1/overview.md)
-- [v1/wire.md](v1/wire.md)
-- [v1/runtime.md](v1/runtime.md)
-- [v1/plan.md](v1/plan.md)
-- [v1/tasks.md](v1/tasks.md)
-
-## Next Track (After v1 Freeze)
+Implement **v2** as the canonical protocol/runtime path.
 
 - [v2/wire.md](v2/wire.md)
 - [v2/runtime.md](v2/runtime.md)
@@ -23,11 +15,21 @@ Implement **v1 first**.
 - [v2/distribution.md](v2/distribution.md)
 - [v2/tasks.md](v2/tasks.md)
 
+## Archived Reference
+
+v1 docs remain for historical context and compatibility notes only.
+
+- [v1/overview.md](v1/overview.md)
+- [v1/wire.md](v1/wire.md)
+- [v1/runtime.md](v1/runtime.md)
+- [v1/plan.md](v1/plan.md)
+- [v1/tasks.md](v1/tasks.md)
+
 ## Decision Rule
 
-1. Until March 12, 2026, use v1 docs for implementation decisions.
-2. Treat v2 as architecture target and deferred design.
-3. Promote v2 work only after v1 freeze checklist passes.
+1. Use v2 docs for implementation decisions.
+2. Treat v1 docs as archived/reference only.
+3. Keep ACP-only behavior and operational safety controls enabled by default.
 
 ## v1 -> v2 Wire Compatibility Rule
 
@@ -42,5 +44,5 @@ Implement **v1 first**.
 3. v2 adds families (additive, not replacement):
 - `agent.lease.status.v0`
 - `agent.checkpoint.v0`
-4. During v1 implementation window, do not require or depend on v2-only families.
-5. At/after freeze, enable v2-only families behind explicit compatibility notes and test coverage.
+4. v2-only families are part of active implementation.
+5. Preserve additive compatibility semantics; do not regress existing ACP flows.

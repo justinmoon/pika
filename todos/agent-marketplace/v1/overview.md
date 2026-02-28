@@ -1,5 +1,7 @@
 # Simple Marketplace (2-Week Fast Iteration Track)
 
+Status: archived reference (v2 is the active implementation path).
+
 Purpose:
 - Move quickly with breaking changes.
 - Keep scope intentionally narrow.

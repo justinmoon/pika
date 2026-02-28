@@ -1,5 +1,7 @@
 # 2-Week Plan (Experiment -> Freeze)
 
+Status: archived historical plan for the v1 experiment track.
+
 Window:
 - Start: February 26, 2026
 - Freeze target: March 12, 2026

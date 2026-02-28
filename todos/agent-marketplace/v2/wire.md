@@ -1,10 +1,10 @@
-# V2 Target Wire Contract (Deferred)
+# V2 Target Wire Contract (Canonical)
 
-Status: deferred reference for post-v1 freeze; not the active implementation contract before March 12, 2026.
+Status: active canonical wire contract.
 
 Compatibility note:
-- Active implementation contract is `../v1/wire.md`.
-- This document is the target additive extension and must not block v1 lifecycle hardening.
+- Active implementation contract is this v2 document.
+- `../v1/wire.md` is archived reference for historical compatibility context.
 
 ## 1. Scope and Product Decisions
 
@@ -29,7 +29,7 @@ Non-goals for v0:
 4. Event model that supports eventual multi-server decentralization.
 5. Keep MLS chat data plane unchanged.
 
-## 3. Target Contract Identity (Post-v1)
+## 3. Target Contract Identity (Canonical v2)
 
 Semantic contract identity is payload family + version, not kind numbers alone.
 

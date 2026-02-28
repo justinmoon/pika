@@ -1,6 +1,6 @@
-# V1 Concrete Task List
+# V1 Concrete Task List (Archived)
 
-Status: implementation queue (active).
+Status: archived reference task list (v2 is canonical).
 Freeze target: March 12, 2026.
 
 ## P0. Fly Teardown (Must Ship)

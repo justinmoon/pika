@@ -1,10 +1,10 @@
 # Draft Spec: Distribution-First Agent Marketplace
 
-Status: deferred non-normative draft for post-v1 adoption.
+Status: active v2 distribution design reference (non-normative where explicitly marked).
 
 Activation policy:
-- This draft is not required to ship current lifecycle hardening work.
-- Do not start broad advanced/raw build support before Fly teardown + lease reaper + reconciliation are stable.
+- Keep broad advanced/raw build support policy-gated.
+- Maintain Fly teardown + lease reaper + reconciliation safety requirements before any broader source-build rollout.
 
 ## 1. Why This Layer Exists
 

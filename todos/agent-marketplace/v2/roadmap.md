@@ -1,14 +1,14 @@
-# V2 Roadmap (Deferred)
+# V2 Roadmap (Canonical)
 
-Status: deferred until v1 freeze checklist passes (target gate: March 12, 2026).
+Status: active roadmap for the canonical v2 track.
 
 Authority:
 - Track status is controlled by `../index.md`.
 - If this file conflicts with `../index.md`, `../index.md` wins.
 
-## 1. Entry Gate
+## 1. Entry Gate (Historical, Completed)
 
-Start v2 only when all are true:
+V2 activation gate (now satisfied):
 1. v1 freeze checklist is complete.
 2. Fly teardown leak regression is acceptable in soak testing.
 3. Lease expiry/reaper behavior is stable and observable.

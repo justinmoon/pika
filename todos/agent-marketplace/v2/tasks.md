@@ -1,10 +1,10 @@
 # V2 Concrete Task List
 
-Status: deferred until v1 freeze criteria pass.
+Status: active implementation queue (canonical path).
 
 Authority:
-- Active implementation queue is v1.
-- This file is planning-only until v1 freeze gate is met.
+- Active implementation queue is v2.
+- Use this file as implementation and maintenance guidance.
 
 ## Phase 0. Concretization Pass (Required Before Coding)
 
@@ -49,8 +49,7 @@ Authority:
 3. Abuse controls and audit trails.
 4. Migration and compatibility strategy from v1.
 
-## Gate to Start V2
+## Current Operation
 
-- V1 freeze checklist complete.
-- Teardown leak regression rate acceptable.
-- Reaper/retry stability demonstrated in soak testing.
+- V2 commands are treated as always-on control-plane surface (ACP-only).
+- Operational safety gates (allowlist, advanced workload toggle, quotas, source allowlist, artifact immutability) remain required.

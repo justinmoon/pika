@@ -1,6 +1,6 @@
-# Runtime Abstractions Spec (V2 Target Internal Model)
+# Runtime Abstractions Spec (V2 Canonical Internal Model)
 
-Status: deferred reference for post-v1 freeze; use v1 docs for active implementation decisions.
+Status: active canonical runtime spec.
 
 ## 1. Scope
 
@@ -18,7 +18,7 @@ Current implementation facts:
 - `ProviderKind` is Fly + MicroVM.
 - No active workers/cloudflare runtime provider path.
 - Control-plane runtime phases currently include `Queued/Provisioning/Ready/Failed/Teardown`.
-- Fly provision creates machine+volume, but teardown remains manual/advisory.
+- Fly provision creates machine+volume, and teardown performs real stop/delete + volume cleanup with structured retry semantics.
 - MicroVM teardown performs real delete via vm-spawner.
 
 This spec defines the target internal model that should be implemented in staged increments from that baseline.

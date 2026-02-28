@@ -26,6 +26,13 @@ pub enum ProtocolKind {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum BuildKind {
+    Oci,
+    Nix,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuntimeLifecyclePhase {
     Queued,
     Provisioning,
@@ -73,6 +80,12 @@ pub struct ProvisionCommand {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bot_secret_key_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advanced_workload_json: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub microvm: Option<MicrovmProvisionParams>,
 }
 
@@ -110,6 +123,40 @@ pub struct ListRuntimesCommand {
     pub limit: Option<usize>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
+pub struct GetCapabilitiesCommand {}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResolveDistributionCommand {
+    pub distribution_ref: String,
+    pub preset: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overrides_json: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SubmitBuildCommand {
+    pub build_kind: BuildKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GetBuildCommand {
+    pub build_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CancelBuildCommand {
+    pub build_id: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum AgentControlCommand {
@@ -118,6 +165,11 @@ pub enum AgentControlCommand {
     Teardown(TeardownCommand),
     GetRuntime(GetRuntimeCommand),
     ListRuntimes(ListRuntimesCommand),
+    GetCapabilities(GetCapabilitiesCommand),
+    ResolveDistribution(ResolveDistributionCommand),
+    SubmitBuild(SubmitBuildCommand),
+    GetBuild(GetBuildCommand),
+    CancelBuild(CancelBuildCommand),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -271,6 +323,9 @@ mod tests {
                 relay_urls: vec!["wss://us-east.nostr.pikachat.org".to_string()],
                 keep: false,
                 bot_secret_key_hex: None,
+                build_id: None,
+                artifact_ref: None,
+                advanced_workload_json: None,
                 microvm: None,
             }),
             AuthContext::default(),
@@ -301,6 +356,9 @@ mod tests {
                 relay_urls: vec![],
                 keep: true,
                 bot_secret_key_hex: Some("deadbeef".to_string()),
+                build_id: Some("build-abc".to_string()),
+                artifact_ref: Some("oci://registry.example/pika@sha256:1234".to_string()),
+                advanced_workload_json: Some("{\"kind\":\"oci\"}".to_string()),
                 microvm: Some(MicrovmProvisionParams {
                     spawner_url: Some("http://127.0.0.1:8080".to_string()),
                     spawn_variant: Some("prebuilt".to_string()),
@@ -331,6 +389,25 @@ mod tests {
                 limit: Some(10),
             }),
             AgentControlCommand::ListRuntimes(ListRuntimesCommand::default()),
+            AgentControlCommand::GetCapabilities(GetCapabilitiesCommand::default()),
+            AgentControlCommand::ResolveDistribution(ResolveDistributionCommand {
+                distribution_ref: "agent.default".to_string(),
+                preset: "small".to_string(),
+                overrides_json: Some("{\"region\":\"iad\"}".to_string()),
+            }),
+            AgentControlCommand::SubmitBuild(SubmitBuildCommand {
+                build_kind: BuildKind::Oci,
+                source_ref: Some("git+https://example.com/repo".to_string()),
+                artifact_ref: None,
+                timeout_sec: Some(300),
+                context_bytes: Some(1024),
+            }),
+            AgentControlCommand::GetBuild(GetBuildCommand {
+                build_id: "build-1".to_string(),
+            }),
+            AgentControlCommand::CancelBuild(CancelBuildCommand {
+                build_id: "build-2".to_string(),
+            }),
         ];
         for (i, command) in commands.into_iter().enumerate() {
             let envelope = AgentControlCmdEnvelope::v1(
@@ -464,6 +541,9 @@ mod tests {
         assert!(cmd.relay_urls.is_empty());
         assert!(!cmd.keep);
         assert_eq!(cmd.bot_secret_key_hex, None);
+        assert_eq!(cmd.build_id, None);
+        assert_eq!(cmd.artifact_ref, None);
+        assert_eq!(cmd.advanced_workload_json, None);
         assert_eq!(cmd.microvm, None);
     }
 

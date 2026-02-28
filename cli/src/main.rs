@@ -15,10 +15,11 @@ use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
 use pika_agent_control_plane::{
     AgentControlCmdEnvelope, AgentControlCommand, AgentControlErrorEnvelope,
-    AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, CONTROL_CMD_KIND,
-    CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND, GetRuntimeCommand,
+    AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, BuildKind,
+    CONTROL_CMD_KIND, CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND,
+    CancelBuildCommand, GetBuildCommand, GetCapabilitiesCommand, GetRuntimeCommand,
     ListRuntimesCommand, MicrovmProvisionParams, ProtocolKind, ProviderKind, ProvisionCommand,
-    RuntimeLifecyclePhase, TeardownCommand,
+    ResolveDistributionCommand, RuntimeLifecyclePhase, SubmitBuildCommand, TeardownCommand,
 };
 use pika_agent_microvm::microvm_params_provided;
 use pika_relay_profiles::{
@@ -378,6 +379,67 @@ enum AgentCommand {
         #[command(flatten)]
         control: AgentControlArgs,
     },
+
+    /// Query server v2 capability payload
+    GetCapabilities {
+        #[command(flatten)]
+        control: AgentControlArgs,
+    },
+
+    /// Resolve a distribution preset into a provision-ready shape
+    ResolveDistribution {
+        #[arg(long)]
+        distribution_ref: String,
+
+        #[arg(long)]
+        preset: String,
+
+        /// Optional JSON object containing allowed overrides
+        #[arg(long)]
+        overrides_json: Option<String>,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
+    },
+
+    /// Submit a build request and return build id/phase/artifact info
+    SubmitBuild {
+        #[arg(long, value_enum)]
+        build_kind: AgentBuildKind,
+
+        #[arg(long)]
+        source_ref: Option<String>,
+
+        #[arg(long)]
+        artifact_ref: Option<String>,
+
+        #[arg(long)]
+        timeout_sec: Option<u64>,
+
+        #[arg(long)]
+        context_bytes: Option<u64>,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
+    },
+
+    /// Get one build by id
+    GetBuild {
+        #[arg(long)]
+        build_id: String,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
+    },
+
+    /// Cancel a pending build by id
+    CancelBuild {
+        #[arg(long)]
+        build_id: String,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -393,6 +455,12 @@ enum AgentRuntimePhase {
     Ready,
     Failed,
     Teardown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentBuildKind {
+    Oci,
+    Nix,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -637,6 +705,49 @@ async fn main() -> anyhow::Result<()> {
                 runtime_id,
                 control,
             } => cmd_agent_teardown(&cli, runtime_id, control).await,
+            AgentCommand::GetCapabilities { control } => {
+                cmd_agent_get_capabilities(&cli, control).await
+            }
+            AgentCommand::ResolveDistribution {
+                distribution_ref,
+                preset,
+                overrides_json,
+                control,
+            } => {
+                cmd_agent_resolve_distribution(
+                    &cli,
+                    distribution_ref,
+                    preset,
+                    overrides_json.as_deref(),
+                    control,
+                )
+                .await
+            }
+            AgentCommand::SubmitBuild {
+                build_kind,
+                source_ref,
+                artifact_ref,
+                timeout_sec,
+                context_bytes,
+                control,
+            } => {
+                cmd_agent_submit_build(
+                    &cli,
+                    *build_kind,
+                    source_ref.as_deref(),
+                    artifact_ref.as_deref(),
+                    *timeout_sec,
+                    *context_bytes,
+                    control,
+                )
+                .await
+            }
+            AgentCommand::GetBuild { build_id, control } => {
+                cmd_agent_get_build(&cli, build_id, control).await
+            }
+            AgentCommand::CancelBuild { build_id, control } => {
+                cmd_agent_cancel_build(&cli, build_id, control).await
+            }
         },
     }
 }
@@ -1668,6 +1779,13 @@ fn map_protocol_kind(_protocol: AgentProtocol) -> ProtocolKind {
     ProtocolKind::Acp
 }
 
+fn map_build_kind(build_kind: AgentBuildKind) -> BuildKind {
+    match build_kind {
+        AgentBuildKind::Oci => BuildKind::Oci,
+        AgentBuildKind::Nix => BuildKind::Nix,
+    }
+}
+
 fn map_microvm_control_params(microvm: &AgentNewMicrovmArgs) -> Option<MicrovmProvisionParams> {
     let spawn_variant = microvm.spawn_variant.map(|variant| match variant {
         MicrovmSpawnVariant::Prebuilt => "prebuilt".to_string(),
@@ -1728,6 +1846,9 @@ async fn cmd_agent_new_remote(
             relay_urls: relay_urls.clone(),
             keep,
             bot_secret_key_hex: None,
+            build_id: None,
+            artifact_ref: None,
+            advanced_workload_json: None,
             microvm: if provider == AgentProvider::Microvm {
                 map_microvm_control_params(microvm)
             } else {
@@ -1886,6 +2007,141 @@ fn map_agent_runtime_phase(phase: AgentRuntimePhase) -> RuntimeLifecyclePhase {
         AgentRuntimePhase::Failed => RuntimeLifecyclePhase::Failed,
         AgentRuntimePhase::Teardown => RuntimeLifecyclePhase::Teardown,
     }
+}
+
+async fn cmd_agent_get_capabilities(cli: &Cli, control: &AgentControlArgs) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::GetCapabilities(
+            GetCapabilitiesCommand::default(),
+        ))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "get_capabilities",
+        "payload": result.payload,
+    }));
+    Ok(())
+}
+
+async fn cmd_agent_resolve_distribution(
+    cli: &Cli,
+    distribution_ref: &str,
+    preset: &str,
+    overrides_json: Option<&str>,
+    control: &AgentControlArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::ResolveDistribution(
+            ResolveDistributionCommand {
+                distribution_ref: distribution_ref.to_string(),
+                preset: preset.to_string(),
+                overrides_json: overrides_json
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string),
+            },
+        ))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "resolve_distribution",
+        "runtime": result.runtime,
+        "payload": result.payload,
+    }));
+    Ok(())
+}
+
+async fn cmd_agent_submit_build(
+    cli: &Cli,
+    build_kind: AgentBuildKind,
+    source_ref: Option<&str>,
+    artifact_ref: Option<&str>,
+    timeout_sec: Option<u64>,
+    context_bytes: Option<u64>,
+    control: &AgentControlArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::SubmitBuild(SubmitBuildCommand {
+            build_kind: map_build_kind(build_kind),
+            source_ref: source_ref
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+            artifact_ref: artifact_ref
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+            timeout_sec,
+            context_bytes,
+        }))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "submit_build",
+        "payload": result.payload,
+    }));
+    Ok(())
+}
+
+async fn cmd_agent_get_build(
+    cli: &Cli,
+    build_id: &str,
+    control: &AgentControlArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::GetBuild(GetBuildCommand {
+            build_id: build_id.to_string(),
+        }))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "get_build",
+        "payload": result.payload,
+    }));
+    Ok(())
+}
+
+async fn cmd_agent_cancel_build(
+    cli: &Cli,
+    build_id: &str,
+    control: &AgentControlArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::CancelBuild(CancelBuildCommand {
+            build_id: build_id.to_string(),
+        }))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "cancel_build",
+        "payload": result.payload,
+    }));
+    Ok(())
 }
 
 async fn cmd_agent_list_runtimes(
@@ -2361,6 +2617,16 @@ mod tests {
         }
     }
 
+    fn parse_agent_get_build(args: &[&str]) -> String {
+        let cli = Cli::try_parse_from(args).expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::GetBuild { build_id, .. },
+            } => build_id,
+            _ => panic!("expected agent get-build command"),
+        }
+    }
+
     #[test]
     fn agent_new_microvm_flags_parse() {
         let parsed = parse_agent_new(&[
@@ -2528,6 +2794,113 @@ mod tests {
                 cmd: AgentCommand::Teardown { runtime_id, .. },
             } => assert_eq!(runtime_id, "fly-abc123"),
             _ => panic!("expected agent teardown command"),
+        }
+    }
+
+    #[test]
+    fn agent_get_capabilities_parse() {
+        let cli =
+            Cli::try_parse_from(["pikachat", "agent", "get-capabilities"]).expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::GetCapabilities { .. },
+            } => {}
+            _ => panic!("expected agent get-capabilities command"),
+        }
+    }
+
+    #[test]
+    fn agent_resolve_distribution_parse() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "resolve-distribution",
+            "--distribution-ref",
+            "agent.default",
+            "--preset",
+            "small",
+            "--overrides-json",
+            "{\"ttl_sec\":120}",
+        ])
+        .expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd:
+                    AgentCommand::ResolveDistribution {
+                        distribution_ref,
+                        preset,
+                        overrides_json,
+                        ..
+                    },
+            } => {
+                assert_eq!(distribution_ref, "agent.default");
+                assert_eq!(preset, "small");
+                assert_eq!(overrides_json.as_deref(), Some("{\"ttl_sec\":120}"));
+            }
+            _ => panic!("expected agent resolve-distribution command"),
+        }
+    }
+
+    #[test]
+    fn agent_submit_build_parse() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "submit-build",
+            "--build-kind",
+            "oci",
+            "--source-ref",
+            "git+https://example.com/repo",
+            "--timeout-sec",
+            "300",
+            "--context-bytes",
+            "2048",
+        ])
+        .expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd:
+                    AgentCommand::SubmitBuild {
+                        build_kind,
+                        source_ref,
+                        artifact_ref,
+                        timeout_sec,
+                        context_bytes,
+                        ..
+                    },
+            } => {
+                assert_eq!(build_kind, AgentBuildKind::Oci);
+                assert_eq!(source_ref.as_deref(), Some("git+https://example.com/repo"));
+                assert_eq!(artifact_ref, None);
+                assert_eq!(timeout_sec, Some(300));
+                assert_eq!(context_bytes, Some(2048));
+            }
+            _ => panic!("expected agent submit-build command"),
+        }
+    }
+
+    #[test]
+    fn agent_get_build_parse() {
+        let build_id =
+            parse_agent_get_build(&["pikachat", "agent", "get-build", "--build-id", "build-123"]);
+        assert_eq!(build_id, "build-123");
+    }
+
+    #[test]
+    fn agent_cancel_build_parse() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "cancel-build",
+            "--build-id",
+            "build-abc",
+        ])
+        .expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::CancelBuild { build_id, .. },
+            } => assert_eq!(build_id, "build-abc"),
+            _ => panic!("expected agent cancel-build command"),
         }
     }
 }

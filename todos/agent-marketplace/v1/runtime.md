@@ -1,6 +1,6 @@
 # Simple Runtime Model (Experiment)
 
-Status: implementation-targeted and intentionally narrow.
+Status: archived reference (superseded by v2 canonical runtime model).
 
 ## 1. Supported Runtime Backends
 

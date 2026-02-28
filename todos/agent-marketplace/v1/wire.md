@@ -1,6 +1,6 @@
 # Simple Wire Contract (Experiment)
 
-Status: breaking changes allowed until March 12, 2026.
+Status: archived reference (superseded by v2 canonical wire contract).
 
 ## 1. Keep Only Essential Message Families
 
