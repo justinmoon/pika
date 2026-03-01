@@ -24,7 +24,15 @@ PRIMAL_REPO_URL="${PIKA_PRIMAL_REPO_URL:-https://github.com/PrimalHQ/primal-ios-
 PRIMAL_REF="${PIKA_PRIMAL_REF:-9788ac5bf8ac5746a4eb2ab7e66d4a1f434c005d}"
 PRIMAL_SRC_DIR="${PIKA_PRIMAL_SRC_DIR:-$HOME/code/oss/primal-ios-app-ci}"
 PRIMAL_BUNDLE_ID="${PIKA_PRIMAL_BUNDLE_ID:-net.primal.iosapp.Primal}"
+ARTIFACT_DIR="${PIKA_PRIMAL_ARTIFACT_DIR:-}"
 KEEP="${KEEP:-0}"
+data_dir=""
+marker_file=""
+PROBE_URL=""
+
+if [ -n "$ARTIFACT_DIR" ]; then
+  mkdir -p "$ARTIFACT_DIR"
+fi
 
 mkdir -p "$(dirname "$PRIMAL_SRC_DIR")"
 if [ ! -d "$PRIMAL_SRC_DIR/.git" ]; then
@@ -55,7 +63,29 @@ fi
 echo "using simulator: $udid"
 
 DERIVED_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pika-primal-ios-build.XXXXXX")"
+collect_artifacts() {
+  if [ -z "$ARTIFACT_DIR" ]; then
+    return
+  fi
+
+  mkdir -p "$ARTIFACT_DIR" >/dev/null 2>&1 || true
+  printf '%s\n' "$PROBE_URL" >"$ARTIFACT_DIR/probe_url.txt" 2>/dev/null || true
+  if [ -n "$data_dir" ]; then
+    printf '%s\n' "$data_dir" >"$ARTIFACT_DIR/data_dir.txt" 2>/dev/null || true
+  fi
+  if [ -n "$marker_file" ] && [ -f "$marker_file" ]; then
+    cp "$marker_file" "$ARTIFACT_DIR/ui_test_open_url.txt" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${udid:-}" ]; then
+    xcrun simctl spawn "$udid" log show \
+      --style compact \
+      --last 20m \
+      --predicate 'process == "Pika" OR process == "Primal" OR composedMessage CONTAINS[c] "nostrconnect" OR composedMessage CONTAINS[c] "PikaSignerBridge"' \
+      >"$ARTIFACT_DIR/simulator.log" 2>&1 || true
+  fi
+}
 cleanup() {
+  collect_artifacts
   if [ "$KEEP" = "1" ]; then
     echo "note: keeping derived data at $DERIVED_DIR" >&2
     return

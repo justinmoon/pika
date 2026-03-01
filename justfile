@@ -261,6 +261,7 @@ pre-merge-pikachat:
     cargo clippy -p pikachat-sidecar -- -D warnings
     cargo test -p pikachat
     cargo test -p pikachat-sidecar
+    cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
     just openclaw-pikachat-deterministic
     @echo "pre-merge-pikachat complete"
 
@@ -315,7 +316,8 @@ nightly-pika-e2e:
       echo "note: PIKA_TEST_NSEC not set; call_deployed_bot will skip"; \
     fi; \
     cargo build -p pikachat; \
-    cargo test -p pika_core --tests -- --ignored --nocapture
+    cargo test -p pika_core --tests -- --ignored --nocapture; \
+    cargo test -p pikahut --test integration_public -- --ignored --nocapture
 
 # Nightly lane: full OpenClaw integration E2E (gateway + real sidecar wiring).
 nightly-pikachat:
@@ -323,7 +325,7 @@ nightly-pikachat:
 
 # Nightly lane: iOS interop smoke (nostrconnect:// route + Pika bridge emission).
 nightly-primal-ios-interop:
-    ./tools/primal-ios-interop-nightly
+    cargo test -p pikahut --test integration_primal primal_nostrconnect_smoke -- --ignored --nocapture
 
 # Local Primal interop lab: dedicated simulator + local relay + event tap logs.
 primal-ios-lab:
@@ -347,16 +349,16 @@ primal-ios-lab-dump-debug:
 
 # openclaw pikachat deterministic contract suite (local relay + scenarios + focused tests).
 openclaw-pikachat-deterministic:
-    cargo run -q -p pikahut -- test scenario invite-and-chat
-    cargo run -q -p pikahut -- test scenario invite-and-chat-rust-bot
-    cargo run -q -p pikahut -- test scenario invite-and-chat-daemon
-    cargo run -q -p pikahut -- test scenario audio-echo
+    cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_rust_bot -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic openclaw_scenario_audio_echo -- --ignored --nocapture
     PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar daemon::tests::tts_pcm_publish_reaches_subscriber -- --nocapture
     npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
 
 # Full OpenClaw integration lane (nightly/manual).
 openclaw-pikachat-e2e:
-    cargo run -q -p pikahut -- test openclaw-e2e
+    cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture
 
 # Backwards-compatible alias for older docs/scripts.
 openclaw-pikachat-scenarios:
@@ -373,12 +375,12 @@ e2e-local-relay:
 
 # E2E against public relays + deployed bot (nondeterministic).
 e2e-public-relays:
-    ./tools/ui-e2e-public --platform all
+    cargo test -p pikahut --test integration_public ui_e2e_public_all -- --ignored --nocapture
 
 # E2E call test against the deployed bot (requires PIKA_TEST_NSEC).
 e2e-deployed-bot:
     source .env 2>/dev/null || true; \
-    cargo test -p pika_core --test e2e_calls call_deployed_bot -- --ignored --nocapture
+    cargo test -p pikahut --test integration_public deployed_bot_call_flow -- --ignored --nocapture
 
 # Build Rust core + NSE for the host platform.
 rust-build-host:
@@ -493,15 +495,15 @@ android-ui-test: gen-kotlin android-rust android-local-properties
 
 # Android E2E: local Nostr relay + local Rust bot. Requires emulator.
 android-ui-e2e-local:
-    cargo run -q -p pikahut -- test ui-e2e-local --platform android
+    cargo test -p pikahut --test integration_deterministic ui_e2e_local_android -- --ignored --nocapture
 
 # Desktop E2E: local Nostr relay + local Rust bot.
 desktop-e2e-local:
-    cargo run -q -p pikahut -- test ui-e2e-local --platform desktop
+    cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
 
 # Android E2E: public relays + deployed bot (nondeterministic). Requires emulator.
 android-ui-e2e:
-    ./tools/ui-e2e-public --platform android
+    cargo test -p pikahut --test integration_public ui_e2e_public_android -- --ignored --nocapture
 
 # Create + push version tag (pika/vX.Y.Z) after validating VERSION and clean tree.
 release VERSION:
@@ -667,11 +669,11 @@ ios-ui-test: ios-xcframework ios-xcodeproj
 
 # iOS E2E: local Nostr relay + local Rust bot.
 ios-ui-e2e-local:
-    cargo run -q -p pikahut -- test ui-e2e-local --platform ios
+    cargo test -p pikahut --test integration_deterministic ui_e2e_local_ios -- --ignored --nocapture
 
 # iOS E2E: public relays + deployed bot (nondeterministic). Requires PIKA_UI_E2E=1.
 ios-ui-e2e:
-    ./tools/ui-e2e-public --platform ios
+    cargo test -p pikahut --test integration_public ui_e2e_public_ios -- --ignored --nocapture
 
 # Optional: device automation (npx). Not required for building.
 device:
@@ -725,7 +727,7 @@ doctor-ios:
 
 # Interop baseline: local Rust bot. Requires ~/code/marmot-interop-lab-rust.
 interop-rust-baseline:
-    cargo run -q -p pikahut -- test interop-rust-baseline
+    cargo test -p pikahut --test integration_deterministic interop_rust_baseline -- --ignored --nocapture
 
 # Interactive interop test (manual send/receive with local bot).
 interop-rust-manual:
@@ -799,13 +801,13 @@ cli-identity STATE_DIR=".pikachat" RELAY="ws://127.0.0.1:7777":
 
 # Starts its own pika-relay automatically.
 cli-smoke:
-    cargo run -q -p pikahut -- test cli-smoke
+    cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
 
 # Quick smoke test including encrypted media upload/download over Blossom.
 
 # Starts its own relay automatically. Requires internet for the default Blossom server.
 cli-smoke-media:
-    cargo run -q -p pikahut -- test cli-smoke --with-media
+    cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
 
 # Run `pikachat agent new --provider fly` with interactive chat (loads .env).
 # Pass --json for non-interactive, --keep to skip teardown.
