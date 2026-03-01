@@ -16,6 +16,7 @@ pub const ERROR_SCHEMA_V1: &str = "agent.control.error.v1";
 pub enum ProviderKind {
     Fly,
     Microvm,
+    Ec2,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -40,6 +41,29 @@ pub struct AuthContext {
     pub acting_as_pubkey: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OsFamily {
+    Linux,
+    Macos,
+    Windows,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayMode {
+    Headless,
+    Headed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootstrapKind {
+    NixosConfig,
+    CloudInit,
+    Powershell,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
 pub struct MicrovmProvisionParams {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +80,18 @@ pub struct MicrovmProvisionParams {
     pub memory_mb: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_family: Option<OsFamily>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_mode: Option<DisplayMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_kind: Option<BootstrapKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_gb: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -309,6 +345,12 @@ mod tests {
                     cpu: Some(2),
                     memory_mb: Some(512),
                     ttl_seconds: Some(3600),
+                    os_family: Some(OsFamily::Linux),
+                    display_mode: Some(DisplayMode::Headless),
+                    bootstrap_kind: Some(BootstrapKind::NixosConfig),
+                    bootstrap_ref: Some(".#configuration".to_string()),
+                    image_ref: None,
+                    disk_gb: Some(20),
                 }),
             }),
             AgentControlCommand::ProcessWelcome(ProcessWelcomeCommand {
@@ -421,12 +463,20 @@ mod tests {
             "\"microvm\""
         );
         assert_eq!(
+            serde_json::to_string(&ProviderKind::Ec2).unwrap(),
+            "\"ec2\""
+        );
+        assert_eq!(
             serde_json::from_str::<ProviderKind>("\"fly\"").unwrap(),
             ProviderKind::Fly
         );
         assert_eq!(
             serde_json::from_str::<ProviderKind>("\"microvm\"").unwrap(),
             ProviderKind::Microvm
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"ec2\"").unwrap(),
+            ProviderKind::Ec2
         );
     }
 

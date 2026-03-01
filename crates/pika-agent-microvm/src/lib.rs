@@ -33,6 +33,12 @@ pub struct ResolvedMicrovmParams {
     pub cpu: u32,
     pub memory_mb: u32,
     pub ttl_seconds: u64,
+    pub os_family: Option<String>,
+    pub display_mode: Option<String>,
+    pub bootstrap_kind: Option<String>,
+    pub bootstrap_ref: Option<String>,
+    pub image_ref: Option<String>,
+    pub disk_gb: Option<u32>,
     pub keep: bool,
 }
 
@@ -128,6 +134,12 @@ pub fn microvm_params_provided(params: &MicrovmProvisionParams) -> bool {
         || params.cpu.is_some()
         || params.memory_mb.is_some()
         || params.ttl_seconds.is_some()
+        || params.os_family.is_some()
+        || params.display_mode.is_some()
+        || params.bootstrap_kind.is_some()
+        || params.bootstrap_ref.is_some()
+        || params.image_ref.is_some()
+        || params.disk_gb.is_some()
 }
 
 pub fn resolve_params(params: &MicrovmProvisionParams, keep: bool) -> ResolvedMicrovmParams {
@@ -163,6 +175,22 @@ pub fn resolve_params(params: &MicrovmProvisionParams, keep: bool) -> ResolvedMi
         cpu: params.cpu.unwrap_or(DEFAULT_CPU),
         memory_mb: params.memory_mb.unwrap_or(DEFAULT_MEMORY_MB),
         ttl_seconds: params.ttl_seconds.unwrap_or(DEFAULT_TTL_SECONDS),
+        os_family: params.os_family.map(os_family_name),
+        display_mode: params.display_mode.map(display_mode_name),
+        bootstrap_kind: params.bootstrap_kind.map(bootstrap_kind_name),
+        bootstrap_ref: params
+            .bootstrap_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        image_ref: params
+            .image_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        disk_gb: params.disk_gb,
         keep,
     }
 }
@@ -185,6 +213,24 @@ pub fn build_create_vm_request(
             }
             env.insert(key.to_string(), value);
         }
+    }
+    if let Some(value) = resolved.os_family.as_deref() {
+        env.insert("PIKA_VM_OS_FAMILY".to_string(), value.to_string());
+    }
+    if let Some(value) = resolved.display_mode.as_deref() {
+        env.insert("PIKA_VM_DISPLAY_MODE".to_string(), value.to_string());
+    }
+    if let Some(value) = resolved.bootstrap_kind.as_deref() {
+        env.insert("PIKA_VM_BOOTSTRAP_KIND".to_string(), value.to_string());
+    }
+    if let Some(value) = resolved.bootstrap_ref.as_deref() {
+        env.insert("PIKA_VM_BOOTSTRAP_REF".to_string(), value.to_string());
+    }
+    if let Some(value) = resolved.image_ref.as_deref() {
+        env.insert("PIKA_VM_IMAGE_REF".to_string(), value.to_string());
+    }
+    if let Some(value) = resolved.disk_gb {
+        env.insert("PIKA_VM_DISK_GB".to_string(), value.to_string());
     }
 
     let mut files = BTreeMap::new();
@@ -232,6 +278,32 @@ pub fn bot_identity_file(secret_hex: &str, pubkey_hex: &str) -> String {
     }))
     .expect("identity json");
     format!("{body}\n")
+}
+
+fn os_family_name(value: pika_agent_control_plane::OsFamily) -> String {
+    match value {
+        pika_agent_control_plane::OsFamily::Linux => "linux",
+        pika_agent_control_plane::OsFamily::Macos => "macos",
+        pika_agent_control_plane::OsFamily::Windows => "windows",
+    }
+    .to_string()
+}
+
+fn display_mode_name(value: pika_agent_control_plane::DisplayMode) -> String {
+    match value {
+        pika_agent_control_plane::DisplayMode::Headless => "headless",
+        pika_agent_control_plane::DisplayMode::Headed => "headed",
+    }
+    .to_string()
+}
+
+fn bootstrap_kind_name(value: pika_agent_control_plane::BootstrapKind) -> String {
+    match value {
+        pika_agent_control_plane::BootstrapKind::NixosConfig => "nixos_config",
+        pika_agent_control_plane::BootstrapKind::CloudInit => "cloud_init",
+        pika_agent_control_plane::BootstrapKind::Powershell => "powershell",
+    }
+    .to_string()
 }
 
 pub fn microvm_autostart_script() -> &'static str {
@@ -675,6 +747,12 @@ mod tests {
         assert_eq!(defaults.cpu, DEFAULT_CPU);
         assert_eq!(defaults.memory_mb, DEFAULT_MEMORY_MB);
         assert_eq!(defaults.ttl_seconds, DEFAULT_TTL_SECONDS);
+        assert_eq!(defaults.os_family, None);
+        assert_eq!(defaults.display_mode, None);
+        assert_eq!(defaults.bootstrap_kind, None);
+        assert_eq!(defaults.bootstrap_ref, None);
+        assert_eq!(defaults.image_ref, None);
+        assert_eq!(defaults.disk_gb, None);
         assert!(!defaults.keep);
 
         let overridden = resolve_params(
@@ -686,6 +764,12 @@ mod tests {
                 cpu: Some(2),
                 memory_mb: Some(2048),
                 ttl_seconds: Some(600),
+                os_family: None,
+                display_mode: None,
+                bootstrap_kind: None,
+                bootstrap_ref: None,
+                image_ref: None,
+                disk_gb: None,
             },
             true,
         );
@@ -871,6 +955,12 @@ mod tests {
             cpu: None,
             memory_mb: None,
             ttl_seconds: None,
+            os_family: None,
+            display_mode: None,
+            bootstrap_kind: None,
+            bootstrap_ref: None,
+            image_ref: None,
+            disk_gb: None,
         };
         let resolved = resolve_params(&params, false);
         assert_eq!(resolved.spawner_url, DEFAULT_SPAWNER_URL);

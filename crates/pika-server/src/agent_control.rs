@@ -462,6 +462,7 @@ impl AgentControlService {
         match provider {
             ProviderKind::Fly => self.fly.clone(),
             ProviderKind::Microvm => self.microvm.clone(),
+            ProviderKind::Ec2 => self.microvm.clone(),
         }
     }
 
@@ -1670,7 +1671,11 @@ impl ProviderAdapter for MicrovmAdapter {
         owner_pubkey: PublicKey,
         provision: &ProvisionCommand,
     ) -> anyhow::Result<ProvisionedRuntime> {
-        let profile = runtime_profile(ProviderKind::Microvm);
+        let profile_provider = match provision.provider {
+            ProviderKind::Ec2 => ProviderKind::Ec2,
+            _ => ProviderKind::Microvm,
+        };
+        let profile = runtime_profile(profile_provider);
         let params = provision.microvm.clone().unwrap_or_default();
         let resolved = resolve_params(&params, provision.keep);
         let relay_urls = if provision.relay_urls.is_empty() {
@@ -1712,8 +1717,17 @@ impl ProviderAdapter for MicrovmAdapter {
                 "vm_ip": vm.ip,
                 "spawner_url": resolved.spawner_url,
                 "keep": resolved.keep,
+                "provider_backend": "microvm_spawner",
                 "runtime_class": profile.runtime_class.clone(),
                 "region": profile.region.clone(),
+                "lease_intent": {
+                    "os_family": resolved.os_family,
+                    "display_mode": resolved.display_mode,
+                    "bootstrap_kind": resolved.bootstrap_kind,
+                    "bootstrap_ref": resolved.bootstrap_ref,
+                    "image_ref": resolved.image_ref,
+                    "disk_gb": resolved.disk_gb,
+                },
             }),
             runtime_class: profile.runtime_class,
             region: profile.region,
@@ -1783,6 +1797,7 @@ fn provider_name(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Fly => "fly",
         ProviderKind::Microvm => "microvm",
+        ProviderKind::Ec2 => "ec2",
     }
 }
 
@@ -2703,6 +2718,7 @@ mod tests {
     fn provider_name_returns_expected_strings() {
         assert_eq!(provider_name(ProviderKind::Fly), "fly");
         assert_eq!(provider_name(ProviderKind::Microvm), "microvm");
+        assert_eq!(provider_name(ProviderKind::Ec2), "ec2");
     }
 
     #[test]
@@ -2720,6 +2736,9 @@ mod tests {
 
         let microvm_profile = runtime_profile(ProviderKind::Microvm);
         assert_eq!(microvm_profile.runtime_class, Some("microvm".to_string()));
+
+        let ec2_profile = runtime_profile(ProviderKind::Ec2);
+        assert_eq!(ec2_profile.runtime_class, Some("ec2".to_string()));
     }
 
     #[test]

@@ -17,10 +17,10 @@ use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
 use pika_agent_control_plane::{
     AgentControlCmdEnvelope, AgentControlCommand, AgentControlErrorEnvelope,
-    AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, CONTROL_CMD_KIND,
-    CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND, GetRuntimeCommand,
-    ListRuntimesCommand, MicrovmProvisionParams, ProtocolKind, ProviderKind, ProvisionCommand,
-    RuntimeLifecyclePhase, TeardownCommand,
+    AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, BootstrapKind,
+    CONTROL_CMD_KIND, CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND, DisplayMode,
+    GetRuntimeCommand, ListRuntimesCommand, MicrovmProvisionParams, OsFamily, ProtocolKind,
+    ProviderKind, ProvisionCommand, RuntimeLifecyclePhase, TeardownCommand,
 };
 use pika_agent_microvm::microvm_params_provided;
 use pika_relay_profiles::{
@@ -435,6 +435,7 @@ enum AgentCommand {
 enum AgentProvider {
     Fly,
     Microvm,
+    Ec2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -491,6 +492,30 @@ struct AgentNewMicrovmArgs {
     /// VM time-to-live in seconds
     #[arg(long)]
     ttl_seconds: Option<u64>,
+
+    /// Target OS family lease intent (for EC2-style portability)
+    #[arg(long, value_enum)]
+    os_family: Option<AgentOsFamily>,
+
+    /// Display mode lease intent (headed/headless)
+    #[arg(long, value_enum)]
+    display_mode: Option<AgentDisplayMode>,
+
+    /// Bootstrap strategy hint
+    #[arg(long, value_enum)]
+    bootstrap_kind: Option<AgentBootstrapKind>,
+
+    /// Bootstrap reference (e.g. flake/configuration path, cloud-init ref)
+    #[arg(long)]
+    bootstrap_ref: Option<String>,
+
+    /// Optional immutable image reference hint
+    #[arg(long)]
+    image_ref: Option<String>,
+
+    /// Optional root disk size hint (GB)
+    #[arg(long)]
+    disk_gb: Option<u32>,
 }
 
 impl AgentNewMicrovmArgs {
@@ -517,11 +542,29 @@ impl AgentNewMicrovmArgs {
         if self.ttl_seconds.is_some() {
             out.push("--ttl-seconds");
         }
+        if self.os_family.is_some() {
+            out.push("--os-family");
+        }
+        if self.display_mode.is_some() {
+            out.push("--display-mode");
+        }
+        if self.bootstrap_kind.is_some() {
+            out.push("--bootstrap-kind");
+        }
+        if self.bootstrap_ref.is_some() {
+            out.push("--bootstrap-ref");
+        }
+        if self.image_ref.is_some() {
+            out.push("--image-ref");
+        }
+        if self.disk_gb.is_some() {
+            out.push("--disk-gb");
+        }
         out
     }
 
     fn ensure_provider_compatible(&self, provider: AgentProvider) -> anyhow::Result<()> {
-        if provider == AgentProvider::Microvm {
+        if provider == AgentProvider::Microvm || provider == AgentProvider::Ec2 {
             return Ok(());
         }
         let flags = self.provided_flag_names();
@@ -529,7 +572,7 @@ impl AgentNewMicrovmArgs {
             return Ok(());
         }
         anyhow::bail!(
-            "microvm options {} require --provider microvm",
+            "vm lease options {} require --provider microvm or --provider ec2",
             flags.join(", ")
         );
     }
@@ -540,6 +583,28 @@ enum MicrovmSpawnVariant {
     Prebuilt,
     #[value(name = "prebuilt-cow")]
     PrebuiltCow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentOsFamily {
+    Linux,
+    Macos,
+    Windows,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentDisplayMode {
+    Headless,
+    Headed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentBootstrapKind {
+    #[value(name = "nixos-config")]
+    NixosConfig,
+    #[value(name = "cloud-init")]
+    CloudInit,
+    Powershell,
 }
 
 async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
@@ -1993,6 +2058,7 @@ fn map_provider_kind(provider: AgentProvider) -> ProviderKind {
     match provider {
         AgentProvider::Fly => ProviderKind::Fly,
         AgentProvider::Microvm => ProviderKind::Microvm,
+        AgentProvider::Ec2 => ProviderKind::Ec2,
     }
 }
 
@@ -2013,6 +2079,23 @@ fn map_microvm_control_params(microvm: &AgentNewMicrovmArgs) -> Option<MicrovmPr
         cpu: microvm.cpu,
         memory_mb: microvm.memory_mb,
         ttl_seconds: microvm.ttl_seconds,
+        os_family: microvm.os_family.map(|value| match value {
+            AgentOsFamily::Linux => OsFamily::Linux,
+            AgentOsFamily::Macos => OsFamily::Macos,
+            AgentOsFamily::Windows => OsFamily::Windows,
+        }),
+        display_mode: microvm.display_mode.map(|value| match value {
+            AgentDisplayMode::Headless => DisplayMode::Headless,
+            AgentDisplayMode::Headed => DisplayMode::Headed,
+        }),
+        bootstrap_kind: microvm.bootstrap_kind.map(|value| match value {
+            AgentBootstrapKind::NixosConfig => BootstrapKind::NixosConfig,
+            AgentBootstrapKind::CloudInit => BootstrapKind::CloudInit,
+            AgentBootstrapKind::Powershell => BootstrapKind::Powershell,
+        }),
+        bootstrap_ref: microvm.bootstrap_ref.clone(),
+        image_ref: microvm.image_ref.clone(),
+        disk_gb: microvm.disk_gb,
     };
     if microvm_params_provided(&params) {
         Some(params)
@@ -2060,7 +2143,7 @@ async fn cmd_agent_new_remote(
             relay_urls: relay_urls.clone(),
             keep,
             bot_secret_key_hex: None,
-            microvm: if provider == AgentProvider::Microvm {
+            microvm: if provider == AgentProvider::Microvm || provider == AgentProvider::Ec2 {
                 map_microvm_control_params(microvm)
             } else {
                 None
@@ -2078,6 +2161,7 @@ async fn cmd_agent_new_remote(
             "provider": match provider {
                 AgentProvider::Fly => "fly",
                 AgentProvider::Microvm => "microvm",
+                AgentProvider::Ec2 => "ec2",
             },
             "protocol": "acp",
             "runtime_id": runtime.runtime_id,
@@ -2715,6 +2799,18 @@ mod tests {
             "1024",
             "--ttl-seconds",
             "600",
+            "--os-family",
+            "linux",
+            "--display-mode",
+            "headless",
+            "--bootstrap-kind",
+            "nixos-config",
+            "--bootstrap-ref",
+            ".#nixosConfigurations.agent",
+            "--image-ref",
+            "ami-123",
+            "--disk-gb",
+            "40",
             "--keep",
         ]);
         assert_eq!(parsed.provider, AgentProvider::Microvm);
@@ -2734,6 +2830,21 @@ mod tests {
         assert_eq!(parsed.microvm.cpu, Some(1));
         assert_eq!(parsed.microvm.memory_mb, Some(1024));
         assert_eq!(parsed.microvm.ttl_seconds, Some(600));
+        assert_eq!(parsed.microvm.os_family, Some(AgentOsFamily::Linux));
+        assert_eq!(
+            parsed.microvm.display_mode,
+            Some(AgentDisplayMode::Headless)
+        );
+        assert_eq!(
+            parsed.microvm.bootstrap_kind,
+            Some(AgentBootstrapKind::NixosConfig)
+        );
+        assert_eq!(
+            parsed.microvm.bootstrap_ref.as_deref(),
+            Some(".#nixosConfigurations.agent")
+        );
+        assert_eq!(parsed.microvm.image_ref.as_deref(), Some("ami-123"));
+        assert_eq!(parsed.microvm.disk_gb, Some(40));
     }
 
     #[test]
@@ -2768,7 +2879,30 @@ mod tests {
             .expect_err("should fail");
         let msg = format!("{err:#}");
         assert!(msg.contains("--spawner-url"));
-        assert!(msg.contains("--provider microvm"));
+        assert!(msg.contains("--provider microvm or --provider ec2"));
+    }
+
+    #[test]
+    fn vm_flags_allowed_for_ec2_provider() {
+        let parsed = parse_agent_new(&[
+            "pikachat",
+            "agent",
+            "new",
+            "--provider",
+            "ec2",
+            "--os-family",
+            "windows",
+            "--display-mode",
+            "headed",
+            "--bootstrap-kind",
+            "powershell",
+            "--bootstrap-ref",
+            "s3://bootstrap/windows.ps1",
+        ]);
+        validate_agent_new_request(parsed.provider, None, &parsed.microvm).expect("valid");
+        assert_eq!(parsed.provider, AgentProvider::Ec2);
+        assert_eq!(parsed.microvm.os_family, Some(AgentOsFamily::Windows));
+        assert_eq!(parsed.microvm.display_mode, Some(AgentDisplayMode::Headed));
     }
 
     #[test]
