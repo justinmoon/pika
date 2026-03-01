@@ -1765,13 +1765,28 @@ impl ProviderAdapter for MicrovmAdapter {
             }));
         }
         let spawner = MicrovmSpawnerClient::new(spawner_url.clone());
-        spawner.delete_vm(vm_id).await?;
+        if let Err(err) = spawner.delete_vm(vm_id).await {
+            if is_idempotent_missing_vm_error(&err) {
+                return Ok(json!({
+                    "teardown": "already_deleted",
+                    "vm_id": vm_id,
+                    "spawner_url": spawner_url,
+                    "reason": "vm not found in spawner state",
+                }));
+            }
+            return Err(err);
+        }
         Ok(json!({
             "teardown": "deleted",
             "vm_id": vm_id,
             "spawner_url": spawner_url,
         }))
     }
+}
+
+fn is_idempotent_missing_vm_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("vm not found") || msg.contains("404 not found")
 }
 
 fn default_relay_urls() -> Vec<String> {
@@ -2739,6 +2754,20 @@ mod tests {
 
         let ec2_profile = runtime_profile(ProviderKind::Ec2);
         assert_eq!(ec2_profile.runtime_class, Some("ec2".to_string()));
+    }
+
+    #[test]
+    fn missing_vm_errors_are_treated_as_idempotent() {
+        let err = anyhow::anyhow!(
+            "failed to delete vm vm-123: 500 Internal Server Error {{\"error\":\"vm not found: vm-123\"}}"
+        );
+        assert!(is_idempotent_missing_vm_error(&err));
+
+        let err = anyhow::anyhow!("failed to delete vm vm-123: 404 Not Found");
+        assert!(is_idempotent_missing_vm_error(&err));
+
+        let err = anyhow::anyhow!("failed to delete vm vm-123: 500 Internal Server Error");
+        assert!(!is_idempotent_missing_vm_error(&err));
     }
 
     #[test]
