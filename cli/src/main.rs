@@ -580,6 +580,7 @@ impl AgentNewMicrovmArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum MicrovmSpawnVariant {
+    Legacy,
     Prebuilt,
     #[value(name = "prebuilt-cow")]
     PrebuiltCow,
@@ -2068,6 +2069,7 @@ fn map_protocol_kind(_protocol: AgentProtocol) -> ProtocolKind {
 
 fn map_microvm_control_params(microvm: &AgentNewMicrovmArgs) -> Option<MicrovmProvisionParams> {
     let spawn_variant = microvm.spawn_variant.map(|variant| match variant {
+        MicrovmSpawnVariant::Legacy => "legacy".to_string(),
         MicrovmSpawnVariant::Prebuilt => "prebuilt".to_string(),
         MicrovmSpawnVariant::PrebuiltCow => "prebuilt-cow".to_string(),
     });
@@ -2890,6 +2892,8 @@ mod tests {
             "new",
             "--provider",
             "ec2",
+            "--spawn-variant",
+            "legacy",
             "--os-family",
             "windows",
             "--display-mode",
@@ -2901,6 +2905,7 @@ mod tests {
         ]);
         validate_agent_new_request(parsed.provider, None, &parsed.microvm).expect("valid");
         assert_eq!(parsed.provider, AgentProvider::Ec2);
+        assert_eq!(parsed.microvm.spawn_variant, Some(MicrovmSpawnVariant::Legacy));
         assert_eq!(parsed.microvm.os_family, Some(AgentOsFamily::Windows));
         assert_eq!(parsed.microvm.display_mode, Some(AgentDisplayMode::Headed));
     }

@@ -96,11 +96,19 @@ apply_microvm_env() {
   set_default "PI_ADAPTER_BASE_URL" "http://127.0.0.1:8788"
 }
 
+apply_ec2_env() {
+  # Current ec2 provider scaffold uses vm-spawner backend semantics.
+  apply_microvm_env
+}
+
 apply_provider_env() {
   local provider="$1"
   case "$provider" in
     microvm)
       apply_microvm_env
+      ;;
+    ec2)
+      apply_ec2_env
       ;;
     fly|"")
       ;;

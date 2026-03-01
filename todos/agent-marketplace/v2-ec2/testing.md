@@ -10,11 +10,10 @@ Run:
 3. `cargo test -p pika-server agent_control::tests::`
 
 Manual local smoke:
-1. `just run-server`
-2. `eval "$(cargo run -q -p pika-fixture -- env)"`
-3. `just cli --relay "$RELAY_EU" --relay "$RELAY_US" agent new --provider microvm --json`
-4. `just cli --relay "$RELAY_EU" --relay "$RELAY_US" agent list-runtimes`
-5. `just cli --relay "$RELAY_EU" --relay "$RELAY_US" agent teardown --runtime-id <id>`
+1. `just pikahub`
+2. `just agent-ec2-local --json`
+3. `just cli --relay "$RELAY_EU" --relay "$RELAY_US" agent list-runtimes`
+4. `just cli --relay "$RELAY_EU" --relay "$RELAY_US" agent teardown --runtime-id <id>`
 
 ## Suggested Post-Implementation Validation (Linux/macOS/Windows)
 

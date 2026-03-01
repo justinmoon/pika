@@ -50,6 +50,10 @@ info:
     @echo "    just agent-fly-local"
     @echo "  Fly demo (against deployed backend):"
     @echo "    just agent-fly"
+    @echo "  EC2-style demo (vm-spawner-backed scaffold):"
+    @echo "    just agent-ec2"
+    @echo "  EC2-style demo (against local backend):"
+    @echo "    just agent-ec2-local --json"
     @echo "  MicroVM demo:"
     @echo "    just agent-microvm"
     @echo "  MicroVM tunnel (required unless local spawner is running):"
@@ -58,6 +62,7 @@ info:
     @echo "    just cli --help"
     @echo "    just cli agent new --provider fly"
     @echo "    just cli agent new --provider microvm"
+    @echo "    just cli agent new --provider ec2"
     @echo
     @echo "RMP (new)"
     @echo "  Run iOS simulator:"
@@ -825,6 +830,26 @@ agent-microvm *ARGS="":
       set +a; \
     fi; \
     ./scripts/demo-agent-microvm.sh {{ ARGS }}
+
+# Run the EC2-style provider demo (currently backed by vm-spawner scaffold).
+agent-ec2 *ARGS="":
+    set -euo pipefail; \
+    if [ -f .env ]; then \
+      set -a; \
+      source .env; \
+      set +a; \
+    fi; \
+    ./scripts/demo-agent-ec2.sh {{ ARGS }}
+
+# Run EC2-style demo against local backend (requires `just pikahub` in another terminal).
+agent-ec2-local *ARGS="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(cargo run -q -p pikahub -- env)"
+    export RELAY_PRIMARY="$RELAY_EU"
+    export RELAY_FALLBACK="$RELAY_US"
+    export CONTROL_SERVER_PUBKEY="$PIKA_AGENT_CONTROL_SERVER_PUBKEY"
+    just agent-ec2 {{ ARGS }}
 
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:
