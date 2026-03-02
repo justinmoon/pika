@@ -14,6 +14,7 @@ pika_core = { path = "../../rust" }
 pika-media = { path = "../pika-media" }
 rfd = "0.15"
 base64 = "0.22"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"

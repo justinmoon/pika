@@ -26,6 +26,15 @@ pub fn app_version_display() -> String {
 }
 
 pub fn main() -> iced::Result {
+    // Show core tracing output (errors, upload progress, etc.)
+    // Override with RUST_LOG env var, e.g. RUST_LOG=debug
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("pika_core=info,warn")),
+        )
+        .init();
+
     let window_settings = iced::window::Settings {
         size: Size::new(1024.0, 720.0),
         #[cfg(target_os = "macos")]

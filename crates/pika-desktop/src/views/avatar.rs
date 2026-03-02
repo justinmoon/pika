@@ -32,8 +32,13 @@ impl AvatarCache {
         self.handles.clear();
     }
 
-    fn get_or_load(&mut self, path: &str, size: u32) -> Option<image::Handle> {
-        let key = format!("{path}@{size}");
+    fn get_or_load(
+        &mut self,
+        cache_key: &str,
+        file_path: &str,
+        size: u32,
+    ) -> Option<image::Handle> {
+        let key = format!("{cache_key}@{size}");
         if let Some(handle) = self.handles.get(&key) {
             return Some(handle.clone());
         }
@@ -44,7 +49,7 @@ impl AvatarCache {
         }
         self.spent += 1;
 
-        let handle = load_circular_image(path, size)?;
+        let handle = load_circular_image(file_path, size)?;
         self.handles.insert(key, handle.clone());
         Some(handle)
     }
@@ -60,12 +65,14 @@ pub fn avatar_circle<'a, M: 'a>(
     // Render at 2x for HiDPI displays (Retina). The image widget will
     // scale it down to `size` logical pixels, keeping it crisp at 2x.
     let render_px = (size * 2.0) as u32;
-    if let Some(path) = picture_url.and_then(local_path_from_url) {
-        if let Some(handle) = cache.get_or_load(&path, render_px) {
-            return image(handle)
-                .width(Length::Fixed(size))
-                .height(Length::Fixed(size))
-                .into();
+    if let Some(url) = picture_url {
+        if let Some(path) = local_path_from_url(url) {
+            if let Some(handle) = cache.get_or_load(url, &path, render_px) {
+                return image(handle)
+                    .width(Length::Fixed(size))
+                    .height(Length::Fixed(size))
+                    .into();
+            }
         }
     }
 
@@ -112,5 +119,7 @@ fn load_circular_image(path: &str, size: u32) -> Option<image::Handle> {
 }
 
 fn local_path_from_url(url: &str) -> Option<String> {
-    url.strip_prefix("file://").map(|s| s.to_string())
+    let path = url.strip_prefix("file://")?;
+    // Strip `?v=<mtime>` cache-buster appended by display_picture_url.
+    Some(path.split('?').next().unwrap_or(path).to_string())
 }

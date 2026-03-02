@@ -266,7 +266,11 @@ impl State {
             header_info = header_info.push(text(subtitle).size(13).color(theme::text_secondary()));
         }
 
-        let picture_url = chat.members.first().and_then(|m| m.picture_url.as_deref());
+        let picture_url = if chat.is_group {
+            None
+        } else {
+            chat.members.first().and_then(|m| m.picture_url.as_deref())
+        };
 
         // Call buttons for 1:1 chats
         #[allow(clippy::type_complexity)]
@@ -374,6 +378,12 @@ impl State {
         let is_group = chat.is_group;
         let messages_by_id: HashMap<&str, &ChatMessage> =
             chat.messages.iter().map(|m| (m.id.as_str(), m)).collect();
+        // Build a pubkey → picture_url lookup from group members.
+        let member_pics: HashMap<&str, Option<&str>> = chat
+            .members
+            .iter()
+            .map(|m| (m.pubkey.as_str(), m.picture_url.as_deref()))
+            .collect();
         let messages = {
             let mut col = column![].padding([8, 16]);
             let msgs = &chat.messages;
@@ -407,6 +417,10 @@ impl State {
                     .and_then(|id| messages_by_id.get(id).copied());
                 let picker_open = self.emoji_picker_message_id.as_deref() == Some(msg.id.as_str());
                 let hovered = self.hovered_message_id.as_deref() == Some(msg.id.as_str());
+                let sender_pic = member_pics
+                    .get(msg.sender_pubkey.as_str())
+                    .copied()
+                    .flatten();
                 col = col.push(message_bubble(
                     msg,
                     is_group,
@@ -414,6 +428,8 @@ impl State {
                     picker_open,
                     hovered,
                     position,
+                    sender_pic,
+                    avatar_cache,
                 ));
             }
             col

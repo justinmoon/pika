@@ -1,7 +1,8 @@
 use iced::widget::{button, column, container, image, mouse_area, row, text, Space};
-use iced::{border, Alignment, Background, Color, Element, Fill, Font, Theme};
+use iced::{border, Alignment, Background, Color, Element, Fill, Font, Length, Theme};
 use pika_core::{ChatMediaAttachment, ChatMediaKind, ChatMessage, MessageDeliveryState};
 
+use super::avatar::{avatar_circle, AvatarCache};
 use super::conversation::Message;
 use crate::design::{self, BubblePosition};
 use crate::icons;
@@ -33,6 +34,11 @@ const EMOJI_CHOICES: &[&str] = &[
 /// Layout mirrors Signal desktop: small action icons sit beside the bubble
 /// (to the left for sent messages, to the right for received messages).
 /// Icons only appear on hover. Existing reaction chips render below the bubble.
+/// Width of the avatar gutter (avatar + spacing) to the left of received
+/// messages in group chats. Used for alignment on middle/last messages.
+const AVATAR_GUTTER: f32 = 36.0;
+
+#[allow(clippy::too_many_arguments)]
 pub fn message_bubble<'a>(
     msg: &'a ChatMessage,
     is_group: bool,
@@ -40,6 +46,8 @@ pub fn message_bubble<'a>(
     emoji_picker_open: bool,
     hovered: bool,
     position: BubblePosition,
+    sender_picture_url: Option<&'a str>,
+    avatar_cache: &mut AvatarCache,
 ) -> Element<'a, Message, Theme> {
     let timestamp = theme::relative_time(msg.timestamp);
     let msg_id = msg.id.clone();
@@ -144,7 +152,10 @@ pub fn message_bubble<'a>(
         col.into()
     } else {
         // ── Received: left-aligned ──────────────────────────────
-        // Signal layout: [bubble] [icons] [spacer]
+        // Signal layout: [avatar?] [bubble] [icons] [spacer]
+        let show_avatar =
+            is_group && matches!(position, BubblePosition::First | BubblePosition::Single);
+
         // Only show sender on first/single message in a group
         let sender_name =
             if is_group && !matches!(position, BubblePosition::Middle | BubblePosition::Last) {
@@ -188,10 +199,29 @@ pub fn message_bubble<'a>(
             .max_width(500)
             .style(move |_theme: &Theme| design::current().bubble_received_grouped(position));
 
-        let mut bubble_row = row![bubble]
-            .spacing(6)
-            .align_y(iced::Alignment::Center)
-            .width(Fill);
+        // Build the row: [avatar gutter] [bubble] [icons] [spacer]
+        let mut bubble_row = row![].spacing(6).align_y(Alignment::End).width(Fill);
+
+        if is_group {
+            if show_avatar {
+                let avatar: Element<'a, Message, Theme> = avatar_circle(
+                    msg.sender_name.as_deref(),
+                    sender_picture_url,
+                    28.0,
+                    avatar_cache,
+                );
+                bubble_row = bubble_row.push(
+                    container(avatar)
+                        .width(Length::Fixed(AVATAR_GUTTER))
+                        .align_x(Alignment::Center),
+                );
+            } else {
+                // Reserve space so middle/last messages align with the first.
+                bubble_row = bubble_row.push(Space::new().width(Length::Fixed(AVATAR_GUTTER)));
+            }
+        }
+
+        bubble_row = bubble_row.push(bubble);
 
         // Always reserve space for action icons to prevent layout jumps on hover.
         if show_icons {
@@ -203,10 +233,25 @@ pub fn message_bubble<'a>(
 
         let mut col = column![bubble_row].spacing(2);
         if let Some(chips) = chips_row {
-            col = col.push(chips);
+            if is_group {
+                // Offset chips to align with the bubble (past the avatar gutter).
+                col = col.push(row![
+                    Space::new().width(Length::Fixed(AVATAR_GUTTER + 6.0)),
+                    chips
+                ]);
+            } else {
+                col = col.push(chips);
+            }
         }
         if let Some(p) = picker {
-            col = col.push(p);
+            if is_group {
+                col = col.push(row![
+                    Space::new().width(Length::Fixed(AVATAR_GUTTER + 6.0)),
+                    p
+                ]);
+            } else {
+                col = col.push(p);
+            }
         }
         col.into()
     };

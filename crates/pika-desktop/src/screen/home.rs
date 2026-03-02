@@ -154,8 +154,12 @@ impl State {
 
         // Sync my_profile drafts when profile state updates.
         if let Pane::MyProfile(ref mut profile) = self.pane {
-            if old_state.my_profile.name != new_state.my_profile.name {
+            if old_state.my_profile != new_state.my_profile {
                 profile.sync_profile(&new_state.my_profile);
+            }
+            // After SaveMyProfile completes, dispatch the deferred image upload.
+            if let Some(action) = profile.take_deferred_upload() {
+                manager.dispatch(action);
             }
         }
 
@@ -685,7 +689,27 @@ impl State {
             // ── My profile ────────────────────────────────────────────
             Message::MyProfile(msg) => {
                 if let Pane::MyProfile(ref mut profile_state) = self.pane {
-                    if let Some(event) = profile_state.update(msg) {
+                    let (event, profile_task) = profile_state.update(msg);
+
+                    // Forward iced::Task (e.g. file picker) if produced.
+                    if let Some(task) = profile_task {
+                        let mapped = task.map(Message::MyProfile);
+                        if let Some(event) = event {
+                            // Handle the event first, then return the task.
+                            match event {
+                                views::my_profile::Event::AppAction(action) => {
+                                    manager.dispatch(action);
+                                }
+                                views::my_profile::Event::Logout => {
+                                    return Some(Event::Logout);
+                                }
+                                _ => {}
+                            }
+                        }
+                        return Some(Event::Task(mapped));
+                    }
+
+                    if let Some(event) = event {
                         match event {
                             views::my_profile::Event::AppAction(action) => {
                                 return Some(Event::AppAction(action));

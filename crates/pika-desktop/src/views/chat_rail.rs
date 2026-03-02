@@ -114,11 +114,14 @@ fn chat_item<'a>(
         Space::new().width(0).into()
     };
 
-    let picture_url = chat
-        .members
-        .iter()
-        .find(|m| !m.npub.is_empty())
-        .and_then(|m| m.picture_url.as_deref());
+    let picture_url = if chat.is_group {
+        None
+    } else {
+        chat.members
+            .iter()
+            .find(|m| !m.npub.is_empty())
+            .and_then(|m| m.picture_url.as_deref())
+    };
 
     let avatar: Element<'a, Message, Theme> =
         avatar_circle(Some(&name), picture_url, 48.0, avatar_cache);
