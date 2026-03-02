@@ -493,13 +493,16 @@ struct HypernoteRenderer: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier(TestIds.hypernoteDetailsSummary)
 
                 if isExpanded {
                     bodyContent
                         .padding(.leading, 20)
                         .padding(.top, 8)
+                        .accessibilityIdentifier(TestIds.hypernoteDetailsBody)
                 }
             }
+            .accessibilityIdentifier(TestIds.hypernoteDetails)
         }
     }
 
@@ -516,6 +519,7 @@ struct HypernoteRenderer: View {
                     Text(lang ?? "")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
+                        .accessibilityIdentifier(TestIds.hypernoteCodeblockLang)
                     Spacer()
                     Button {
                         UIPasteboard.general.string = code
@@ -528,6 +532,7 @@ struct HypernoteRenderer: View {
                             Label("Copied", systemImage: "checkmark")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                                .accessibilityIdentifier(TestIds.hypernoteCodeblockCopied)
                         } else {
                             Image(systemName: "doc.on.doc")
                                 .font(.caption2)
@@ -536,6 +541,7 @@ struct HypernoteRenderer: View {
                     }
                     .buttonStyle(.plain)
                     .animation(.default, value: showCopied)
+                    .accessibilityIdentifier(TestIds.hypernoteCodeblockCopy)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
@@ -548,6 +554,7 @@ struct HypernoteRenderer: View {
             }
             .background(Color.gray.opacity(0.1))
             .clipShape(.rect(cornerRadius: 8))
+            .accessibilityIdentifier(TestIds.hypernoteCodeblock)
         }
     }
 

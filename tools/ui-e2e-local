@@ -188,8 +188,9 @@ case "$platform" in
       PIKA_UI_E2E_RELAYS="${RELAY_URL}" \
       PIKA_UI_E2E_KP_RELAYS="${RELAY_URL}" \
       PIKA_UI_E2E_NSEC="${CLIENT_NSEC}" \
-      ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test -skipMacroValidation CODE_SIGNING_ALLOWED=NO \
-          -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
+      ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test -skipMacroValidation CODE_SIGNING_ALLOWED=NO EXCLUDED_ARCHS=x86_64 \
+          -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong \
+          -only-testing:PikaUITests/PikaUITests/testE2E_hypernoteDetailsAndCodeBlock
     ;;
   desktop)
     PIKA_UI_E2E=1 \

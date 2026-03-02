@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.IconButton
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -62,6 +63,7 @@ import coil.compose.AsyncImage
 import com.pika.app.rust.HypernoteData
 import com.pika.app.rust.HypernoteResponseTally
 import com.pika.app.ui.Avatar
+import com.pika.app.ui.TestTags
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -257,6 +259,7 @@ private fun HypernoteNode(
                 }
             }
             Surface(
+                modifier = Modifier.testTag(TestTags.HYPERNOTE_CODEBLOCK),
                 shape = RoundedCornerShape(8.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHighest,
             ) {
@@ -272,14 +275,14 @@ private fun HypernoteNode(
                             text = node.lang.orEmpty(),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).testTag(TestTags.HYPERNOTE_CODEBLOCK_LANG),
                         )
                         IconButton(
                             onClick = {
                                 clipboardManager.setText(AnnotatedString(code))
                                 showCopied = true
                             },
-                            modifier = Modifier.size(32.dp),
+                            modifier = Modifier.size(32.dp).testTag(TestTags.HYPERNOTE_CODEBLOCK_COPY),
                         ) {
                             if (showCopied) {
                                 Row(
@@ -296,6 +299,7 @@ private fun HypernoteNode(
                                         text = "Copied",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.testTag(TestTags.HYPERNOTE_CODEBLOCK_COPIED),
                                     )
                                 }
                             } else {
@@ -687,13 +691,14 @@ private fun HypernoteJsxNode(
             val contentChildren = node.children.filter {
                 !((it.type == "mdx_jsx_element" || it.type == "mdx_jsx_self_closing") && it.name == "Summary")
             }
-            Column {
+            Column(modifier = Modifier.testTag(TestTags.HYPERNOTE_DETAILS)) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .clickable { expanded = !expanded }
-                        .padding(vertical = 4.dp),
+                        .padding(vertical = 4.dp)
+                        .testTag(TestTags.HYPERNOTE_DETAILS_SUMMARY),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
@@ -711,7 +716,9 @@ private fun HypernoteJsxNode(
                 }
                 AnimatedVisibility(visible = expanded) {
                     Column(
-                        modifier = Modifier.padding(start = 24.dp, top = 4.dp),
+                        modifier = Modifier
+                            .padding(start = 24.dp, top = 4.dp)
+                            .testTag(TestTags.HYPERNOTE_DETAILS_BODY),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         contentChildren.forEach { child ->
