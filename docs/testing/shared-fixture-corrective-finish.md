@@ -20,6 +20,7 @@ Status legend:
 | Target | Profile / Selector Scope | Status | Notes |
 | --- | --- | --- | --- |
 | Local deterministic CLI selectors | `integration_deterministic::{cli_smoke_local,cli_smoke_media_local}` | `StrictOnly` | Canonical deterministic lanes remain strict while corrective gates are incomplete. |
+| Deterministic boundary/interop selectors | `integration_deterministic::{post_rebase_invalid_event_rejection_boundary,post_rebase_logout_session_convergence_boundary,interop_rust_baseline}` | `StrictOnly` | Boundary and interop deterministic contracts remain strict-only in this cycle. |
 | Local deterministic OpenClaw selectors | `integration_deterministic::openclaw_scenario_*` | `StrictOnly` | Shared default is rolled back pending explicit parity/isolation/reliability evidence. |
 | Local deterministic UI selectors | `integration_deterministic::{ui_e2e_local_android,ui_e2e_local_ios,ui_e2e_local_desktop}` | `StrictOnly` | Heavy deterministic fixtures remain strict by default. |
 | OpenClaw gateway E2E selector | `integration_openclaw::openclaw_gateway_e2e` | `StrictOnly` | No shared-mode promotion in this corrective cycle. |
