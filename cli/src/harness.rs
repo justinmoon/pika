@@ -1088,6 +1088,26 @@ async fn bot_main(
                     continue;
                 }
 
+                // Hypernote probes: reply with a hypernote (different event kind).
+                if let Some(hn_reply) = parse_hypernote_probe(&msg.content) {
+                    println!(
+                        "[openclaw_bot] replying hypernote for probe={}",
+                        msg.content.trim()
+                    );
+                    let hn_rumor = EventBuilder::new(
+                        Kind::Custom(hypernote_protocol::HYPERNOTE_KIND),
+                        &hn_reply,
+                    )
+                    .build(keys.public_key());
+                    let hn_event = mdk
+                        .create_message(&mls_group_id, hn_rumor)
+                        .context("bot create_message (hypernote)")?;
+                    publish_and_confirm(&client, relay_url.clone(), &hn_event, "bot_hypernote")
+                        .await?;
+                    println!("[openclaw_bot] ok sent hypernote");
+                    continue;
+                }
+
                 let Some(reply) = parse_openclaw_prompt(&msg.content) else {
                     continue;
                 };
@@ -1101,9 +1121,13 @@ async fn bot_main(
                 publish_and_confirm(&client, relay_url.clone(), &reply_event, "bot_reply").await?;
                 println!("[openclaw_bot] ok replied={reply}");
 
-                client.unsubscribe_all().await;
-                client.shutdown().await;
-                return Ok(());
+                // For openclaw scenarios (E2E_OK_*), exit after first reply.
+                // For ping/pong probes, keep looping so multiple probes work.
+                if reply.starts_with("E2E_OK_") {
+                    client.unsubscribe_all().await;
+                    client.shutdown().await;
+                    return Ok(());
+                }
             }
             Ok(other) => {
                 warn!(
@@ -1135,6 +1159,30 @@ fn parse_openclaw_prompt(content: &str) -> Option<String> {
     // a simple manual E2E loop from mobile clients without having to type quotes.
     if content.trim() == "ping" {
         return Some("pong".to_string());
+    }
+
+    // UI E2E probe: ping:<nonce> -> pong:<nonce>
+    if let Some(nonce) = content.trim().strip_prefix("ping:")
+        && !nonce.is_empty()
+        && nonce.len() <= 128
+        && nonce
+            .as_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'.' || *b == b'_' || *b == b'-')
+    {
+        return Some(format!("pong:{nonce}"));
+    }
+
+    // Legacy alias used by older E2E tests.
+    if let Some(nonce) = content.trim().strip_prefix("pika-e2e:")
+        && !nonce.is_empty()
+        && nonce.len() <= 128
+        && nonce
+            .as_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'.' || *b == b'_' || *b == b'-')
+    {
+        return Some(format!("pong:{nonce}"));
     }
 
     const PREFIX: &str = "openclaw: reply exactly \"";
@@ -1176,6 +1224,24 @@ fn parse_openclaw_prompt(content: &str) -> Option<String> {
         return None;
     }
     Some(inner.to_string())
+}
+
+/// Match hypernote probe commands and return the MDX content to send.
+fn parse_hypernote_probe(content: &str) -> Option<String> {
+    match content.trim() {
+        "hn:details" => Some(
+            "<Details><Summary>Click to expand this section</Summary>\n\n\
+             This is the expanded content inside the details block.\n\n\
+             - Item one\n\
+             - Item two\n\
+             </Details>"
+                .to_string(),
+        ),
+        "hn:codeblock" => {
+            Some("```rust\nfn hello() {\n    println!(\"Hello, world!\");\n}\n```".to_string())
+        }
+        _ => None,
+    }
 }
 
 async fn connect_client(keys: &Keys, relay: &str) -> anyhow::Result<Client> {
