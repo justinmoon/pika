@@ -4,6 +4,7 @@ import android.Manifest
 import android.util.Log
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -282,8 +283,7 @@ class PikaE2eUiTest {
 
         // Tap copy.
         compose.onNodeWithTag(TestTags.HYPERNOTE_CODEBLOCK_COPY).performClick()
-        compose.waitForIdle()
-        compose.onNodeWithTag(TestTags.HYPERNOTE_CODEBLOCK_COPIED).assertIsDisplayed()
+        waitForTagDisplayed(TestTags.HYPERNOTE_CODEBLOCK_COPIED, timeoutMs = 5_000)
     }
 
     private fun retryOnTimeout(maxAttempts: Int, beforeRetry: (() -> Unit)? = null, block: () -> Unit) {
@@ -320,6 +320,20 @@ class PikaE2eUiTest {
         val matches = compose.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes()
         if (matches.isNotEmpty()) {
             throw AssertionError("Expected no node with tag $tag, found ${matches.size}")
+        }
+    }
+
+    private fun waitForTagDisplayed(tag: String, timeoutMs: Long) {
+        try {
+            compose.waitUntil(timeoutMs) {
+                val nodes = compose.onAllNodesWithTag(tag, useUnmergedTree = true)
+                val count = nodes.fetchSemanticsNodes().size
+                (0 until count).any { index ->
+                    runCatching { nodes[index].isDisplayed() }.getOrDefault(false)
+                }
+            }
+        } catch (e: ComposeTimeoutException) {
+            throw AssertionError("timeout waiting for visible node with tag: $tag", e)
         }
     }
 

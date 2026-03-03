@@ -277,32 +277,35 @@ private fun HypernoteNode(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f).testTag(TestTags.HYPERNOTE_CODEBLOCK_LANG),
                         )
-                        IconButton(
-                            onClick = {
-                                clipboardManager.setText(AnnotatedString(code))
-                                showCopied = true
-                            },
-                            modifier = Modifier.size(32.dp).testTag(TestTags.HYPERNOTE_CODEBLOCK_COPY),
-                        ) {
-                            if (showCopied) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = "Copied",
-                                        modifier = Modifier.size(12.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Text(
-                                        text = "Copied",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.testTag(TestTags.HYPERNOTE_CODEBLOCK_COPIED),
-                                    )
-                                }
-                            } else {
+                        if (showCopied) {
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .testTag(TestTags.HYPERNOTE_CODEBLOCK_COPIED)
+                                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = "Copied",
+                                    modifier = Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = "Copied",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(code))
+                                    showCopied = true
+                                },
+                                modifier = Modifier.size(32.dp).testTag(TestTags.HYPERNOTE_CODEBLOCK_COPY),
+                            ) {
                                 Icon(
                                     imageVector = Icons.Outlined.ContentCopy,
                                     contentDescription = "Copy code",
