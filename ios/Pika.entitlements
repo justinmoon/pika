@@ -12,7 +12,7 @@
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER).shared</string>
+		<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
 	</array>
 </dict>
 </plist>
