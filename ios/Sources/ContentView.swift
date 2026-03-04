@@ -307,6 +307,9 @@ private func screenView(
                     beforeMessageId: beforeMessageId,
                     limit: limit
                 ))
+            },
+            onRetryMessage: { chatId, messageId in
+                manager.dispatch(.retryMessage(chatId: chatId, messageId: messageId))
             }
         )
         .onAppear {

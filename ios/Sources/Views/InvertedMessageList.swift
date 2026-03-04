@@ -23,6 +23,7 @@ struct InvertedMessageList: UIViewRepresentable {
     var onTapImage: ((ChatMediaAttachment) -> Void)?
     var onHypernoteAction: ((String, String, [String: String]) -> Void)?
     var onLongPressMessage: ((ChatMessage, CGRect) -> Void)?
+    var onRetryMessage: ((String) -> Void)?
     var onLoadOlderMessages: (() -> Void)?
 
     // Scroll state
@@ -267,7 +268,8 @@ struct InvertedMessageList: UIViewRepresentable {
                             onLongPressMessage: parent.onLongPressMessage,
                             onDownloadMedia: parent.onDownloadMedia,
                             onTapImage: parent.onTapImage,
-                            onHypernoteAction: parent.onHypernoteAction
+                            onHypernoteAction: parent.onHypernoteAction,
+                            onRetryMessage: parent.onRetryMessage
                         )
                     case .unreadDivider:
                         UnreadDividerRow()

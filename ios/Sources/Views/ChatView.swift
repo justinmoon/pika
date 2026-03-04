@@ -24,6 +24,7 @@ struct ChatView: View {
     let onHypernoteAction: (@MainActor (String, String, String, [String: String]) -> Void)?
     let onSendPoll: (@MainActor (String, String, [String]) -> Void)?
     let onLoadOlderMessages: (@MainActor (String, String, UInt32) -> Void)?
+    var onRetryMessage: (@MainActor (String, String) -> Void)? = nil
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var showFileImporter = false
     @State private var messageText = ""
@@ -315,6 +316,9 @@ struct ChatView: View {
                     contextMenuMessage = message
                     showContextActionCard = true
                 }
+            },
+            onRetryMessage: onRetryMessage.map { callback in
+                { messageId in callback(chatId, messageId) }
             },
             onLoadOlderMessages: onLoadOlderMessages.map { callback in
                 {

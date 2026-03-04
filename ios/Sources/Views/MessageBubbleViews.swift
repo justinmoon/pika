@@ -44,6 +44,7 @@ struct MessageGroupRow: View {
     var onDownloadMedia: ((String, String) -> Void)? = nil
     var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
     var onHypernoteAction: ((String, String, [String: String]) -> Void)? = nil
+    var onRetryMessage: ((String) -> Void)? = nil
 
     private let avatarSize: CGFloat = 24
     private let avatarGutterWidth: CGFloat = 28
@@ -115,9 +116,19 @@ struct MessageGroupRow: View {
                     onHypernoteAction: onHypernoteAction
                 )
                 if let delivery = group.messages.last?.delivery {
-                    Text(deliveryText(delivery))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    if case .failed = delivery, let messageId = group.messages.last?.id {
+                        Button {
+                            onRetryMessage?(messageId)
+                        } label: {
+                            Text("Failed — Tap to retry")
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                        }
+                    } else {
+                        Text(deliveryText(delivery))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
