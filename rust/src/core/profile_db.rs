@@ -28,6 +28,11 @@ const SCHEMA: &str = "
         chat_id TEXT NOT NULL,
         reason TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS pending_sends (
+        rumor_id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        wrapper_event_json TEXT NOT NULL
+    );
 ";
 
 pub fn open_profile_db(data_dir: &str) -> Result<Connection, rusqlite::Error> {
@@ -356,6 +361,70 @@ pub fn clear_failed_sends(conn: &Connection) {
     }
 }
 
+// -- Pending sends (persisted wrapper events for retry after app kill) --
+
+use std::collections::HashMap as StdHashMap;
+
+/// Load all pending sends from the database.
+/// Returns chat_id -> (rumor_id -> wrapper_event_json).
+pub fn load_pending_sends(conn: &Connection) -> StdHashMap<String, StdHashMap<String, String>> {
+    let mut map: StdHashMap<String, StdHashMap<String, String>> = StdHashMap::new();
+    let mut stmt =
+        match conn.prepare("SELECT rumor_id, chat_id, wrapper_event_json FROM pending_sends") {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(%e, "failed to load pending_sends");
+                return map;
+            }
+        };
+    let rows = match stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    }) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(%e, "failed to query pending_sends");
+            return map;
+        }
+    };
+    for row in rows.flatten() {
+        let (rumor_id, chat_id, wrapper_json) = row;
+        map.entry(chat_id)
+            .or_default()
+            .insert(rumor_id, wrapper_json);
+    }
+    map
+}
+
+pub fn save_pending_send(
+    conn: &Connection,
+    rumor_id: &str,
+    chat_id: &str,
+    wrapper_event_json: &str,
+) {
+    if let Err(e) = conn.execute(
+        "INSERT OR REPLACE INTO pending_sends (rumor_id, chat_id, wrapper_event_json) VALUES (?1, ?2, ?3)",
+        rusqlite::params![rumor_id, chat_id, wrapper_event_json],
+    ) {
+        tracing::warn!(%e, rumor_id, "failed to save pending_send");
+    }
+}
+
+pub fn remove_pending_send(conn: &Connection, rumor_id: &str) {
+    if let Err(e) = conn.execute("DELETE FROM pending_sends WHERE rumor_id = ?1", [rumor_id]) {
+        tracing::warn!(%e, rumor_id, "failed to remove pending_send");
+    }
+}
+
+pub fn clear_pending_sends(conn: &Connection) {
+    if let Err(e) = conn.execute("DELETE FROM pending_sends", []) {
+        tracing::warn!(%e, "failed to clear pending_sends");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,5 +624,36 @@ mod tests {
 
         clear_failed_sends(&conn);
         assert!(load_failed_sends(&conn).is_empty());
+    }
+
+    #[test]
+    fn pending_sends_roundtrip() {
+        let conn = test_db();
+        assert!(load_pending_sends(&conn).is_empty());
+
+        save_pending_send(&conn, "rumor1", "chat1", r#"{"id":"abc"}"#);
+        save_pending_send(&conn, "rumor2", "chat1", r#"{"id":"def"}"#);
+        save_pending_send(&conn, "rumor3", "chat2", r#"{"id":"ghi"}"#);
+
+        let loaded = load_pending_sends(&conn);
+        assert_eq!(loaded.len(), 2); // 2 chat_ids
+        assert_eq!(loaded.get("chat1").unwrap().len(), 2);
+        assert_eq!(loaded.get("chat2").unwrap().len(), 1);
+        assert_eq!(
+            loaded.get("chat1").unwrap().get("rumor1").unwrap(),
+            r#"{"id":"abc"}"#
+        );
+        assert_eq!(
+            loaded.get("chat2").unwrap().get("rumor3").unwrap(),
+            r#"{"id":"ghi"}"#
+        );
+
+        remove_pending_send(&conn, "rumor1");
+        let loaded = load_pending_sends(&conn);
+        assert_eq!(loaded.get("chat1").unwrap().len(), 1);
+        assert!(!loaded.get("chat1").unwrap().contains_key("rumor1"));
+
+        clear_pending_sends(&conn);
+        assert!(load_pending_sends(&conn).is_empty());
     }
 }

@@ -867,6 +867,9 @@ impl AppCore {
                         rumor_id_hex: rumor_id_hex.clone(),
                     },
                 );
+            if let Some(conn) = self.profile_db.as_ref() {
+                profile_db::save_pending_send(conn, &rumor_id_hex, &chat_id, &wrapper.as_json());
+            }
 
             let relays: Vec<RelayUrl> = if network_enabled {
                 sess.mdk
