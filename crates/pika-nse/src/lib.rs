@@ -1,7 +1,7 @@
 mod mdk_support;
 
 use mdk_core::prelude::MessageProcessingResult;
-use nostr::{Event, Kind};
+use nostr::{Event, Kind, TagKind};
 
 uniffi::setup_scaffolding!();
 
@@ -87,11 +87,17 @@ pub fn decrypt_push_notification(
         Kind::ChatMessage | Kind::Reaction => {
             let content = match msg.kind {
                 Kind::ChatMessage => {
-                    // For chat messages, if decryption failed, suppress the notification.
-                    if msg.content.is_empty() {
+                    if let Some(media) = notif_media_kind(&msg.tags) {
+                        if msg.content.is_empty() {
+                            media.label().to_string()
+                        } else {
+                            format!("{} {}", media.emoji(), msg.content)
+                        }
+                    } else if msg.content.is_empty() {
                         return Some(PushNotificationResult::Suppress);
+                    } else {
+                        msg.content
                     }
-                    msg.content
                 }
                 Kind::Reaction => {
                     let emoji = if msg.content.is_empty() || msg.content == "+" {
@@ -160,6 +166,61 @@ pub fn decrypt_push_notification(
     }
 }
 
+/// Broad media category inferred from the first `imeta` tag's MIME type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotifMediaKind {
+    Image,
+    Video,
+    Audio,
+    File,
+}
+
+impl NotifMediaKind {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Image => "Sent a photo",
+            Self::Video => "Sent a video",
+            Self::Audio => "Sent a voice message",
+            Self::File => "Sent a file",
+        }
+    }
+
+    fn emoji(&self) -> &'static str {
+        match self {
+            Self::Image => "\u{1F4F7}", // 📷
+            Self::Video => "\u{1F3AC}", // 🎬
+            Self::Audio => "\u{1F3A4}", // 🎤
+            Self::File => "\u{1F4CE}",  // 📎
+        }
+    }
+}
+
+/// Detect the media kind from the first `imeta` tag, if any.
+fn notif_media_kind(tags: &nostr::Tags) -> Option<NotifMediaKind> {
+    for tag in tags.iter() {
+        if !matches!(tag.kind(), TagKind::Custom(ref k) if k.as_ref() == "imeta") {
+            continue;
+        }
+        let mime = tag
+            .as_slice()
+            .iter()
+            .skip(1)
+            .find_map(|e| e.strip_prefix("m "))
+            .unwrap_or("");
+        let kind = if mime.starts_with("image/") {
+            NotifMediaKind::Image
+        } else if mime.starts_with("video/") {
+            NotifMediaKind::Video
+        } else if mime.starts_with("audio/") {
+            NotifMediaKind::Audio
+        } else {
+            NotifMediaKind::File
+        };
+        return Some(kind);
+    }
+    None
+}
+
 /// Look up display name and picture URL from the SQLite profile cache.
 fn resolve_sender_profile(data_dir: &str, pubkey_hex: &str) -> (String, Option<String>) {
     let fallback = (format!("{}...", &pubkey_hex[..8]), None);
@@ -204,4 +265,76 @@ fn resolve_sender_profile(data_dir: &str, pubkey_hex: &str) -> (String, Option<S
     });
 
     (name, picture_url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr::{Tag, Tags};
+
+    fn imeta_tag(mime: &str) -> Tag {
+        Tag::parse(vec![
+            "imeta",
+            "url https://example.com/file",
+            &format!("m {mime}"),
+        ])
+        .unwrap()
+    }
+
+    fn tags_from(v: Vec<Tag>) -> Tags {
+        v.into_iter().collect()
+    }
+
+    #[test]
+    fn media_kind_image() {
+        let tags = tags_from(vec![imeta_tag("image/jpeg")]);
+        let kind = notif_media_kind(&tags).unwrap();
+        assert_eq!(kind.label(), "Sent a photo");
+        assert_eq!(kind.emoji(), "\u{1F4F7}");
+    }
+
+    #[test]
+    fn media_kind_video() {
+        let tags = tags_from(vec![imeta_tag("video/mp4")]);
+        let kind = notif_media_kind(&tags).unwrap();
+        assert_eq!(kind.label(), "Sent a video");
+        assert_eq!(kind.emoji(), "\u{1F3AC}");
+    }
+
+    #[test]
+    fn media_kind_audio() {
+        let tags = tags_from(vec![imeta_tag("audio/mp4")]);
+        let kind = notif_media_kind(&tags).unwrap();
+        assert_eq!(kind.label(), "Sent a voice message");
+        assert_eq!(kind.emoji(), "\u{1F3A4}");
+    }
+
+    #[test]
+    fn media_kind_unknown_mime() {
+        let tags = tags_from(vec![imeta_tag("application/pdf")]);
+        let kind = notif_media_kind(&tags).unwrap();
+        assert_eq!(kind.label(), "Sent a file");
+        assert_eq!(kind.emoji(), "\u{1F4CE}");
+    }
+
+    #[test]
+    fn media_kind_no_mime() {
+        let tag = Tag::parse(vec!["imeta", "url https://example.com/file"]).unwrap();
+        let tags = tags_from(vec![tag]);
+        let kind = notif_media_kind(&tags).unwrap();
+        assert_eq!(kind.label(), "Sent a file");
+    }
+
+    #[test]
+    fn media_kind_no_imeta_tags() {
+        let tag = Tag::parse(vec!["e", "abc123"]).unwrap();
+        let tags = tags_from(vec![tag]);
+        assert!(notif_media_kind(&tags).is_none());
+    }
+
+    #[test]
+    fn media_kind_empty_tags() {
+        let tags = tags_from(vec![]);
+        assert!(notif_media_kind(&tags).is_none());
+    }
 }
