@@ -4782,11 +4782,18 @@ impl AppCore {
                 }
 
                 // Check if this is a pending media upload retry.
-                if let Some((request_id, pending)) = self
+                if let Some((request_id, encrypted_data, upload_mime, expected_hash_hex)) = self
                     .pending_media_sends
                     .iter()
                     .find(|(_, p)| p.chat_id == chat_id && p.temp_rumor_id == message_id)
-                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .map(|(k, p)| {
+                        (
+                            k.clone(),
+                            p.encrypted_data.clone(),
+                            p.upload.mime_type.clone(),
+                            hex::encode(p.upload.encrypted_hash),
+                        )
+                    })
                 {
                     if !self.network_enabled() {
                         self.toast("Network disabled");
@@ -4814,10 +4821,6 @@ impl AppCore {
                     }
                     self.refresh_current_chat_if_open(&chat_id);
                     self.refresh_chat_list_from_storage();
-
-                    let encrypted_data = pending.encrypted_data.clone();
-                    let upload_mime = pending.upload.mime_type.clone();
-                    let expected_hash_hex = hex::encode(pending.upload.encrypted_hash);
                     let blossom_servers = self.blossom_servers();
 
                     self.spawn_media_upload(

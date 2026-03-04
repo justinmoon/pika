@@ -400,7 +400,7 @@ impl AppCore {
         // Write the (potentially resized) data to local cache.
         let local_filename = if was_resized {
             // Use .jpg extension since we re-encoded as JPEG.
-            let stem = filename.rsplit('.').next_back().unwrap_or(&filename);
+            let stem = filename.rsplitn(2, '.').last().unwrap_or(&filename);
             format!("{stem}.jpg")
         } else {
             filename.clone()
@@ -490,13 +490,14 @@ impl AppCore {
             ) {
                 Ok(upload) => upload,
                 Err(e) => {
-                    // Clean up the optimistic outbox entry on failure.
+                    // Clean up the optimistic outbox entry and cache file on failure.
                     if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
                         outbox.remove(&temp_rumor_id);
                     }
                     if let Some(overrides) = self.delivery_overrides.get_mut(&chat_id) {
                         overrides.remove(&temp_rumor_id);
                     }
+                    let _ = std::fs::remove_file(&local_path);
                     self.refresh_current_chat_if_open(&chat_id);
                     self.refresh_chat_list_from_storage();
                     self.toast(format!("Media encryption failed: {e}"));
@@ -507,16 +508,26 @@ impl AppCore {
             let original_hash_hex = hex::encode(upload.original_hash);
 
             // If MDK re-encoded (sanitize_exif: true), the hash may differ from our
-            // pre-computed one. Update outbox entry and local file accordingly.
+            // pre-computed one. Copy the local file under the new hash path so
+            // lookups by original_hash_hex find it, and update the outbox entry.
             if original_hash_hex != pre_hash_hex {
-                // Write MDK's sanitized data under the new hash path.
-                // (We don't have MDK's sanitized plaintext here — the original_hash in
-                // the upload reflects what MDK used. The local_path we already wrote is
-                // still valid for preview, so just update the hash in the outbox entry.)
+                let final_local_path = media_file_path(
+                    &self.data_dir,
+                    &account_pubkey,
+                    &chat_id,
+                    &original_hash_hex,
+                    &local_filename,
+                );
+                if final_local_path != local_path {
+                    if let Err(e) = write_media_file(&final_local_path, &media_data) {
+                        tracing::warn!(%e, "failed to copy local preview to final hash path");
+                    }
+                }
                 if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
                     if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
                         if let Some(att) = entry.media.first_mut() {
                             att.original_hash_hex = original_hash_hex.clone();
+                            att.local_path = path_if_exists(&final_local_path);
                         }
                     }
                 }
