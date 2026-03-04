@@ -84,18 +84,13 @@ impl AppCore {
         self.load_archived_chats();
         self.load_call_timeline();
         self.refresh_all_from_storage();
-        self.cache_missing_profile_pics();
-        self.refresh_my_profile(false);
-        self.hydrate_follow_list_from_cache();
-        self.refresh_follow_list();
 
-        if self.network_enabled() {
-            self.publish_key_package_relays_best_effort();
-            self.ensure_key_package_published_best_effort();
-            self.recompute_subscriptions();
-        }
-
-        self.register_push_device();
+        // Defer remaining init work so any user actions that queued while the
+        // actor was busy (e.g. chat taps during loading) are processed first.
+        self.deferred_session_init_pending = true;
+        let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
+            InternalEvent::CompleteSessionInit,
+        )));
 
         Ok(())
     }
@@ -491,7 +486,7 @@ impl AppCore {
     /// Load cached follow pubkeys from the profile DB and build an initial
     /// follow list so the UI can display follows instantly before the network
     /// fetch completes.
-    fn hydrate_follow_list_from_cache(&mut self) {
+    pub(super) fn hydrate_follow_list_from_cache(&mut self) {
         let Some(conn) = self.profile_db.as_ref() else {
             return;
         };

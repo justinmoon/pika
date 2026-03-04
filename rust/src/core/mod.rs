@@ -669,6 +669,10 @@ pub struct AppCore {
     subs_recompute_dirty: bool,
     subs_recompute_token: u64,
 
+    // Coalescing flags for deferred init events — collapse rapid duplicates.
+    deferred_foreground_pending: bool,
+    deferred_session_init_pending: bool,
+
     // Actor-internal UI bookkeeping (spec-v2 paging + delivery state).
     loaded_count: HashMap<String, usize>,
     unread_counts: HashMap<String, u32>,
@@ -798,6 +802,8 @@ impl AppCore {
             subs_recompute_in_flight: false,
             subs_recompute_dirty: false,
             subs_recompute_token: 0,
+            deferred_foreground_pending: false,
+            deferred_session_init_pending: false,
             loaded_count: HashMap::new(),
             unread_counts: HashMap::new(),
             delivery_overrides: HashMap::new(),
@@ -2758,12 +2764,16 @@ impl AppCore {
             self.state.router.screen_stack.pop();
         }
 
+        // Prevent stacking multiple chat screens (and their child GroupInfo screens).
+        self.state
+            .router
+            .screen_stack
+            .retain(|s| !matches!(s, Screen::Chat { .. } | Screen::GroupInfo { .. }));
+
         let screen = Screen::Chat {
             chat_id: chat_id.to_string(),
         };
-        if self.state.router.screen_stack.last() != Some(&screen) {
-            self.push_screen(screen);
-        }
+        self.push_screen(screen);
     }
 
     fn handle_auth_transition(&mut self, logged_in: bool) {
@@ -3123,6 +3133,31 @@ impl AppCore {
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
                 self.handle_group_message(event);
+            }
+            InternalEvent::CompleteSessionInit => {
+                self.deferred_session_init_pending = false;
+                if !self.is_logged_in() {
+                    return;
+                }
+                self.cache_missing_profile_pics();
+                self.refresh_my_profile(false);
+                self.hydrate_follow_list_from_cache();
+                self.refresh_follow_list();
+                if self.network_enabled() {
+                    self.publish_key_package_relays_best_effort();
+                    self.ensure_key_package_published_best_effort();
+                    self.recompute_subscriptions();
+                }
+                self.register_push_device();
+            }
+            InternalEvent::RefreshAfterForeground => {
+                self.deferred_foreground_pending = false;
+                if !self.is_logged_in() {
+                    return;
+                }
+                self.refresh_all_from_storage();
+                self.refresh_my_profile(false);
+                self.refresh_follow_list();
             }
         }
     }
@@ -4547,9 +4582,16 @@ impl AppCore {
                 // Native should send lifecycle signals as actions. Rust owns all state changes.
                 if self.is_logged_in() {
                     self.reopen_mdk(); // Pick up NSE's ratchet changes
-                    self.refresh_all_from_storage();
-                    self.refresh_my_profile(false);
-                    self.refresh_follow_list();
+
+                    // Defer the heavy refresh so any user actions that queued while
+                    // the actor was busy (e.g. chat taps) are processed first.
+                    // Coalesce: skip if one is already pending.
+                    if !self.deferred_foreground_pending {
+                        self.deferred_foreground_pending = true;
+                        let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::RefreshAfterForeground,
+                        )));
+                    }
                 } else {
                     tracing::info!(
                         pending_nostr_connect = self.pending_nostr_connect_login.is_some(),
@@ -7257,5 +7299,88 @@ mod tests {
 
             assert!(!core.pending_group_ops.contains("chat1"));
         }
+    }
+
+    #[test]
+    fn open_chat_screen_replaces_existing_chat() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+        core.state.router.screen_stack = vec![Screen::Chat {
+            chat_id: "chat-a".into(),
+        }];
+
+        core.open_chat_screen("chat-b");
+
+        assert_eq!(
+            core.state.router.screen_stack,
+            vec![Screen::Chat {
+                chat_id: "chat-b".into()
+            }],
+            "should replace existing Chat screen, not stack"
+        );
+    }
+
+    #[test]
+    fn open_chat_screen_clears_group_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+        core.state.router.screen_stack = vec![
+            Screen::Chat {
+                chat_id: "chat-a".into(),
+            },
+            Screen::GroupInfo {
+                chat_id: "chat-a".into(),
+            },
+        ];
+
+        core.open_chat_screen("chat-b");
+
+        assert_eq!(
+            core.state.router.screen_stack,
+            vec![Screen::Chat {
+                chat_id: "chat-b".into()
+            }],
+            "should remove orphaned GroupInfo screens"
+        );
+    }
+
+    #[test]
+    fn open_chat_screen_same_chat_no_duplicate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+        core.state.router.screen_stack = vec![Screen::Chat {
+            chat_id: "chat-a".into(),
+        }];
+
+        core.open_chat_screen("chat-a");
+
+        assert_eq!(
+            core.state.router.screen_stack,
+            vec![Screen::Chat {
+                chat_id: "chat-a".into()
+            }],
+            "should have exactly one Chat screen"
+        );
+    }
+
+    #[test]
+    fn complete_session_init_noop_when_logged_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+        // Not logged in — should be a no-op (no panic).
+        core.handle_internal(crate::updates::InternalEvent::CompleteSessionInit);
+    }
+
+    #[test]
+    fn refresh_after_foreground_noop_when_logged_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+        // Not logged in — should be a no-op (no panic).
+        core.handle_internal(crate::updates::InternalEvent::RefreshAfterForeground);
     }
 }

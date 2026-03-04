@@ -224,4 +224,10 @@ pub enum InternalEvent {
     VideoFrameFromPlatform {
         payload: Vec<u8>,
     },
+
+    // Deferred session initialization work (yields to pending user actions first).
+    CompleteSessionInit,
+
+    // Deferred foreground refresh (yields to pending user actions first).
+    RefreshAfterForeground,
 }
