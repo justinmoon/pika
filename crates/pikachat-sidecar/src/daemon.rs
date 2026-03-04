@@ -114,6 +114,16 @@ pub enum InCmd {
         #[serde(default)]
         blossom_servers: Vec<String>,
     },
+    SendMediaBatch {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+        file_paths: Vec<String>,
+        #[serde(default)]
+        caption: String,
+        #[serde(default)]
+        blossom_servers: Vec<String>,
+    },
     SendTyping {
         #[serde(default)]
         request_id: Option<String>,
@@ -3110,6 +3120,159 @@ pub async fn daemon_main(
                             }
                         }
                     }
+                    InCmd::SendMediaBatch {
+                        request_id,
+                        nostr_group_id,
+                        file_paths,
+                        caption,
+                        blossom_servers,
+                    } => {
+                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
+                                continue;
+                            }
+                        };
+
+                        if file_paths.is_empty() {
+                            reply_tx.send(out_error(request_id, "file_error", "no file paths provided")).ok();
+                            continue;
+                        }
+                        if file_paths.len() > 32 {
+                            reply_tx.send(out_error(request_id, "file_error", "too many files (max 32)")).ok();
+                            continue;
+                        }
+
+                        let manager = mdk.media_manager(mls_group_id.clone());
+                        let upload_servers = blossom_servers_or_default(&blossom_servers);
+
+                        // Process all files: read, encrypt, upload sequentially.
+                        #[allow(clippy::type_complexity)]
+                        let batch_result: Result<(Vec<Tag>, Vec<String>, Vec<String>), ()> = async {
+                            let mut imeta_tags = Vec::new();
+                            let mut original_hashes = Vec::new();
+                            let mut uploaded_urls = Vec::new();
+
+                            for file_path in &file_paths {
+                                let path = std::path::Path::new(file_path);
+                                let bytes = match std::fs::read(path) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        reply_tx.send(out_error(request_id.clone(), "file_error", format!("read {file_path}: {e}"))).ok();
+                                        return Err(());
+                                    }
+                                };
+                                if bytes.is_empty() {
+                                    reply_tx.send(out_error(request_id.clone(), "file_error", format!("file is empty: {file_path}"))).ok();
+                                    return Err(());
+                                }
+                                if bytes.len() > MAX_CHAT_MEDIA_BYTES {
+                                    reply_tx.send(out_error(request_id.clone(), "file_error", format!("file too large (max 32 MB): {file_path}"))).ok();
+                                    return Err(());
+                                }
+
+                                let resolved_filename = path
+                                    .file_name()
+                                    .and_then(|f| f.to_str())
+                                    .map(ToOwned::to_owned)
+                                    .unwrap_or_else(|| "file.bin".to_string());
+                                let resolved_mime = mime_from_extension(path)
+                                    .unwrap_or("application/octet-stream")
+                                    .to_string();
+
+                                let mut upload = match manager.encrypt_for_upload_with_options(
+                                    &bytes,
+                                    &resolved_mime,
+                                    &resolved_filename,
+                                    &MediaProcessingOptions::default(),
+                                ) {
+                                    Ok(u) => u,
+                                    Err(e) => {
+                                        reply_tx.send(out_error(request_id.clone(), "encrypt_error", format!("{e:#}"))).ok();
+                                        return Err(());
+                                    }
+                                };
+                                let encrypted_data = std::mem::take(&mut upload.encrypted_data);
+                                let expected_hash_hex = hex::encode(upload.encrypted_hash);
+
+                                let mut uploaded_url: Option<String> = None;
+                                let mut last_error: Option<String> = None;
+                                for server in &upload_servers {
+                                    let base_url = match Url::parse(server) {
+                                        Ok(url) => url,
+                                        Err(e) => {
+                                            last_error = Some(format!("{server}: {e}"));
+                                            continue;
+                                        }
+                                    };
+                                    let blossom = BlossomClient::new(base_url);
+                                    let descriptor = match blossom
+                                        .upload_blob(
+                                            encrypted_data.clone(),
+                                            Some(upload.mime_type.clone()),
+                                            None,
+                                            Some(&keys),
+                                        )
+                                        .await
+                                    {
+                                        Ok(d) => d,
+                                        Err(e) => {
+                                            last_error = Some(format!("{server}: {e}"));
+                                            continue;
+                                        }
+                                    };
+                                    let descriptor_hash_hex = descriptor.sha256.to_string();
+                                    if !descriptor_hash_hex.eq_ignore_ascii_case(&expected_hash_hex) {
+                                        last_error = Some(format!(
+                                            "{server}: hash mismatch (expected {expected_hash_hex}, got {descriptor_hash_hex})"
+                                        ));
+                                        continue;
+                                    }
+                                    uploaded_url = Some(descriptor.url.to_string());
+                                    break;
+                                }
+                                let Some(url) = uploaded_url else {
+                                    reply_tx.send(out_error(
+                                        request_id.clone(),
+                                        "upload_failed",
+                                        format!("blossom upload failed for {file_path}: {}", last_error.unwrap_or_else(|| "unknown".into())),
+                                    )).ok();
+                                    return Err(());
+                                };
+
+                                let imeta_tag = manager.create_imeta_tag(&upload, &url);
+                                original_hashes.push(hex::encode(upload.original_hash));
+                                uploaded_urls.push(url);
+                                imeta_tags.push(imeta_tag);
+                            }
+
+                            Ok((imeta_tags, original_hashes, uploaded_urls))
+                        }.await;
+
+                        let (imeta_tags, original_hashes, uploaded_urls) = match batch_result {
+                            Ok(v) => v,
+                            Err(()) => continue,
+                        };
+
+                        let mut builder = EventBuilder::new(Kind::ChatMessage, &caption);
+                        for tag in &imeta_tags {
+                            builder = builder.tag(tag.clone());
+                        }
+                        let rumor = builder.build(keys.public_key());
+                        match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_media_batch").await {
+                            Ok(ev) => {
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({
+                                    "event_id": ev.id.to_hex(),
+                                    "uploaded_urls": uploaded_urls,
+                                    "original_hashes": original_hashes,
+                                }))));
+                            }
+                            Err(e) => {
+                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                            }
+                        }
+                    }
                     InCmd::SendTyping { request_id, nostr_group_id } => {
                         let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
                             Ok(id) => id,
@@ -4885,5 +5048,59 @@ mod tests {
         let media = &json["media"][0];
         assert!(media.get("width").is_none());
         assert!(media.get("height").is_none());
+    }
+
+    #[test]
+    fn deserialize_send_media_batch_full() {
+        let json = r#"{
+            "cmd": "send_media_batch",
+            "request_id": "r1",
+            "nostr_group_id": "bb",
+            "file_paths": ["/tmp/a.jpg", "/tmp/b.png"],
+            "caption": "Two photos",
+            "blossom_servers": ["https://blossom.example.com"]
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::SendMediaBatch {
+                request_id,
+                nostr_group_id,
+                file_paths,
+                caption,
+                blossom_servers,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r1"));
+                assert_eq!(nostr_group_id, "bb");
+                assert_eq!(file_paths, vec!["/tmp/a.jpg", "/tmp/b.png"]);
+                assert_eq!(caption, "Two photos");
+                assert_eq!(blossom_servers, vec!["https://blossom.example.com"]);
+            }
+            other => panic!("expected SendMediaBatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_send_media_batch_defaults() {
+        let json = r#"{
+            "cmd": "send_media_batch",
+            "nostr_group_id": "cc",
+            "file_paths": ["/tmp/x.jpg"]
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::SendMediaBatch {
+                request_id,
+                caption,
+                blossom_servers,
+                file_paths,
+                ..
+            } => {
+                assert!(request_id.is_none());
+                assert_eq!(caption, "");
+                assert!(blossom_servers.is_empty());
+                assert_eq!(file_paths.len(), 1);
+            }
+            other => panic!("expected SendMediaBatch, got {other:?}"),
+        }
     }
 }

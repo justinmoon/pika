@@ -559,6 +559,24 @@ struct PendingMediaSend {
 }
 
 #[derive(Debug, Clone)]
+struct PendingMediaBatchSend {
+    chat_id: String,
+    caption: String,
+    temp_rumor_id: String,
+    account_pubkey: String,
+    items: Vec<BatchMediaItem>,
+    next_upload_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct BatchMediaItem {
+    request_id: String,
+    upload: EncryptedMediaUpload,
+    encrypted_data: Vec<u8>,
+    uploaded_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 struct PendingMediaDownload {
     chat_id: String,
     account_pubkey: String,
@@ -709,6 +727,7 @@ pub struct AppCore {
     push_subscribed_chat_ids: HashSet<String>,
 
     pending_media_sends: HashMap<String, PendingMediaSend>, // request_id -> pending upload metadata
+    pending_media_batch_sends: HashMap<String, PendingMediaBatchSend>, // batch_id -> pending batch upload
     pending_media_downloads: HashMap<String, PendingMediaDownload>, // request_id -> pending download metadata
 
     /// Per-group lock: tracks groups that have a pending evolution publish
@@ -825,6 +844,7 @@ impl AppCore {
             push_apns_token: None,
             push_subscribed_chat_ids,
             pending_media_sends: HashMap::new(),
+            pending_media_batch_sends: HashMap::new(),
             pending_media_downloads: HashMap::new(),
             pending_group_ops: HashSet::new(),
             call_runtime: call_runtime::CallRuntime::default(),
@@ -2807,6 +2827,7 @@ impl AppCore {
             self.pending_sends.clear(self.profile_db.as_ref());
             self.failed_sends.clear(self.profile_db.as_ref());
             self.pending_media_sends.clear();
+            self.pending_media_batch_sends.clear();
             self.pending_media_downloads.clear();
             self.local_outbox.clear();
             self.profiles.clear();
@@ -4927,6 +4948,13 @@ impl AppCore {
             } => {
                 self.send_chat_media(chat_id, data_base64, mime_type, filename, caption);
             }
+            AppAction::SendChatMediaBatch {
+                chat_id,
+                items,
+                caption,
+            } => {
+                self.send_chat_media_batch(chat_id, items, caption);
+            }
             AppAction::DownloadChatMedia {
                 chat_id,
                 message_id,
@@ -4991,6 +5019,81 @@ impl AppCore {
                         encrypted_data,
                         upload_mime,
                         expected_hash_hex,
+                        local_keys,
+                    );
+                    return;
+                }
+
+                // Check if this is a pending batch media upload retry.
+                if let Some((
+                    batch_id,
+                    first_request_id,
+                    first_encrypted_data,
+                    first_upload_mime,
+                    first_expected_hash,
+                )) = self
+                    .pending_media_batch_sends
+                    .iter()
+                    .find(|(_, b)| b.chat_id == chat_id && b.temp_rumor_id == message_id)
+                    .map(|(k, b)| {
+                        // Find the first un-uploaded item.
+                        let idx = b
+                            .items
+                            .iter()
+                            .position(|item| item.uploaded_url.is_none())
+                            .unwrap_or(0);
+                        (
+                            k.clone(),
+                            b.items[idx].request_id.clone(),
+                            b.items[idx].encrypted_data.clone(),
+                            b.items[idx].upload.mime_type.clone(),
+                            hex::encode(b.items[idx].upload.encrypted_hash),
+                        )
+                    })
+                {
+                    if !self.network_enabled() {
+                        self.toast("Network disabled");
+                        return;
+                    }
+                    let Some(sess) = self.session.as_ref() else {
+                        return;
+                    };
+                    let Some(local_keys) = sess.local_keys.clone() else {
+                        self.toast("Media upload requires local key signer");
+                        return;
+                    };
+
+                    // Reset delivery to Pending, set upload_progress to 0 for all attachments.
+                    self.delivery_overrides
+                        .entry(chat_id.clone())
+                        .or_default()
+                        .insert(message_id.clone(), MessageDeliveryState::Pending);
+                    if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                        if let Some(entry) = outbox.get_mut(&message_id) {
+                            for att in &mut entry.media {
+                                att.upload_progress = Some(0.0);
+                            }
+                        }
+                    }
+                    // Update next_upload_index to restart from the first un-uploaded item.
+                    if let Some(batch) = self.pending_media_batch_sends.get_mut(&batch_id) {
+                        let restart_idx = batch
+                            .items
+                            .iter()
+                            .position(|item| item.uploaded_url.is_none())
+                            .unwrap_or(0);
+                        batch.next_upload_index = restart_idx + 1;
+                    }
+                    self.refresh_current_chat_if_open(&chat_id);
+                    self.refresh_chat_list_from_storage();
+                    let blossom_servers = self.blossom_servers();
+
+                    self.spawn_media_upload(
+                        first_request_id,
+                        blossom_servers,
+                        first_encrypted_data,
+                        first_upload_mime,
+                        first_expected_hash,
                         local_keys,
                     );
                     return;
@@ -7437,5 +7540,50 @@ mod tests {
         assert_eq!(core.state.my_profile.name, "Alice");
         assert_eq!(core.state.my_profile.about, "Hello");
         assert!(core.profiles.get(&pk).unwrap().name.as_deref() == Some("Alice"));
+    }
+
+    mod batch_media_tests {
+        use super::*;
+        use crate::actions::MediaBatchItem;
+
+        fn make_item(size: usize) -> MediaBatchItem {
+            use base64::Engine;
+            let data = vec![0u8; size];
+            MediaBatchItem {
+                data_base64: base64::engine::general_purpose::STANDARD.encode(&data),
+                mime_type: "image/jpeg".to_string(),
+                filename: "test.jpg".to_string(),
+            }
+        }
+
+        #[test]
+        fn batch_rejects_empty_items() {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let data_dir = tempdir.path().to_string_lossy().into_owned();
+            let mut core = make_core(data_dir);
+            core.send_chat_media_batch("chat1".into(), vec![], "hi".into());
+            assert_eq!(core.state.toast.as_deref(), Some("Please log in first"));
+        }
+
+        #[test]
+        fn batch_rejects_over_32_items_when_logged_in_would_reject() {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let data_dir = tempdir.path().to_string_lossy().into_owned();
+            let mut core = make_core(data_dir);
+            let items: Vec<MediaBatchItem> = (0..33).map(|_| make_item(10)).collect();
+            core.send_chat_media_batch("chat1".into(), items, "hi".into());
+            assert_eq!(core.state.toast.as_deref(), Some("Please log in first"));
+        }
+
+        #[test]
+        fn batch_media_item_record_fields() {
+            let item = MediaBatchItem {
+                data_base64: "aGVsbG8=".to_string(),
+                mime_type: "image/png".to_string(),
+                filename: "photo.png".to_string(),
+            };
+            assert_eq!(item.mime_type, "image/png");
+            assert_eq!(item.filename, "photo.png");
+        }
     }
 }

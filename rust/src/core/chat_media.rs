@@ -611,6 +611,344 @@ impl AppCore {
         );
     }
 
+    pub(super) fn send_chat_media_batch(
+        &mut self,
+        chat_id: String,
+        items: Vec<crate::actions::MediaBatchItem>,
+        caption: String,
+    ) {
+        if !self.is_logged_in() {
+            self.toast("Please log in first");
+            return;
+        }
+        if !self.network_enabled() {
+            self.toast("Network disabled");
+            return;
+        }
+        if items.is_empty() {
+            self.toast("No media items to send");
+            return;
+        }
+        if items.len() > 32 {
+            self.toast("Too many items (max 32)");
+            return;
+        }
+
+        let caption = caption.trim().to_string();
+
+        // Decode and validate all items first.
+        struct DecodedItem {
+            data: Vec<u8>,
+            mime_type: String,
+            filename: String,
+        }
+        let mut decoded_items = Vec::with_capacity(items.len());
+        for item in &items {
+            let decoded = match base64::engine::general_purpose::STANDARD.decode(&item.data_base64)
+            {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    self.toast(format!("Invalid media data: {e}"));
+                    return;
+                }
+            };
+            if decoded.is_empty() {
+                self.toast("One of the media items is empty");
+                return;
+            }
+            if decoded.len() > MAX_CHAT_MEDIA_BYTES {
+                self.toast(format!(
+                    "Media too large (max 32 MB): {}",
+                    item.filename.trim()
+                ));
+                return;
+            }
+            let filename = item.filename.trim().to_string();
+            if filename.is_empty() {
+                self.toast("Filename is required for each item");
+                return;
+            }
+            let mime_type = if item.mime_type.trim().is_empty() {
+                mime_type_for_filename(&filename)
+            } else {
+                normalized_mime_type(&item.mime_type)
+            };
+            decoded_items.push(DecodedItem {
+                data: decoded,
+                mime_type,
+                filename,
+            });
+        }
+
+        // Validate session state.
+        let (account_pubkey, group, local_keys) = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            let Some(group) = sess.groups.get(&chat_id).cloned() else {
+                self.toast("Chat not found");
+                return;
+            };
+            let Some(local_keys) = sess.local_keys.clone() else {
+                self.toast("Media upload requires local key signer");
+                return;
+            };
+            (sess.pubkey.to_hex(), group, local_keys)
+        };
+
+        // --- Phase A: Preprocess each item, build outbox entry ---
+
+        let temp_rumor_id = uuid::Uuid::new_v4().to_string();
+        let mut temp_attachments = Vec::with_capacity(decoded_items.len());
+
+        struct PreprocessedItem {
+            media_data: Vec<u8>,
+            media_mime: String,
+            local_filename: String,
+            pre_hash_hex: String,
+            local_path: PathBuf,
+        }
+        let mut preprocessed = Vec::with_capacity(decoded_items.len());
+
+        for di in &decoded_items {
+            let (media_data, media_mime, was_resized, resize_dims) =
+                match maybe_resize_image(&di.data, &di.mime_type) {
+                    Some((resized_bytes, w, h, out_mime)) => {
+                        (resized_bytes, out_mime.to_string(), true, Some((w, h)))
+                    }
+                    None => (di.data.clone(), di.mime_type.clone(), false, None),
+                };
+
+            let pre_hash = Sha256::digest(&media_data);
+            let pre_hash_hex = hex::encode(pre_hash);
+
+            let local_filename = if was_resized {
+                let stem = di.filename.rsplitn(2, '.').last().unwrap_or(&di.filename);
+                let ext = if media_mime == "image/png" {
+                    "png"
+                } else {
+                    "jpg"
+                };
+                format!("{stem}.{ext}")
+            } else {
+                di.filename.clone()
+            };
+
+            let local_path = media_file_path(
+                &self.data_dir,
+                &account_pubkey,
+                &chat_id,
+                &pre_hash_hex,
+                &local_filename,
+            );
+            if let Err(e) = write_media_file(&local_path, &media_data) {
+                self.toast(format!("Media cache failed: {e}"));
+                return;
+            }
+
+            let (width, height) = resize_dims
+                .map(|(w, h)| (Some(w), Some(h)))
+                .unwrap_or((None, None));
+            let kind = infer_media_kind(&media_mime, &local_filename);
+
+            temp_attachments.push(ChatMediaAttachment {
+                original_hash_hex: pre_hash_hex.clone(),
+                encrypted_hash_hex: None,
+                url: String::new(),
+                mime_type: media_mime.clone(),
+                filename: local_filename.clone(),
+                kind,
+                width,
+                height,
+                nonce_hex: String::new(),
+                scheme_version: String::new(),
+                local_path: Some(local_path.to_string_lossy().to_string()),
+                upload_progress: Some(0.0),
+            });
+
+            preprocessed.push(PreprocessedItem {
+                media_data,
+                media_mime,
+                local_filename,
+                pre_hash_hex,
+                local_path,
+            });
+        }
+
+        // Insert outbox entry with all attachments so the bubble appears immediately.
+        self.delivery_overrides
+            .entry(chat_id.clone())
+            .or_default()
+            .insert(temp_rumor_id.clone(), MessageDeliveryState::Pending);
+
+        self.outbox_seq = self.outbox_seq.wrapping_add(1);
+        let seq = self.outbox_seq;
+        let ts = {
+            let now = now_seconds();
+            if now <= self.last_outgoing_ts {
+                self.last_outgoing_ts += 1;
+            } else {
+                self.last_outgoing_ts = now;
+            }
+            self.last_outgoing_ts
+        };
+        self.local_outbox
+            .entry(chat_id.clone())
+            .or_default()
+            .insert(
+                temp_rumor_id.clone(),
+                LocalOutgoing {
+                    content: caption.clone(),
+                    timestamp: ts,
+                    sender_pubkey: account_pubkey.clone(),
+                    reply_to_message_id: None,
+                    seq,
+                    media: temp_attachments,
+                    kind: Kind::ChatMessage,
+                },
+            );
+
+        self.refresh_current_chat_if_open(&chat_id);
+        self.refresh_chat_list_from_storage();
+
+        // --- Phase B: Encrypt all items ---
+
+        let mut batch_items = Vec::with_capacity(preprocessed.len());
+
+        {
+            let Some(sess) = self.session.as_mut() else {
+                // Clean up on session loss.
+                if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                    outbox.remove(&temp_rumor_id);
+                }
+                if let Some(overrides) = self.delivery_overrides.get_mut(&chat_id) {
+                    overrides.remove(&temp_rumor_id);
+                }
+                self.refresh_current_chat_if_open(&chat_id);
+                self.refresh_chat_list_from_storage();
+                return;
+            };
+
+            let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+
+            for (i, pp) in preprocessed.iter().enumerate() {
+                let mut upload = match manager.encrypt_for_upload_with_options(
+                    &pp.media_data,
+                    &pp.media_mime,
+                    &pp.local_filename,
+                    &MediaProcessingOptions::default(),
+                ) {
+                    Ok(upload) => upload,
+                    Err(e) => {
+                        // Clean up outbox on encryption failure.
+                        if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                            outbox.remove(&temp_rumor_id);
+                        }
+                        if let Some(overrides) = self.delivery_overrides.get_mut(&chat_id) {
+                            overrides.remove(&temp_rumor_id);
+                        }
+                        self.refresh_current_chat_if_open(&chat_id);
+                        self.refresh_chat_list_from_storage();
+                        self.toast(format!("Media encryption failed: {e}"));
+                        return;
+                    }
+                };
+
+                let original_hash_hex = hex::encode(upload.original_hash);
+
+                // If MDK re-encoded, copy to new hash path.
+                if original_hash_hex != pp.pre_hash_hex {
+                    let final_local_path = media_file_path(
+                        &self.data_dir,
+                        &account_pubkey,
+                        &chat_id,
+                        &original_hash_hex,
+                        &pp.local_filename,
+                    );
+                    if final_local_path != pp.local_path {
+                        if let Err(e) = write_media_file(&final_local_path, &pp.media_data) {
+                            tracing::warn!(%e, "failed to copy local preview to final hash path");
+                        } else {
+                            let _ = std::fs::remove_file(&pp.local_path);
+                        }
+                    }
+                    // Update outbox attachment hash and local_path.
+                    if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                        if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                            if let Some(att) = entry.media.get_mut(i) {
+                                att.original_hash_hex = original_hash_hex.clone();
+                                att.local_path = path_if_exists(&final_local_path);
+                            }
+                        }
+                    }
+                }
+
+                let encrypted_data = std::mem::take(&mut upload.encrypted_data);
+                let expected_hash_hex = hex::encode(upload.encrypted_hash);
+                let request_id = uuid::Uuid::new_v4().to_string();
+
+                // Update outbox attachment with encryption details.
+                if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                    if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                        if let Some(att) = entry.media.get_mut(i) {
+                            att.encrypted_hash_hex = Some(expected_hash_hex.clone());
+                            att.nonce_hex = hex::encode(upload.nonce);
+                            if let Some((w, h)) = upload.dimensions {
+                                att.width = Some(w);
+                                att.height = Some(h);
+                            }
+                        }
+                    }
+                }
+
+                batch_items.push(BatchMediaItem {
+                    request_id,
+                    upload,
+                    encrypted_data,
+                    uploaded_url: None,
+                });
+            }
+        }
+
+        // --- Phase C: Store batch and start first upload ---
+
+        let batch_id = uuid::Uuid::new_v4().to_string();
+
+        self.pending_media_batch_sends.insert(
+            batch_id,
+            PendingMediaBatchSend {
+                chat_id: chat_id.clone(),
+                caption,
+                temp_rumor_id,
+                account_pubkey,
+                items: batch_items,
+                next_upload_index: 1, // We're about to spawn index 0.
+            },
+        );
+
+        // Spawn upload for item[0].
+        let first = &self
+            .pending_media_batch_sends
+            .values()
+            .last()
+            .unwrap()
+            .items[0];
+        let request_id = first.request_id.clone();
+        let encrypted_data = first.encrypted_data.clone();
+        let upload_mime = first.upload.mime_type.clone();
+        let expected_hash_hex = hex::encode(first.upload.encrypted_hash);
+        let blossom_servers = self.blossom_servers();
+
+        self.spawn_media_upload(
+            request_id,
+            blossom_servers,
+            encrypted_data,
+            upload_mime,
+            expected_hash_hex,
+            local_keys,
+        );
+    }
+
     /// Spawn the async Blossom upload task.
     pub(super) fn spawn_media_upload(
         &self,
@@ -656,6 +994,26 @@ impl AppCore {
         descriptor_sha256_hex: Option<String>,
         error: Option<String>,
     ) {
+        // Check if this request belongs to a batch upload.
+        let batch_key = self
+            .pending_media_batch_sends
+            .iter()
+            .find(|(_, b)| b.items.iter().any(|item| item.request_id == request_id))
+            .map(|(k, _)| k.clone());
+
+        if let Some(batch_id) = batch_key {
+            self.handle_batch_upload_completed(
+                batch_id,
+                request_id,
+                uploaded_url,
+                descriptor_sha256_hex,
+                error,
+            );
+            return;
+        }
+
+        // --- Single-item upload path (unchanged) ---
+
         if let Some(e) = &error {
             // On failure: keep PendingMediaSend for retry, mark as Failed.
             let Some(pending) = self.pending_media_sends.get(&request_id) else {
@@ -767,6 +1125,237 @@ impl AppCore {
             pending.caption,
             Kind::ChatMessage,
             vec![imeta_tag],
+            None,
+            media,
+        );
+    }
+
+    fn handle_batch_upload_completed(
+        &mut self,
+        batch_id: String,
+        request_id: String,
+        uploaded_url: Option<String>,
+        descriptor_sha256_hex: Option<String>,
+        error: Option<String>,
+    ) {
+        if let Some(e) = &error {
+            // On batch item failure: mark entire message as Failed, keep batch for retry.
+            let Some(batch) = self.pending_media_batch_sends.get(&batch_id) else {
+                return;
+            };
+            let chat_id = batch.chat_id.clone();
+            let temp_rumor_id = batch.temp_rumor_id.clone();
+
+            // Remove progress spinners from all attachments.
+            if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                    for att in &mut entry.media {
+                        att.upload_progress = None;
+                    }
+                }
+            }
+
+            self.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id,
+                    MessageDeliveryState::Failed {
+                        reason: format!("Upload failed: {e}"),
+                    },
+                );
+
+            self.refresh_current_chat_if_open(&chat_id);
+            self.refresh_chat_list_from_storage();
+            return;
+        }
+
+        let Some(uploaded_url) = uploaded_url else {
+            return;
+        };
+        let Some(descriptor_hash) = descriptor_sha256_hex else {
+            return;
+        };
+
+        // Find the item index and validate hash.
+        let Some(batch) = self.pending_media_batch_sends.get(&batch_id) else {
+            return;
+        };
+        let item_idx = match batch
+            .items
+            .iter()
+            .position(|item| item.request_id == request_id)
+        {
+            Some(idx) => idx,
+            None => return,
+        };
+        let expected_hash_hex = hex::encode(batch.items[item_idx].upload.encrypted_hash);
+        if !descriptor_hash.eq_ignore_ascii_case(&expected_hash_hex) {
+            // Hash mismatch — treat as failure.
+            let chat_id = batch.chat_id.clone();
+            let temp_rumor_id = batch.temp_rumor_id.clone();
+            if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                    for att in &mut entry.media {
+                        att.upload_progress = None;
+                    }
+                }
+            }
+            self.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id,
+                    MessageDeliveryState::Failed {
+                        reason: "Upload failed: hash mismatch".to_string(),
+                    },
+                );
+            self.refresh_current_chat_if_open(&chat_id);
+            self.refresh_chat_list_from_storage();
+            return;
+        }
+
+        // Store success on the item.
+        let batch = self.pending_media_batch_sends.get_mut(&batch_id).unwrap();
+        batch.items[item_idx].uploaded_url = Some(uploaded_url.clone());
+        let chat_id = batch.chat_id.clone();
+        let temp_rumor_id = batch.temp_rumor_id.clone();
+
+        // Update outbox attachment progress for this item (mark as done).
+        if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+            if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                if let Some(att) = entry.media.get_mut(item_idx) {
+                    att.upload_progress = None;
+                }
+            }
+        }
+
+        // Check if all items are uploaded.
+        let all_done = batch.items.iter().all(|item| item.uploaded_url.is_some());
+
+        if !all_done {
+            // Spawn upload for next un-uploaded item.
+            let next_idx = batch.next_upload_index;
+            if next_idx < batch.items.len() {
+                batch.next_upload_index = next_idx + 1;
+                let next_item = &batch.items[next_idx];
+                let next_request_id = next_item.request_id.clone();
+                let next_encrypted_data = next_item.encrypted_data.clone();
+                let next_upload_mime = next_item.upload.mime_type.clone();
+                let next_expected_hash = hex::encode(next_item.upload.encrypted_hash);
+                let blossom_servers = self.blossom_servers();
+
+                let Some(sess) = self.session.as_ref() else {
+                    return;
+                };
+                let Some(local_keys) = sess.local_keys.clone() else {
+                    return;
+                };
+
+                self.spawn_media_upload(
+                    next_request_id,
+                    blossom_servers,
+                    next_encrypted_data,
+                    next_upload_mime,
+                    next_expected_hash,
+                    local_keys,
+                );
+            }
+            self.refresh_current_chat_if_open(&chat_id);
+            self.refresh_chat_list_from_storage();
+            return;
+        }
+
+        // All items uploaded — collect imeta tags and publish.
+        let batch = self.pending_media_batch_sends.remove(&batch_id).unwrap();
+
+        // Clean up outbox.
+        if let Some(outbox) = self.local_outbox.get_mut(&batch.chat_id) {
+            outbox.remove(&batch.temp_rumor_id);
+        }
+        if let Some(overrides) = self.delivery_overrides.get_mut(&batch.chat_id) {
+            overrides.remove(&batch.temp_rumor_id);
+        }
+        self.refresh_current_chat_if_open(&batch.chat_id);
+        self.refresh_chat_list_from_storage();
+
+        // Collect imeta tags and references within a scoped session borrow.
+        struct UploadedMedia {
+            imeta_tag: Tag,
+            reference: MediaReference,
+            encrypted_hash_hex: String,
+            original_hash_hex: String,
+            mime_type: String,
+            filename: String,
+            nonce_hex: String,
+        }
+
+        let uploaded_media: Vec<UploadedMedia> = {
+            let Some(sess) = self.session.as_mut() else {
+                return;
+            };
+            let Some(group) = sess.groups.get(&batch.chat_id).cloned() else {
+                self.toast("Chat not found");
+                return;
+            };
+
+            let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+            batch
+                .items
+                .iter()
+                .map(|item| {
+                    let url = item.uploaded_url.as_deref().unwrap();
+                    let imeta_tag = manager.create_imeta_tag(&item.upload, url);
+                    let reference = manager.create_media_reference(&item.upload, url.to_string());
+                    UploadedMedia {
+                        imeta_tag,
+                        reference,
+                        encrypted_hash_hex: hex::encode(item.upload.encrypted_hash),
+                        original_hash_hex: hex::encode(item.upload.original_hash),
+                        mime_type: item.upload.mime_type.clone(),
+                        filename: item.upload.filename.clone(),
+                        nonce_hex: hex::encode(item.upload.nonce),
+                    }
+                })
+                .collect()
+        };
+
+        let mut imeta_tags = Vec::with_capacity(uploaded_media.len());
+        let mut media = Vec::with_capacity(uploaded_media.len());
+
+        for um in &uploaded_media {
+            if let Some(conn) = self.chat_media_db.as_ref() {
+                let record = ChatMediaRecord {
+                    account_pubkey: batch.account_pubkey.clone(),
+                    chat_id: batch.chat_id.clone(),
+                    original_hash_hex: um.original_hash_hex.clone(),
+                    encrypted_hash_hex: um.encrypted_hash_hex.clone(),
+                    url: um.reference.url.clone(),
+                    mime_type: um.mime_type.clone(),
+                    filename: um.filename.clone(),
+                    nonce_hex: um.nonce_hex.clone(),
+                    scheme_version: um.reference.scheme_version.clone(),
+                    created_at: now_seconds(),
+                };
+                if let Err(e) = chat_media_db::upsert_chat_media(conn, &record) {
+                    tracing::warn!(%e, "failed to persist chat media metadata");
+                }
+            }
+
+            imeta_tags.push(um.imeta_tag.clone());
+            media.push(self.attachment_from_reference(
+                &batch.chat_id,
+                &batch.account_pubkey,
+                &um.reference,
+                Some(um.encrypted_hash_hex.clone()),
+            ));
+        }
+
+        self.publish_chat_message_with_tags(
+            batch.chat_id,
+            batch.caption,
+            Kind::ChatMessage,
+            imeta_tags,
             None,
             media,
         );

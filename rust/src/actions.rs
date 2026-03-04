@@ -1,6 +1,13 @@
 use crate::state::Screen;
 use std::collections::HashMap;
 
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct MediaBatchItem {
+    pub data_base64: String,
+    pub mime_type: String,
+    pub filename: String,
+}
+
 #[derive(uniffi::Enum, Debug, Clone)]
 pub enum AppAction {
     // Auth
@@ -63,6 +70,11 @@ pub enum AppAction {
         data_base64: String,
         mime_type: String,
         filename: String,
+        caption: String,
+    },
+    SendChatMediaBatch {
+        chat_id: String,
+        items: Vec<MediaBatchItem>,
         caption: String,
     },
     DownloadChatMedia {
@@ -228,6 +240,7 @@ impl AppAction {
             AppAction::CreateChat { .. } => "CreateChat",
             AppAction::SendMessage { .. } => "SendMessage",
             AppAction::SendChatMedia { .. } => "SendChatMedia",
+            AppAction::SendChatMediaBatch { .. } => "SendChatMediaBatch",
             AppAction::DownloadChatMedia { .. } => "DownloadChatMedia",
             AppAction::RetryMessage { .. } => "RetryMessage",
             AppAction::OpenChat { .. } => "OpenChat",
