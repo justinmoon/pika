@@ -57,15 +57,6 @@ if [ "${PIKA_IOS_DEVICE:-0}" = "1" ]; then
 fi
 SIM_UDID="${PIKA_IOS_SIM_UDID:-}"
 
-xcode_build_version() {
-  ./tools/xcode-run xcodebuild -version 2>/dev/null | awk '/^Build version / { print $3; exit }'
-}
-
-XCODE_BUILD_VERSION="${PIKA_XCODE_BUILD_VERSION:-$(xcode_build_version)}"
-if [ -z "${XCODE_BUILD_VERSION:-}" ]; then
-  XCODE_BUILD_VERSION="unknown"
-fi
-
 usage() {
   cat <<EOF
 usage: ./tools/run-ios [--sim|--device] [--release] [--console] [--udid <udid>] [--list-devices]
@@ -266,7 +257,7 @@ if [ "$MODE" = "device" ]; then
   # Build core xcframework + (re)generate the project.
   just ios-xcframework ios-xcodeproj
 
-  device_derived_data_path="${PIKA_IOS_DEVICE_DERIVED_DATA_PATH:-ios/build-device-$XCODE_BUILD_VERSION}"
+  device_derived_data_path="${PIKA_IOS_DEVICE_DERIVED_DATA_PATH:-ios/build-device}"
 
   # Build signed device .app (must unset LD/CC/CXX inside Nix shells).
   signing_settings=()
@@ -405,7 +396,7 @@ if [ -z "${PIKA_IOS_RUST_TARGETS:-}" ]; then
   export PIKA_IOS_RUST_TARGETS="aarch64-apple-ios-sim"
 fi
 
-derived_data_path="${PIKA_IOS_DERIVED_DATA_PATH:-ios/build-$XCODE_BUILD_VERSION}"
+derived_data_path="${PIKA_IOS_DERIVED_DATA_PATH:-ios/build}"
 export PIKA_IOS_DERIVED_DATA_PATH="$derived_data_path"
 
 just ios-build-sim
