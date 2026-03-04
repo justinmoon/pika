@@ -521,6 +521,8 @@ impl AppCore {
                 if final_local_path != local_path {
                     if let Err(e) = write_media_file(&final_local_path, &media_data) {
                         tracing::warn!(%e, "failed to copy local preview to final hash path");
+                    } else {
+                        let _ = std::fs::remove_file(&local_path);
                     }
                 }
                 if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
@@ -666,17 +668,32 @@ impl AppCore {
             return;
         };
 
+        // Helper: clean up the optimistic outbox entry and delivery override.
+        let cleanup_optimistic = |s: &mut Self| {
+            if let Some(outbox) = s.local_outbox.get_mut(&pending.chat_id) {
+                outbox.remove(&pending.temp_rumor_id);
+            }
+            if let Some(overrides) = s.delivery_overrides.get_mut(&pending.chat_id) {
+                overrides.remove(&pending.temp_rumor_id);
+            }
+            s.refresh_current_chat_if_open(&pending.chat_id);
+            s.refresh_chat_list_from_storage();
+        };
+
         let Some(uploaded_url) = uploaded_url else {
+            cleanup_optimistic(self);
             self.toast("Media upload failed: missing upload URL");
             return;
         };
         let Some(descriptor_hash) = descriptor_sha256_hex else {
+            cleanup_optimistic(self);
             self.toast("Media upload failed: missing uploaded hash");
             return;
         };
 
         let expected_hash_hex = hex::encode(pending.upload.encrypted_hash);
         if !descriptor_hash.eq_ignore_ascii_case(&expected_hash_hex) {
+            cleanup_optimistic(self);
             self.toast("Media upload failed: uploaded hash mismatch");
             return;
         }

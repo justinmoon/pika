@@ -638,10 +638,16 @@ impl AppCore {
 
         // Trigger auto-downloads for images, voice memos, and videos.
         let chat_id_str = chat_id.to_string();
-        let mut auto_download_count = 0;
         const MAX_CONCURRENT_AUTO_DOWNLOADS: usize = 5;
+        let already_pending = self
+            .pending_media_downloads
+            .values()
+            .filter(|p| p.chat_id == chat_id_str)
+            .count();
+        let available_slots = MAX_CONCURRENT_AUTO_DOWNLOADS.saturating_sub(already_pending);
+        let mut auto_download_count = 0;
         for (message_id, hash) in auto_downloads {
-            if auto_download_count >= MAX_CONCURRENT_AUTO_DOWNLOADS {
+            if auto_download_count >= available_slots {
                 break;
             }
             if !self.is_media_download_pending(&chat_id_str, &hash) {
