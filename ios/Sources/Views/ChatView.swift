@@ -67,7 +67,8 @@ struct ChatView: View {
         onSendMedia: (@MainActor (String, Data, String, String, String) -> Void)? = nil,
         onHypernoteAction: (@MainActor (String, String, String, [String: String]) -> Void)? = nil,
         onSendPoll: (@MainActor (String, String, [String]) -> Void)? = nil,
-        onLoadOlderMessages: (@MainActor (String, String, UInt32) -> Void)? = nil
+        onLoadOlderMessages: (@MainActor (String, String, UInt32) -> Void)? = nil,
+        onRetryMessage: (@MainActor (String, String) -> Void)? = nil
     ) {
         self.chatId = chatId
         self.state = state
@@ -88,6 +89,7 @@ struct ChatView: View {
         self.onHypernoteAction = onHypernoteAction
         self.onSendPoll = onSendPoll
         self.onLoadOlderMessages = onLoadOlderMessages
+        self.onRetryMessage = onRetryMessage
         _voiceRecorder = State(initialValue: VoiceRecorder(dispatchAction: onVoiceRecordingAction))
     }
 
