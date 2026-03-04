@@ -46,6 +46,7 @@ pub fn open_profile_db(data_dir: &str) -> Result<Connection, rusqlite::Error> {
     }
 
     let conn = Connection::open(&path)?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     conn.execute_batch(SCHEMA)?;
     Ok(conn)
 }
