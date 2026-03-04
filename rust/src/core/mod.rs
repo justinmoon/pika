@@ -578,6 +578,11 @@ pub struct AppCore {
     pending_media_sends: HashMap<String, PendingMediaSend>, // request_id -> pending upload metadata
     pending_media_downloads: HashMap<String, PendingMediaDownload>, // request_id -> pending download metadata
 
+    /// Per-group lock: tracks groups that have a pending evolution publish
+    /// (commit + merge + welcome delivery in flight). A second mutation on the
+    /// same group is rejected with a toast while the lock is held.
+    pending_group_ops: HashSet<String>,
+
     call_runtime: call_runtime::CallRuntime,
     call_session_params: Option<call_control::CallSessionParams>,
     call_timeline_logged_keys: HashSet<String>,
@@ -681,6 +686,7 @@ impl AppCore {
             push_subscribed_chat_ids,
             pending_media_sends: HashMap::new(),
             pending_media_downloads: HashMap::new(),
+            pending_group_ops: HashSet::new(),
             call_runtime: call_runtime::CallRuntime::default(),
             call_session_params: None,
             call_timeline_logged_keys: HashSet::new(),
@@ -3607,6 +3613,8 @@ impl AppCore {
         ok: bool,
         error: Option<String>,
     ) {
+        self.pending_group_ops.remove(&chat_id);
+
         if !ok {
             self.toast(format!(
                 "Group update failed: {}",
@@ -5170,10 +5178,6 @@ impl AppCore {
     ///   2. `merge_pending_commit` (only after relay ack)
     ///   3. Welcome delivery (only after merge)
     ///
-    /// TODO: A second group mutation (add/remove member) before the background
-    /// merge completes will fail because OpenMLS rejects new commits while one
-    /// is pending. This surfaces as an error toast but doesn't corrupt state.
-    /// Consider adding a per-group operation lock if this becomes a UX problem.
     fn publish_evolution_event(
         &mut self,
         chat_id: &str,
@@ -5182,8 +5186,14 @@ impl AppCore {
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
     ) {
+        if self.pending_group_ops.contains(chat_id) {
+            self.toast("A group update is already in progress, please wait".to_string());
+            return;
+        }
+        self.pending_group_ops.insert(chat_id.to_string());
         let fallback_relays = self.default_relays();
         let Some(sess) = self.session.as_ref() else {
+            self.pending_group_ops.remove(chat_id);
             return;
         };
         let relays: Vec<RelayUrl> = sess
@@ -6994,6 +7004,66 @@ mod tests {
             });
 
             assert_eq!(core.state.toast.as_deref(), Some("Chat not found"));
+        }
+
+        #[test]
+        fn concurrent_group_mutation_rejected_while_pending() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            // Simulate an in-flight group operation.
+            core.pending_group_ops.insert("chat1".to_string());
+
+            let group_id = mdk_core::prelude::GroupId::from_slice(&[1]);
+            let keys = nostr_sdk::Keys::generate();
+            let dummy_event = nostr_sdk::EventBuilder::new(nostr_sdk::Kind::Custom(444), "test")
+                .sign_with_keys(&keys)
+                .unwrap();
+
+            // A second publish_evolution_event on the same chat should be rejected.
+            core.publish_evolution_event("chat1", group_id, dummy_event, None, vec![]);
+
+            assert_eq!(
+                core.state.toast.as_deref(),
+                Some("A group update is already in progress, please wait")
+            );
+        }
+
+        #[test]
+        fn group_op_lock_released_after_evolution_published() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.pending_group_ops.insert("chat1".to_string());
+            assert!(core.pending_group_ops.contains("chat1"));
+
+            // Simulate the background publish completing.
+            core.handle_group_evolution_published(
+                "chat1".to_string(),
+                mdk_core::prelude::GroupId::from_slice(&[1]),
+                None,
+                vec![],
+                true,
+                None,
+            );
+
+            assert!(!core.pending_group_ops.contains("chat1"));
+        }
+
+        #[test]
+        fn group_op_lock_released_on_failure() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.pending_group_ops.insert("chat1".to_string());
+
+            core.handle_group_evolution_published(
+                "chat1".to_string(),
+                mdk_core::prelude::GroupId::from_slice(&[1]),
+                None,
+                vec![],
+                false,
+                Some("relay error".to_string()),
+            );
+
+            assert!(!core.pending_group_ops.contains("chat1"));
         }
     }
 }
