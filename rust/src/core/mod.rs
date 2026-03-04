@@ -7390,4 +7390,52 @@ mod tests {
         // Not logged in — should be a no-op (no panic).
         core.handle_internal(crate::updates::InternalEvent::RefreshAfterForeground);
     }
+
+    #[test]
+    fn apply_my_profile_none_metadata_preserves_cached_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let mut core = make_core(data_dir.clone());
+        profile_pics::ensure_dir(&data_dir);
+
+        // Simulate a logged-in session with a cached profile.
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let pk = keys.public_key().to_hex();
+
+        let cached = ProfileCache::from_metadata_json(
+            Some(
+                r#"{"name":"Alice","about":"Hello","picture":"https://example.com/pic.jpg"}"#
+                    .to_string(),
+            ),
+            1000,
+            1000,
+        );
+        core.profiles.insert(pk.clone(), cached);
+
+        // Set up a minimal session so apply_my_profile_metadata can find the pubkey.
+        let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+        core.session = Some(super::Session {
+            pubkey: keys.public_key(),
+            local_keys: Some(keys),
+            mdk,
+            client: nostr_sdk::Client::default(),
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups: std::collections::HashMap::new(),
+        });
+
+        // Build the initial my_profile state from the cache.
+        core.state.my_profile = core.my_profile_state();
+        assert_eq!(core.state.my_profile.name, "Alice");
+        assert_eq!(core.state.my_profile.about, "Hello");
+
+        // Simulate fetch_metadata returning None (relay unreachable / timeout).
+        core.apply_my_profile_metadata(None, None);
+
+        // The cached profile should be preserved.
+        assert_eq!(core.state.my_profile.name, "Alice");
+        assert_eq!(core.state.my_profile.about, "Hello");
+        assert!(core.profiles.get(&pk).unwrap().name.as_deref() == Some("Alice"));
+    }
 }

@@ -235,15 +235,15 @@ impl AppCore {
         // Serialize to JSON and upsert into the shared profile cache —
         // same storage and picture-caching path as every other profile.
         if let Some(pk) = self.session.as_ref().map(|s| s.pubkey.to_hex()) {
-            let metadata_json = metadata.and_then(|m| serde_json::to_string(&m).ok());
-            self.upsert_profile(
-                pk.clone(),
-                ProfileCache::from_metadata_json(
-                    metadata_json,
-                    crate::state::now_seconds(),
-                    crate::state::now_seconds(),
-                ),
-            );
+            // When metadata is None (relay unreachable / timeout), keep the
+            // existing cached profile instead of overwriting it with empty data.
+            if let Some(m) = metadata {
+                let metadata_json = serde_json::to_string(&m).ok();
+                self.upsert_profile(
+                    pk.clone(),
+                    ProfileCache::from_metadata_json(metadata_json, now_seconds(), now_seconds()),
+                );
+            }
             // If the caller already has the image bytes (e.g. just-uploaded pfp),
             // write them to the cache directly so the UI can show the new picture
             // immediately without a redundant re-download from Blossom.
