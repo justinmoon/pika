@@ -278,7 +278,7 @@ pub fn save_follows(conn: &Connection, pubkeys: &[String]) {
     for pk in pubkeys {
         if let Err(e) = tx.execute("INSERT OR IGNORE INTO follows (pubkey) VALUES (?1)", [pk]) {
             tracing::warn!(%e, pubkey = pk, "failed to save follow to cache db");
-            return;
+            continue;
         }
     }
     if let Err(e) = tx.commit() {
