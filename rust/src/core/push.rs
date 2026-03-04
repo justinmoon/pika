@@ -33,8 +33,11 @@ impl AppCore {
 
     fn save_push_subscriptions(&self) {
         let path = Path::new(&self.data_dir).join("push_subscribed_chats.json");
+        let tmp_path = path.with_extension("json.tmp");
         if let Ok(json) = serde_json::to_string(&self.push_subscribed_chat_ids) {
-            let _ = std::fs::write(&path, json);
+            if std::fs::write(&tmp_path, &json).is_ok() {
+                let _ = std::fs::rename(&tmp_path, &path);
+            }
         }
     }
 
