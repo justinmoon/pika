@@ -48,6 +48,13 @@ class NotificationService: UNNotificationServiceExtension {
             content.userInfo["chat_id"] = msg.chatId
             content.threadIdentifier = msg.chatId
 
+            // Attach decrypted image thumbnail if available.
+            if let imageData = msg.imageData {
+                if let attachment = Self.createImageAttachment(data: Data(imageData)) {
+                    content.attachments = [attachment]
+                }
+            }
+
             if let urlStr = msg.senderPictureUrl, let url = URL(string: urlStr) {
                 Self.downloadAvatar(url: url) { image in
                     let updated = Self.applyCommNotification(
@@ -140,6 +147,20 @@ class NotificationService: UNNotificationServiceExtension {
         interaction.donate(completion: nil)
         let updated = try? content.updating(from: intent)
         return updated ?? content
+    }
+
+    /// Save decrypted image data to a temp file and create a notification attachment.
+    private static func createImageAttachment(data: Data) -> UNNotificationAttachment? {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notif-images", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        let fileURL = tmpDir.appendingPathComponent(UUID().uuidString + ".jpg")
+        do {
+            try data.write(to: fileURL)
+            return try UNNotificationAttachment(identifier: "image", url: fileURL)
+        } catch {
+            return nil
+        }
     }
 
     /// Download an image and return it as an INImage.

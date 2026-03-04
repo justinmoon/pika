@@ -14,6 +14,8 @@ pub struct PushNotificationContent {
     pub content: String,
     pub is_group: bool,
     pub group_name: Option<String>,
+    /// Decrypted image bytes for rich notification thumbnails, if available.
+    pub image_data: Option<Vec<u8>>,
 }
 
 #[derive(uniffi::Enum)]
@@ -85,13 +87,18 @@ pub fn decrypt_push_notification(
 
     match msg.kind {
         Kind::ChatMessage | Kind::Reaction => {
+            let media = match msg.kind {
+                Kind::ChatMessage => notif_media(&msg.tags),
+                _ => None,
+            };
+
             let content = match msg.kind {
                 Kind::ChatMessage => {
-                    if let Some(media) = notif_media_kind(&msg.tags) {
+                    if let Some(ref media) = media {
                         if msg.content.is_empty() {
-                            media.label().to_string()
+                            media.kind.label().to_string()
                         } else {
-                            format!("{} {}", media.emoji(), msg.content)
+                            format!("{} {}", media.kind.emoji(), msg.content)
                         }
                     } else if msg.content.is_empty() {
                         return Some(PushNotificationResult::Suppress);
@@ -109,6 +116,11 @@ pub fn decrypt_push_notification(
                 }
                 _ => unreachable!(),
             };
+
+            // Try to download and decrypt the image for rich notification thumbnails.
+            let image_data = media
+                .filter(|m| m.kind == NotifMediaKind::Image)
+                .and_then(|m| download_and_decrypt_image(&mdk, &msg.mls_group_id, m.tag));
 
             let all_groups = mdk.get_groups().ok()?;
             let group_info = all_groups
@@ -139,6 +151,7 @@ pub fn decrypt_push_notification(
                     content,
                     is_group,
                     group_name,
+                    image_data,
                 },
             })
         }
@@ -195,8 +208,14 @@ impl NotifMediaKind {
     }
 }
 
+/// Parsed media info from the first `imeta` tag.
+struct NotifMedia<'a> {
+    kind: NotifMediaKind,
+    tag: &'a nostr::Tag,
+}
+
 /// Detect the media kind from the first `imeta` tag, if any.
-fn notif_media_kind(tags: &nostr::Tags) -> Option<NotifMediaKind> {
+fn notif_media(tags: &nostr::Tags) -> Option<NotifMedia<'_>> {
     for tag in tags.iter() {
         if !matches!(tag.kind(), TagKind::Custom(ref k) if k.as_ref() == "imeta") {
             continue;
@@ -216,9 +235,43 @@ fn notif_media_kind(tags: &nostr::Tags) -> Option<NotifMediaKind> {
         } else {
             NotifMediaKind::File
         };
-        return Some(kind);
+        return Some(NotifMedia { kind, tag });
     }
     None
+}
+
+/// Max encrypted download size for NSE image thumbnails (10 MB).
+const MAX_NSE_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Download encrypted image from the URL in the imeta tag and decrypt it via MDK.
+/// Returns `None` on any failure so the notification still shows with text only.
+fn download_and_decrypt_image(
+    mdk: &mdk_support::PikaMdk,
+    mls_group_id: &mdk_storage_traits::GroupId,
+    imeta_tag: &nostr::Tag,
+) -> Option<Vec<u8>> {
+    let manager = mdk.media_manager(mls_group_id.clone());
+    let reference = manager.parse_imeta_tag(imeta_tag).ok()?;
+
+    let response = ureq::get(&reference.url).call().ok()?;
+
+    // Bail if the server reports a size larger than our cap.
+    if let Some(len) = response.headers().get("content-length") {
+        if let Ok(n) = len.to_str().unwrap_or("0").parse::<u64>() {
+            if n > MAX_NSE_IMAGE_BYTES {
+                return None;
+            }
+        }
+    }
+
+    let encrypted = response
+        .into_body()
+        .with_config()
+        .limit(MAX_NSE_IMAGE_BYTES)
+        .read_to_vec()
+        .ok()?;
+
+    manager.decrypt_from_download(&encrypted, &reference).ok()
 }
 
 /// Look up display name and picture URL from the SQLite profile cache.
@@ -288,53 +341,53 @@ mod tests {
     #[test]
     fn media_kind_image() {
         let tags = tags_from(vec![imeta_tag("image/jpeg")]);
-        let kind = notif_media_kind(&tags).unwrap();
-        assert_eq!(kind.label(), "Sent a photo");
-        assert_eq!(kind.emoji(), "\u{1F4F7}");
+        let m = notif_media(&tags).unwrap();
+        assert_eq!(m.kind.label(), "Sent a photo");
+        assert_eq!(m.kind.emoji(), "\u{1F4F7}");
     }
 
     #[test]
     fn media_kind_video() {
         let tags = tags_from(vec![imeta_tag("video/mp4")]);
-        let kind = notif_media_kind(&tags).unwrap();
-        assert_eq!(kind.label(), "Sent a video");
-        assert_eq!(kind.emoji(), "\u{1F3AC}");
+        let m = notif_media(&tags).unwrap();
+        assert_eq!(m.kind.label(), "Sent a video");
+        assert_eq!(m.kind.emoji(), "\u{1F3AC}");
     }
 
     #[test]
     fn media_kind_audio() {
         let tags = tags_from(vec![imeta_tag("audio/mp4")]);
-        let kind = notif_media_kind(&tags).unwrap();
-        assert_eq!(kind.label(), "Sent a voice message");
-        assert_eq!(kind.emoji(), "\u{1F3A4}");
+        let m = notif_media(&tags).unwrap();
+        assert_eq!(m.kind.label(), "Sent a voice message");
+        assert_eq!(m.kind.emoji(), "\u{1F3A4}");
     }
 
     #[test]
     fn media_kind_unknown_mime() {
         let tags = tags_from(vec![imeta_tag("application/pdf")]);
-        let kind = notif_media_kind(&tags).unwrap();
-        assert_eq!(kind.label(), "Sent a file");
-        assert_eq!(kind.emoji(), "\u{1F4CE}");
+        let m = notif_media(&tags).unwrap();
+        assert_eq!(m.kind.label(), "Sent a file");
+        assert_eq!(m.kind.emoji(), "\u{1F4CE}");
     }
 
     #[test]
     fn media_kind_no_mime() {
         let tag = Tag::parse(vec!["imeta", "url https://example.com/file"]).unwrap();
         let tags = tags_from(vec![tag]);
-        let kind = notif_media_kind(&tags).unwrap();
-        assert_eq!(kind.label(), "Sent a file");
+        let m = notif_media(&tags).unwrap();
+        assert_eq!(m.kind.label(), "Sent a file");
     }
 
     #[test]
     fn media_kind_no_imeta_tags() {
         let tag = Tag::parse(vec!["e", "abc123"]).unwrap();
         let tags = tags_from(vec![tag]);
-        assert!(notif_media_kind(&tags).is_none());
+        assert!(notif_media(&tags).is_none());
     }
 
     #[test]
     fn media_kind_empty_tags() {
         let tags = tags_from(vec![]);
-        assert!(notif_media_kind(&tags).is_none());
+        assert!(notif_media(&tags).is_none());
     }
 }
