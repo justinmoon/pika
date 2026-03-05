@@ -455,41 +455,25 @@ private struct MessageBubble: View {
         let segments = message.segments.isEmpty ? fallbackSegments() : message.segments
 
         VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
-            if let replyToId = message.replyToMessageId {
-                ReplyPreviewCard(
-                    replyToMessageId: replyToId,
-                    target: replyTargetsById[replyToId],
-                    isMine: message.isMine,
-                    onTap: onJumpToMessage
-                )
-                .padding(.bottom, 3)
-            }
-
             if let hypernote = message.hypernote {
-                HypernoteRenderer(
-                    astJson: hypernote.astJson,
-                    messageId: message.id,
-                    defaultState: hypernote.defaultState,
-                    myResponse: hypernote.myResponse,
-                    responseTallies: hypernote.responseTallies,
-                    responders: hypernote.responders,
-                    onAction: { actionName, messageId, form in
-                        onHypernoteAction?(actionName, messageId, form)
-                    }
-                )
+                VStack(alignment: .leading, spacing: 0) {
+                    replyPreviewSection
+                    HypernoteRenderer(
+                        astJson: hypernote.astJson,
+                        messageId: message.id,
+                        defaultState: hypernote.defaultState,
+                        myResponse: hypernote.myResponse,
+                        responseTallies: hypernote.responseTallies,
+                        responders: hypernote.responders,
+                        onAction: { actionName, messageId, form in
+                            onHypernoteAction?(actionName, messageId, form)
+                        }
+                    )
+                }
             } else if hasMedia {
                 mediaBubble(segments: segments)
             } else {
-                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                    switch segment {
-                    case let .markdown(text):
-                        markdownBubble(text: text)
-                    case let .pikaHtml(_, html):
-                        PikaHtmlView(html: html, htmlState: message.htmlState, onSendMessage: {
-                            onSendMessage($0, nil)
-                        })
-                    }
-                }
+                textBubble(segments: segments)
             }
 
             if hasReactions {
@@ -539,6 +523,8 @@ private struct MessageBubble: View {
         let fileMedia = message.media.filter { $0.kind != .image && $0.kind != .video }
 
         VStack(alignment: .leading, spacing: 0) {
+            replyPreviewSection
+
             // Visual media grid (images + videos)
             if !visualMedia.isEmpty {
                 mediaGrid(attachments: visualMedia)
@@ -595,7 +581,7 @@ private struct MessageBubble: View {
             }
         }
         .background {
-            if hasText || hasFileAttachment {
+            if hasText || hasFileAttachment || message.replyToMessageId != nil {
                 message.isMine ? Color.blue : Color.gray.opacity(0.2)
             } else {
                 Color.clear
@@ -696,11 +682,57 @@ private struct MessageBubble: View {
         .clipped()
     }
 
+    @ViewBuilder
+    private var replyPreviewSection: some View {
+        if let replyToId = message.replyToMessageId {
+            ReplyPreviewCard(
+                replyToMessageId: replyToId,
+                target: replyTargetsById[replyToId],
+                isMine: message.isMine,
+                onTap: onJumpToMessage
+            )
+            .padding(.horizontal, 6)
+            .padding(.top, 6)
+        }
+    }
+
+    private func textBubble(segments: [MessageSegment]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            replyPreviewSection
+
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                    switch segment {
+                    case let .markdown(text):
+                        Markdown(text)
+                            .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case let .pikaHtml(_, html):
+                        PikaHtmlView(html: html, htmlState: message.htmlState, onSendMessage: {
+                            onSendMessage($0, nil)
+                        })
+                    }
+                }
+
+                Text(timestampText)
+                    .font(.caption2)
+                    .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+        }
+        .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
+        .clipShape(UnevenRoundedRectangleCompat(cornerRadii: bubbleRadii, style: .continuous))
+    }
+
     private func markdownBubble(text: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Markdown(text)
                 .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
                 .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text(timestampText)
                 .font(.caption2)
@@ -809,6 +841,7 @@ private struct ReplyPreviewCard: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            mediaThumbnail
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -833,6 +866,9 @@ private struct ReplyPreviewCard: View {
         guard let target else { return "Original message not loaded" }
         let trimmed = target.displayContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
+            if let firstMedia = target.media.first {
+                return mediaLabel(for: firstMedia.kind)
+            }
             return "(empty message)"
         }
         if let first = trimmed.split(separator: "\n").first {
@@ -846,6 +882,51 @@ private struct ReplyPreviewCard: View {
             return String(trimmed.prefix(80)) + "…"
         }
         return trimmed
+    }
+
+    private func mediaLabel(for kind: ChatMediaKind) -> String {
+        switch kind {
+        case .image: return "Photo"
+        case .video: return "Video"
+        case .voiceNote: return "Voice Message"
+        case .file: return "File"
+        }
+    }
+
+    private var firstVisualMedia: ChatMediaAttachment? {
+        target?.media.first { $0.kind == .image || $0.kind == .video }
+    }
+
+    @ViewBuilder
+    private var mediaThumbnail: some View {
+        if let media = firstVisualMedia {
+            let size: CGFloat = 34
+            Group {
+                if let localPath = media.localPath {
+                    CachedAsyncImage(url: URL(fileURLWithPath: localPath)) { image in
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    } placeholder: {
+                        thumbnailPlaceholder(media: media, size: size)
+                    }
+                } else {
+                    thumbnailPlaceholder(media: media, size: size)
+                }
+            }
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private func thumbnailPlaceholder(media: ChatMediaAttachment, size: CGFloat) -> some View {
+        if let hash = media.blurhash {
+            BlurhashView(hash: hash, size: CGSize(width: size, height: size))
+        } else {
+            Rectangle()
+                .fill(isMine ? Color.white.opacity(0.15) : Color.gray.opacity(0.2))
+        }
     }
 }
 
