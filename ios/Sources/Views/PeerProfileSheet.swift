@@ -128,9 +128,11 @@ struct PeerProfileSheet: View {
                         Image(systemName: "photo.on.rectangle.angled")
                             .foregroundStyle(.blue)
                         Text("Photos & Videos")
-                            .foregroundStyle(.primary)
+                        Spacer()
                     }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
         }
     }
