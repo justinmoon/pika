@@ -730,6 +730,10 @@ pub struct AppCore {
     pending_media_batch_sends: HashMap<String, PendingMediaBatchSend>, // batch_id -> pending batch upload
     pending_media_downloads: HashMap<String, PendingMediaDownload>, // request_id -> pending download metadata
 
+    /// In-memory cache of chat media records per chat, keyed by chat_id -> (original_hash_hex -> record).
+    /// Avoids re-querying SQLite on every `refresh_current_chat` call.
+    media_cache: HashMap<String, HashMap<String, chat_media_db::ChatMediaRecord>>,
+
     /// Per-group lock: tracks groups that have a pending evolution publish
     /// (commit + merge + welcome delivery in flight). A second mutation on the
     /// same group is rejected with a toast while the lock is held.
@@ -846,6 +850,7 @@ impl AppCore {
             pending_media_sends: HashMap::new(),
             pending_media_batch_sends: HashMap::new(),
             pending_media_downloads: HashMap::new(),
+            media_cache: HashMap::new(),
             pending_group_ops: HashSet::new(),
             call_runtime: call_runtime::CallRuntime::default(),
             call_session_params: None,
@@ -2831,6 +2836,7 @@ impl AppCore {
             self.failed_sends.clear(self.profile_db.as_ref());
             self.pending_media_sends.clear();
             self.pending_media_batch_sends.clear();
+            self.media_cache.clear();
             self.pending_media_downloads.clear();
             self.local_outbox.clear();
             self.profiles.clear();
@@ -4403,6 +4409,7 @@ impl AppCore {
                 // If we're viewing this chat, navigate back.
                 prune_chat_routes(&mut self.state.router.screen_stack, &chat_id);
                 self.state.current_chat = None;
+                self.media_cache.remove(&chat_id);
                 self.refresh_chat_list_from_storage();
                 self.emit_router();
             }
@@ -5482,6 +5489,7 @@ impl AppCore {
                 // Navigate back to chat list.
                 prune_chat_routes(&mut self.state.router.screen_stack, &chat_id);
                 self.state.current_chat = None;
+                self.media_cache.remove(&chat_id);
                 self.refresh_all_from_storage();
                 self.emit_router();
             }

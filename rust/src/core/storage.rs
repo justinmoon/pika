@@ -420,17 +420,14 @@ impl AppCore {
         };
 
         let my_pubkey_hex = sess.pubkey.to_hex();
+        // Ensure in-memory media cache is populated before building messages.
+        // Done here (before build_sender_names) to avoid borrow conflicts with session.
+        self.ensure_media_cache_loaded(chat_id, &my_pubkey_hex);
 
+        let sess = self.session.as_ref().unwrap();
         let sender_names = self.build_sender_names(chat_id, &entry.members, &my_pubkey_hex);
         let member_profiles =
             self.build_member_profiles(chat_id, sess, &entry.members, &my_pubkey_hex);
-
-        // Pre-load all media records for this chat to avoid per-item DB queries.
-        let mut media_cache = self
-            .chat_media_db
-            .as_ref()
-            .map(|conn| super::chat_media_db::get_all_chat_media_map(conn, &my_pubkey_hex, chat_id))
-            .unwrap_or_default();
 
         let desired = *self.loaded_count.get(chat_id).unwrap_or(&50usize);
         let target = desired.max(50);
@@ -464,6 +461,9 @@ impl AppCore {
 
         let separated = separate_messages(&visible_messages, &sender_names);
         let mut hypernote_responses = separated.hypernote_responses;
+
+        // Temporarily take the media cache out of self so we can pass &mut self and &mut cache separately.
+        let mut media_cache = self.media_cache.remove(chat_id).unwrap_or_default();
 
         // MDK returns descending by created_at; UI wants ascending.
         let mut msgs: Vec<ChatMessage> = separated
@@ -499,6 +499,9 @@ impl AppCore {
                 cm
             })
             .collect();
+
+        // Put the media cache back.
+        self.media_cache.insert(chat_id.to_string(), media_cache);
 
         let oldest_loaded_ts = msgs.first().map(|m| m.timestamp).unwrap_or(i64::MIN);
         let present_ids: std::collections::HashSet<String> =
@@ -666,6 +669,48 @@ impl AppCore {
         }
     }
 
+    /// Populate the in-memory media cache for a chat from the DB, if not already loaded.
+    fn ensure_media_cache_loaded(&mut self, chat_id: &str, my_pubkey_hex: &str) {
+        if !self.media_cache.contains_key(chat_id) {
+            let db_cache = self
+                .chat_media_db
+                .as_ref()
+                .map(|conn| {
+                    super::chat_media_db::get_all_chat_media_map(conn, my_pubkey_hex, chat_id)
+                })
+                .unwrap_or_default();
+            self.media_cache.insert(chat_id.to_string(), db_cache);
+        }
+    }
+
+    /// Lightweight update: set the `local_path` on a media attachment in the current chat
+    /// state without doing a full message rebuild. Returns true if the update was applied.
+    pub(super) fn update_media_local_path_in_place(
+        &mut self,
+        chat_id: &str,
+        original_hash_hex: &str,
+        local_path: Option<String>,
+    ) -> bool {
+        let Some(cur) = self.state.current_chat.as_mut() else {
+            return false;
+        };
+        if cur.chat_id != chat_id {
+            return false;
+        }
+        let found = cur.messages.iter_mut().find_map(|msg| {
+            msg.media
+                .iter_mut()
+                .find(|att| att.original_hash_hex == original_hash_hex)
+        });
+        if let Some(att) = found {
+            att.local_path = local_path;
+            self.emit_current_chat();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Check if a download is already in-flight for this chat + hash.
     fn is_media_download_pending(&self, chat_id: &str, original_hash_hex: &str) -> bool {
         self.pending_media_downloads.values().any(|p| {
@@ -682,16 +727,12 @@ impl AppCore {
         };
 
         let my_pubkey_hex = sess.pubkey.to_hex();
+        self.ensure_media_cache_loaded(chat_id, &my_pubkey_hex);
 
+        let sess = self.session.as_ref().unwrap();
         let sender_names = self.build_sender_names(chat_id, &entry.members, &my_pubkey_hex);
         let member_profiles =
             self.build_member_profiles(chat_id, sess, &entry.members, &my_pubkey_hex);
-
-        let mut media_cache = self
-            .chat_media_db
-            .as_ref()
-            .map(|conn| super::chat_media_db::get_all_chat_media_map(conn, &my_pubkey_hex, chat_id))
-            .unwrap_or_default();
 
         let base_offset = *self.loaded_count.get(chat_id).unwrap_or(&0);
         let mut visible_page = Vec::new();
@@ -731,6 +772,9 @@ impl AppCore {
 
         let separated = separate_messages(&visible_page, &sender_names);
 
+        // Temporarily take the media cache out of self.
+        let mut media_cache = self.media_cache.remove(chat_id).unwrap_or_default();
+
         let mut older: Vec<ChatMessage> = separated
             .regular
             .into_iter()
@@ -764,6 +808,9 @@ impl AppCore {
                 cm
             })
             .collect();
+
+        // Put the media cache back.
+        self.media_cache.insert(chat_id.to_string(), media_cache);
 
         process_hypernote_responses(
             &mut older,

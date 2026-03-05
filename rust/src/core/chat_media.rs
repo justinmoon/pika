@@ -1189,6 +1189,11 @@ impl AppCore {
             if let Err(e) = chat_media_db::upsert_chat_media(conn, &record) {
                 tracing::warn!(%e, "failed to persist chat media metadata");
             }
+            // Keep in-memory cache in sync.
+            self.media_cache
+                .entry(pending.chat_id.clone())
+                .or_default()
+                .insert(record.original_hash_hex.clone(), record);
         }
 
         let media = vec![self.attachment_from_reference(
@@ -1418,6 +1423,11 @@ impl AppCore {
                 if let Err(e) = chat_media_db::upsert_chat_media(conn, &record) {
                     tracing::warn!(%e, "failed to persist chat media metadata");
                 }
+                // Keep in-memory cache in sync.
+                self.media_cache
+                    .entry(batch.chat_id.clone())
+                    .or_default()
+                    .insert(record.original_hash_hex.clone(), record);
             }
 
             imeta_tags.push(um.imeta_tag.clone());
@@ -1661,7 +1671,10 @@ impl AppCore {
                 &reference.filename,
             );
             if local_path.exists() {
-                self.refresh_current_chat_if_open(&chat_id);
+                let path_str = Some(local_path.to_string_lossy().to_string());
+                if !self.update_media_local_path_in_place(&chat_id, &target_hash, path_str) {
+                    self.refresh_current_chat_if_open(&chat_id);
+                }
                 return;
             }
 
@@ -1796,7 +1809,11 @@ impl AppCore {
             return;
         }
 
-        self.refresh_current_chat_if_open(&pending.chat_id);
+        // Try a lightweight in-place update first; fall back to full refresh if needed.
+        let path_str = Some(local_path.to_string_lossy().to_string());
+        if !self.update_media_local_path_in_place(&pending.chat_id, &original_hash_hex, path_str) {
+            self.refresh_current_chat_if_open(&pending.chat_id);
+        }
     }
 
     pub(super) fn load_media_gallery(&mut self, chat_id: &str) {
