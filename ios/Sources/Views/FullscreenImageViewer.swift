@@ -21,8 +21,8 @@ struct FullscreenImageViewer: View {
         self._currentId = State(initialValue: selected.id)
     }
 
-    private var currentAttachment: ChatMediaAttachment {
-        attachments.first { $0.id == currentId } ?? attachments[0]
+    private var currentAttachment: ChatMediaAttachment? {
+        attachments.first { $0.id == currentId } ?? attachments.first
     }
 
     var body: some View {
@@ -67,7 +67,7 @@ struct FullscreenImageViewer: View {
                 }
                 .opacity(backgroundOpacity)
             }
-            .navigationTitle(currentAttachment.filename)
+            .navigationTitle(currentAttachment?.filename ?? "")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
@@ -81,7 +81,7 @@ struct FullscreenImageViewer: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    ShareLink(item: URL(fileURLWithPath: currentAttachment.localPath ?? "")) {
+                    ShareLink(item: URL(fileURLWithPath: currentAttachment?.localPath ?? "")) {
                         Image(systemName: "square.and.arrow.up")
                     }
                 }
