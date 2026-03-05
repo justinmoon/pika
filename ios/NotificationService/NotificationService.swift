@@ -39,14 +39,7 @@ class NotificationService: UNNotificationServiceExtension {
 
         switch decryptPushNotification(dataDir: dataDir, nsec: nsec, eventJson: eventJson, keychainGroup: keychainGroup) {
         case .content(let msg):
-            if msg.isGroup {
-                content.title = msg.groupName ?? "Group"
-                content.subtitle = msg.senderName
-                content.body = msg.content
-            } else {
-                content.title = msg.senderName
-                content.body = msg.content
-            }
+            content.body = msg.content
             content.userInfo["chat_id"] = msg.chatId
             content.threadIdentifier = msg.chatId
 
@@ -64,6 +57,8 @@ class NotificationService: UNNotificationServiceExtension {
                         senderName: msg.senderName,
                         senderPubkey: msg.senderPubkey,
                         chatId: msg.chatId,
+                        isGroup: msg.isGroup,
+                        groupName: msg.groupName,
                         senderImage: image
                     )
                     contentHandler(updated)
@@ -74,6 +69,8 @@ class NotificationService: UNNotificationServiceExtension {
                     senderName: msg.senderName,
                     senderPubkey: msg.senderPubkey,
                     chatId: msg.chatId,
+                    isGroup: msg.isGroup,
+                    groupName: msg.groupName,
                     senderImage: nil
                 )
                 contentHandler(updated)
@@ -120,6 +117,8 @@ class NotificationService: UNNotificationServiceExtension {
         senderName: String,
         senderPubkey: String,
         chatId: String,
+        isGroup: Bool = false,
+        groupName: String? = nil,
         senderImage: INImage?
     ) -> UNNotificationContent {
         let handle = INPersonHandle(value: senderPubkey, type: .unknown)
@@ -131,11 +130,23 @@ class NotificationService: UNNotificationServiceExtension {
             contactIdentifier: nil,
             customIdentifier: senderPubkey
         )
+        // For groups, iOS requires recipients to treat the intent as a group
+        // conversation. Provide the sender as a recipient placeholder so that
+        // speakableGroupName is used as the title and sender as the subtitle.
+        let speakableGroup: INSpeakableString?
+        let recipients: [INPerson]?
+        if isGroup {
+            speakableGroup = INSpeakableString(spokenPhrase: groupName ?? "Group")
+            recipients = [sender]
+        } else {
+            speakableGroup = nil
+            recipients = nil
+        }
         let intent = INSendMessageIntent(
-            recipients: nil,
+            recipients: recipients,
             outgoingMessageType: .outgoingMessageText,
             content: nil,
-            speakableGroupName: nil,
+            speakableGroupName: speakableGroup,
             conversationIdentifier: chatId,
             serviceName: nil,
             sender: sender,
@@ -147,8 +158,7 @@ class NotificationService: UNNotificationServiceExtension {
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .incoming
         interaction.donate(completion: nil)
-        let updated = try? content.updating(from: intent)
-        return updated ?? content
+        return (try? content.updating(from: intent)) ?? content
     }
 
     /// Save decrypted image data to a temp file and create a notification attachment.
