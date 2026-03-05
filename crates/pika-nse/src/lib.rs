@@ -122,25 +122,19 @@ pub fn decrypt_push_notification(
                 .filter(|m| m.kind == NotifMediaKind::Image)
                 .and_then(|m| download_and_decrypt_image(&mdk, &msg.mls_group_id, m.tag));
 
-            let all_groups = mdk.get_groups().ok()?;
-            let group_info = all_groups
-                .iter()
-                .find(|g| g.mls_group_id == msg.mls_group_id);
-
-            let group_name = group_info.and_then(|g| {
-                if g.name != "DM" && !g.name.is_empty() {
-                    Some(g.name.clone())
-                } else {
-                    None
-                }
-            });
+            let group_name = if group.name != "DM" && !group.name.is_empty() {
+                Some(group.name.clone())
+            } else {
+                None
+            };
 
             let members = mdk.get_members(&msg.mls_group_id).unwrap_or_default();
             let other_count = members.iter().filter(|p| *p != &pubkey).count();
-            let is_group = other_count > 1 || (group_name.is_some() && other_count > 0);
+            let is_group = group_name.is_some() || other_count > 1;
 
             let sender_hex = msg.pubkey.to_hex();
-            let (sender_name, sender_picture_url) = resolve_sender_profile(&data_dir, &sender_hex);
+            let (sender_name, sender_picture_url) =
+                resolve_sender_profile(&data_dir, &sender_hex, Some(&chat_id));
 
             Some(PushNotificationResult::Content {
                 content: PushNotificationContent {
@@ -166,7 +160,8 @@ pub fn decrypt_push_notification(
                 .map(|b| b.tracks.iter().any(|t| t.name == "video0"))
                 .unwrap_or(false);
             let sender_hex = msg.pubkey.to_hex();
-            let (caller_name, caller_picture_url) = resolve_sender_profile(&data_dir, &sender_hex);
+            let (caller_name, caller_picture_url) =
+                resolve_sender_profile(&data_dir, &sender_hex, Some(&chat_id));
             Some(PushNotificationResult::CallInvite {
                 chat_id,
                 call_id: probe.call_id,
@@ -281,7 +276,13 @@ fn download_and_decrypt_image(
 }
 
 /// Look up display name and picture URL from the SQLite profile cache.
-fn resolve_sender_profile(data_dir: &str, pubkey_hex: &str) -> (String, Option<String>) {
+/// If `chat_id` is provided, checks for a group-specific profile first,
+/// falling back to the global profile.
+fn resolve_sender_profile(
+    data_dir: &str,
+    pubkey_hex: &str,
+    chat_id: Option<&str>,
+) -> (String, Option<String>) {
     let fallback = (format!("{}...", &pubkey_hex[..8]), None);
 
     let db_path = std::path::Path::new(data_dir).join("profiles.sqlite3");
@@ -293,14 +294,30 @@ fn resolve_sender_profile(data_dir: &str, pubkey_hex: &str) -> (String, Option<S
         Err(_) => return fallback,
     };
 
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = conn
-        .query_row(
-            "SELECT metadata->>'display_name', metadata->>'name', metadata->>'picture'
-             FROM profiles WHERE pubkey = ?1",
-            [pubkey_hex],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .ok();
+    // Try group profile first, then fall back to global profile.
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = chat_id
+        .and_then(|cid| {
+            conn.query_row(
+                "SELECT metadata->>'display_name', metadata->>'name', metadata->>'picture'
+                 FROM profiles WHERE pubkey = ?1 AND chat_id = ?2",
+                rusqlite::params![pubkey_hex, cid],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .ok()
+            .filter(|(dn, n, _): &(Option<String>, Option<String>, _)| {
+                dn.as_ref().is_some_and(|s| !s.is_empty())
+                    || n.as_ref().is_some_and(|s| !s.is_empty())
+            })
+        })
+        .or_else(|| {
+            conn.query_row(
+                "SELECT metadata->>'display_name', metadata->>'name', metadata->>'picture'
+                 FROM profiles WHERE pubkey = ?1 AND chat_id IS NULL",
+                [pubkey_hex],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .ok()
+        });
 
     let Some((display_name, name_field, picture)) = row else {
         return fallback;
@@ -313,11 +330,16 @@ fn resolve_sender_profile(data_dir: &str, pubkey_hex: &str) -> (String, Option<S
 
     let picture_url = picture.filter(|s| !s.is_empty()).map(|url| {
         // Prefer locally cached profile picture if available.
-        let cached = std::path::Path::new(data_dir)
-            .join("profile_pics")
-            .join(pubkey_hex);
-        if cached.exists() {
-            format!("file://{}", cached.display())
+        // Check group-specific cache first, then global cache.
+        let base = std::path::Path::new(data_dir).join("profile_pics");
+        let group_cached = chat_id
+            .map(|cid| base.join(format!("group_{cid}")).join(pubkey_hex))
+            .filter(|p| p.exists());
+        let global_cached = base.join(pubkey_hex);
+        if let Some(path) = group_cached {
+            format!("file://{}", path.display())
+        } else if global_cached.exists() {
+            format!("file://{}", global_cached.display())
         } else {
             url
         }
