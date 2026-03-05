@@ -78,7 +78,7 @@ pub(super) fn upsert_chat_media(
             created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         ON CONFLICT(account_pubkey, chat_id, original_hash_hex) DO UPDATE SET
-            encrypted_hash_hex = excluded.encrypted_hash_hex,
+            encrypted_hash_hex = CASE WHEN excluded.encrypted_hash_hex = '' THEN chat_media.encrypted_hash_hex ELSE excluded.encrypted_hash_hex END,
             url = excluded.url,
             mime_type = excluded.mime_type,
             filename = excluded.filename,
