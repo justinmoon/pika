@@ -486,6 +486,7 @@ impl AppCore {
                     chat_id,
                     &my_pubkey_hex,
                     &m.tags,
+                    m.created_at.as_secs() as i64,
                 );
                 cm
             })
@@ -743,6 +744,7 @@ impl AppCore {
                     chat_id,
                     &my_pubkey_hex,
                     &m.tags,
+                    m.created_at.as_secs() as i64,
                 );
                 cm
             })

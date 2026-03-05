@@ -53,27 +53,54 @@ struct ChatMediaGalleryView: View {
             Button {
                 fullscreenAttachment = attachment
             } label: {
-                CachedAsyncImage(url: URL(fileURLWithPath: localPath)) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                } placeholder: {
-                    Rectangle()
-                        .fill(Color(.systemGray5))
-                        .overlay { ProgressView() }
-                }
-                .frame(minHeight: 120)
-                .clipped()
+                ThumbnailImage(url: URL(fileURLWithPath: localPath))
             }
             .buttonStyle(.plain)
         } else {
             Rectangle()
                 .fill(Color(.systemGray5))
-                .frame(minHeight: 120)
+                .aspectRatio(1, contentMode: .fit)
                 .overlay {
                     Image(systemName: "photo")
                         .foregroundStyle(.secondary)
                 }
+        }
+    }
+}
+
+/// Loads a local image thumbnail asynchronously to avoid blocking the main thread.
+private struct ThumbnailImage: View {
+    let url: URL
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Rectangle()
+                    .fill(Color(.systemGray5))
+            }
+        }
+        .aspectRatio(1, contentMode: .fill)
+        .clipped()
+        .task(id: url) {
+            if let cached = ImageCache.shared.image(for: url) {
+                self.image = cached
+                return
+            }
+            let fileUrl = url
+            let loaded = await Task.detached {
+                guard let data = try? Data(contentsOf: fileUrl),
+                      let img = UIImage(data: data) else { return nil as UIImage? }
+                return img
+            }.value
+            if let loaded {
+                ImageCache.shared.setImage(loaded, for: url)
+                self.image = loaded
+            }
         }
     }
 }
