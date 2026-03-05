@@ -163,6 +163,11 @@ jobs:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
 
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-gradle-v1-${{ runner.os }}
+          path: ~/.gradle
+
       - run: nix develop .#default -c just pre-merge-pika
 
   check-pikachat:
@@ -507,6 +512,11 @@ jobs:
         with:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-gradle-v1-${{ runner.os }}
+          path: ~/.gradle
 
       - run: |
           nix develop .#default -c ./tools/android-avd-ensure
