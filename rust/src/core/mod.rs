@@ -734,6 +734,11 @@ pub struct AppCore {
     /// Avoids re-querying SQLite on every `refresh_current_chat` call.
     media_cache: HashMap<String, HashMap<String, chat_media_db::ChatMediaRecord>>,
 
+    /// Cache of resolved local file paths per chat, keyed by chat_id -> (original_hash_hex -> path).
+    /// Populated by background path resolution; used by `chat_media_attachments_fast` to avoid
+    /// flicker when `refresh_current_chat` rebuilds messages.
+    local_path_cache: HashMap<String, HashMap<String, String>>,
+
     /// Per-group lock: tracks groups that have a pending evolution publish
     /// (commit + merge + welcome delivery in flight). A second mutation on the
     /// same group is rejected with a toast while the lock is held.
@@ -851,6 +856,7 @@ impl AppCore {
             pending_media_batch_sends: HashMap::new(),
             pending_media_downloads: HashMap::new(),
             media_cache: HashMap::new(),
+            local_path_cache: HashMap::new(),
             pending_group_ops: HashSet::new(),
             call_runtime: call_runtime::CallRuntime::default(),
             call_session_params: None,
@@ -2837,6 +2843,7 @@ impl AppCore {
             self.pending_media_sends.clear();
             self.pending_media_batch_sends.clear();
             self.media_cache.clear();
+            self.local_path_cache.clear();
             self.pending_media_downloads.clear();
             self.local_outbox.clear();
             self.profiles.clear();
@@ -4440,6 +4447,7 @@ impl AppCore {
                 prune_chat_routes(&mut self.state.router.screen_stack, &chat_id);
                 self.state.current_chat = None;
                 self.media_cache.remove(&chat_id);
+                self.local_path_cache.remove(&chat_id);
                 self.refresh_chat_list_from_storage();
                 self.emit_router();
             }
@@ -4703,6 +4711,7 @@ impl AppCore {
                 }
                 let _ = std::fs::remove_dir_all(chat_media::media_root(&self.data_dir));
                 self.media_cache.clear();
+                self.local_path_cache.clear();
                 self.state.media_gallery = None;
                 self.emit_state();
                 self.toast("Media cache wiped");
@@ -5551,6 +5560,7 @@ impl AppCore {
                 prune_chat_routes(&mut self.state.router.screen_stack, &chat_id);
                 self.state.current_chat = None;
                 self.media_cache.remove(&chat_id);
+                self.local_path_cache.remove(&chat_id);
                 self.refresh_all_from_storage();
                 self.emit_router();
             }

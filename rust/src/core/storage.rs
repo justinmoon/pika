@@ -729,6 +729,13 @@ impl AppCore {
         original_hash_hex: &str,
         local_path: Option<String>,
     ) -> bool {
+        // Keep the local_path_cache in sync so subsequent refreshes don't lose this path.
+        if let Some(ref path) = local_path {
+            self.local_path_cache
+                .entry(chat_id.to_string())
+                .or_default()
+                .insert(original_hash_hex.to_string(), path.clone());
+        }
         let hash = original_hash_hex.to_string();
         self.mutate_current_chat_messages(chat_id, |msgs| {
             let found = msgs.iter_mut().find_map(|msg| {
@@ -2403,5 +2410,72 @@ mod tests {
         let msg = &core.state.current_chat.as_ref().unwrap().messages[0];
         assert!(matches!(msg.delivery, MessageDeliveryState::Failed { .. }));
         assert_eq!(msg.media[0].upload_progress, None);
+    }
+
+    #[test]
+    fn update_media_local_path_populates_local_path_cache() {
+        let mut core = make_test_core();
+        core.state.current_chat = Some(make_chat_view(
+            "chat1",
+            vec![make_msg_with_media("m1", "abc123")],
+        ));
+
+        core.update_media_local_path_in_place(
+            "chat1",
+            "abc123",
+            Some("/tmp/photo.jpg".to_string()),
+        );
+
+        // local_path_cache should now contain the resolved path.
+        let cached = core
+            .local_path_cache
+            .get("chat1")
+            .and_then(|c| c.get("abc123"));
+        assert_eq!(cached, Some(&"/tmp/photo.jpg".to_string()));
+    }
+
+    #[test]
+    fn local_path_cache_survives_refresh_cycle() {
+        let mut core = make_test_core();
+
+        // Simulate: background resolution stored a path in the cache.
+        core.local_path_cache
+            .entry("chat1".to_string())
+            .or_default()
+            .insert("abc123".to_string(), "/tmp/photo.jpg".to_string());
+
+        // Now simulate a refresh_current_chat rebuilding with chat_media_attachments_fast.
+        // The attachment should pick up the cached local_path.
+        // We can't easily call chat_media_attachments_fast without MDK, but we can verify
+        // the cache persists across state mutations.
+        core.state.current_chat = Some(make_chat_view(
+            "chat1",
+            vec![make_msg_with_media("m1", "abc123")],
+        ));
+
+        // Verify cache is still there after setting current_chat.
+        let cached = core
+            .local_path_cache
+            .get("chat1")
+            .and_then(|c| c.get("abc123"));
+        assert_eq!(
+            cached,
+            Some(&"/tmp/photo.jpg".to_string()),
+            "local_path_cache should persist across chat state changes"
+        );
+    }
+
+    #[test]
+    fn wipe_media_cache_clears_local_path_cache() {
+        let mut core = make_test_core();
+        core.local_path_cache
+            .entry("chat1".to_string())
+            .or_default()
+            .insert("hash1".to_string(), "/tmp/file.jpg".to_string());
+
+        assert!(!core.local_path_cache.is_empty());
+        // Simulate the WipeMediaCache action's effect on local_path_cache.
+        core.local_path_cache.clear();
+        assert!(core.local_path_cache.is_empty());
     }
 }

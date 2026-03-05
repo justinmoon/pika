@@ -448,6 +448,7 @@ impl AppCore {
         tags: &Tags,
     ) -> Vec<ChatMediaAttachment> {
         let manager = mdk.media_manager(group_id.clone());
+        let path_cache = self.local_path_cache.get(chat_id);
         let mut out = Vec::new();
         for tag in tags.iter() {
             if !is_imeta_tag(tag) {
@@ -460,19 +461,25 @@ impl AppCore {
                     continue;
                 }
             };
+            let hash = hex::encode(reference.original_hash);
             let encrypted_hash_hex = self
                 .media_cache
                 .get(chat_id)
-                .and_then(|cache| cache.get(&hex::encode(reference.original_hash)))
+                .and_then(|cache| cache.get(&hash))
                 .map(|r| r.encrypted_hash_hex.clone())
                 .filter(|h| !h.is_empty());
-            out.push(self.attachment_from_reference_inner(
+            let mut att = self.attachment_from_reference_inner(
                 chat_id,
                 account_pubkey,
                 &reference,
                 encrypted_hash_hex,
                 false,
-            ));
+            );
+            // Use cached local path from previous background resolution to avoid flicker.
+            if let Some(cached_path) = path_cache.and_then(|c| c.get(&hash)) {
+                att.local_path = Some(cached_path.clone());
+            }
+            out.push(att);
         }
         out
     }
@@ -873,6 +880,14 @@ impl AppCore {
         chat_id: String,
         resolved: Vec<(String, Option<String>)>,
     ) {
+        // Persist resolved paths so subsequent refresh_current_chat calls don't flicker.
+        let path_entry = self.local_path_cache.entry(chat_id.clone()).or_default();
+        for (hash, path) in &resolved {
+            if let Some(p) = path {
+                path_entry.insert(hash.clone(), p.clone());
+            }
+        }
+
         let mut needs_download: Vec<(String, String)> = Vec::new();
         let resolved_map: HashMap<String, Option<String>> = resolved.into_iter().collect();
 
