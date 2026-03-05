@@ -425,6 +425,13 @@ impl AppCore {
         let member_profiles =
             self.build_member_profiles(chat_id, sess, &entry.members, &my_pubkey_hex);
 
+        // Pre-load all media records for this chat to avoid per-item DB queries.
+        let mut media_cache = self
+            .chat_media_db
+            .as_ref()
+            .map(|conn| super::chat_media_db::get_all_chat_media_map(conn, &my_pubkey_hex, chat_id))
+            .unwrap_or_default();
+
         let desired = *self.loaded_count.get(chat_id).unwrap_or(&50usize);
         let target = desired.max(50);
 
@@ -487,6 +494,7 @@ impl AppCore {
                     &my_pubkey_hex,
                     &m.tags,
                     m.created_at.as_secs() as i64,
+                    &mut media_cache,
                 );
                 cm
             })
@@ -679,6 +687,12 @@ impl AppCore {
         let member_profiles =
             self.build_member_profiles(chat_id, sess, &entry.members, &my_pubkey_hex);
 
+        let mut media_cache = self
+            .chat_media_db
+            .as_ref()
+            .map(|conn| super::chat_media_db::get_all_chat_media_map(conn, &my_pubkey_hex, chat_id))
+            .unwrap_or_default();
+
         let base_offset = *self.loaded_count.get(chat_id).unwrap_or(&0);
         let mut visible_page = Vec::new();
         let mut total_fetched = 0;
@@ -745,6 +759,7 @@ impl AppCore {
                     &my_pubkey_hex,
                     &m.tags,
                     m.created_at.as_secs() as i64,
+                    &mut media_cache,
                 );
                 cm
             })

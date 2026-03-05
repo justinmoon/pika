@@ -330,6 +330,7 @@ impl AppCore {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn chat_media_attachments_for_tags(
         &self,
         mdk: &PikaMdk,
@@ -338,6 +339,7 @@ impl AppCore {
         account_pubkey: &str,
         tags: &Tags,
         created_at: i64,
+        media_cache: &mut HashMap<String, ChatMediaRecord>,
     ) -> Vec<ChatMediaAttachment> {
         let manager = mdk.media_manager(group_id.clone());
         let mut out = Vec::new();
@@ -358,29 +360,33 @@ impl AppCore {
             let original_hash_hex = hex::encode(reference.original_hash);
 
             // Persist media metadata so the gallery can list all media without
-            // scanning the full message store.
-            let encrypted_hash_hex = if let Some(conn) = self.chat_media_db.as_ref() {
-                let record = ChatMediaRecord {
-                    account_pubkey: account_pubkey.to_string(),
-                    chat_id: chat_id.to_string(),
-                    original_hash_hex: original_hash_hex.clone(),
-                    encrypted_hash_hex: String::new(),
-                    url: reference.url.clone(),
-                    mime_type: reference.mime_type.clone(),
-                    filename: reference.filename.clone(),
-                    nonce_hex: hex::encode(reference.nonce),
-                    scheme_version: reference.scheme_version.clone(),
-                    created_at,
-                };
-                if let Err(e) = chat_media_db::upsert_chat_media(conn, &record) {
-                    tracing::warn!(%e, "failed to persist chat media metadata on receive");
+            // scanning the full message store.  Skip the write if we already
+            // have this hash in the pre-loaded cache.
+            if !media_cache.contains_key(&original_hash_hex) {
+                if let Some(conn) = self.chat_media_db.as_ref() {
+                    let record = ChatMediaRecord {
+                        account_pubkey: account_pubkey.to_string(),
+                        chat_id: chat_id.to_string(),
+                        original_hash_hex: original_hash_hex.clone(),
+                        encrypted_hash_hex: String::new(),
+                        url: reference.url.clone(),
+                        mime_type: reference.mime_type.clone(),
+                        filename: reference.filename.clone(),
+                        nonce_hex: hex::encode(reference.nonce),
+                        scheme_version: reference.scheme_version.clone(),
+                        created_at,
+                    };
+                    if let Err(e) = chat_media_db::upsert_chat_media(conn, &record) {
+                        tracing::warn!(%e, "failed to persist chat media metadata on receive");
+                    }
+                    media_cache.insert(original_hash_hex.clone(), record);
                 }
-                chat_media_db::get_chat_media(conn, account_pubkey, chat_id, &original_hash_hex)
-                    .map(|r| r.encrypted_hash_hex)
-                    .filter(|h| !h.is_empty())
-            } else {
-                None
-            };
+            }
+
+            let encrypted_hash_hex = media_cache
+                .get(&original_hash_hex)
+                .map(|r| r.encrypted_hash_hex.clone())
+                .filter(|h| !h.is_empty());
 
             out.push(self.attachment_from_reference(
                 chat_id,

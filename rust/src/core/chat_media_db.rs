@@ -132,6 +132,17 @@ pub(super) fn get_chat_media(
     .flatten()
 }
 
+pub(super) fn get_all_chat_media_map(
+    conn: &Connection,
+    account_pubkey: &str,
+    chat_id: &str,
+) -> std::collections::HashMap<String, ChatMediaRecord> {
+    get_all_chat_media(conn, account_pubkey, chat_id)
+        .into_iter()
+        .map(|r| (r.original_hash_hex.clone(), r))
+        .collect()
+}
+
 pub(super) fn get_all_chat_media(
     conn: &Connection,
     account_pubkey: &str,
