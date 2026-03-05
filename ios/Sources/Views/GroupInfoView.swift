@@ -171,7 +171,6 @@ struct GroupInfoView: View {
                                 .foregroundStyle(.primary)
                         }
                     }
-                    .buttonStyle(.plain)
                 }
 
                 Section {

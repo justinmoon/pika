@@ -131,7 +131,6 @@ struct PeerProfileSheet: View {
                             .foregroundStyle(.primary)
                     }
                 }
-                .buttonStyle(.plain)
             }
         }
     }
