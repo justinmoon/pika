@@ -456,17 +456,20 @@ private struct MessageBubble: View {
 
         VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
             if let hypernote = message.hypernote {
-                HypernoteRenderer(
-                    astJson: hypernote.astJson,
-                    messageId: message.id,
-                    defaultState: hypernote.defaultState,
-                    myResponse: hypernote.myResponse,
-                    responseTallies: hypernote.responseTallies,
-                    responders: hypernote.responders,
-                    onAction: { actionName, messageId, form in
-                        onHypernoteAction?(actionName, messageId, form)
-                    }
-                )
+                VStack(alignment: .leading, spacing: 0) {
+                    replyPreviewSection
+                    HypernoteRenderer(
+                        astJson: hypernote.astJson,
+                        messageId: message.id,
+                        defaultState: hypernote.defaultState,
+                        myResponse: hypernote.myResponse,
+                        responseTallies: hypernote.responseTallies,
+                        responders: hypernote.responders,
+                        onAction: { actionName, messageId, form in
+                            onHypernoteAction?(actionName, messageId, form)
+                        }
+                    )
+                }
             } else if hasMedia {
                 mediaBubble(segments: segments)
             } else {
@@ -578,7 +581,7 @@ private struct MessageBubble: View {
             }
         }
         .background {
-            if hasText || hasFileAttachment {
+            if hasText || hasFileAttachment || message.replyToMessageId != nil {
                 message.isMine ? Color.blue : Color.gray.opacity(0.2)
             } else {
                 Color.clear
