@@ -36,20 +36,17 @@ struct NewGroupChatView: View {
     var body: some View {
         let isLoading = state.isCreatingChat
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                groupNameSection(isLoading: isLoading)
-                if !selectedNpubs.isEmpty {
-                    selectedMembersSection(isLoading: isLoading)
-                }
-                quickActionsSection(isLoading: isLoading)
-                followsSection(isLoading: isLoading)
-                createButton(isLoading: isLoading)
+        List {
+            groupNameSection(isLoading: isLoading)
+            if !selectedNpubs.isEmpty {
+                selectedMembersSection(isLoading: isLoading)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 28)
+            quickActionsSection(isLoading: isLoading)
+            followsSection(isLoading: isLoading)
+            createButton(isLoading: isLoading)
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
         .background(Color(.systemGroupedBackground))
         .navigationTitle("New Group")
         .navigationBarTitleDisplayMode(.large)
@@ -89,34 +86,28 @@ struct NewGroupChatView: View {
     }
 
     private func groupNameSection(isLoading: Bool) -> some View {
-        card {
+        Section {
             TextField("Group name", text: $groupName)
                 .disabled(isLoading)
-                .padding(.horizontal, 16)
-                .frame(minHeight: 50)
                 .accessibilityIdentifier(TestIds.newGroupName)
         }
     }
 
     private func selectedMembersSection(isLoading: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("Members (\(selectedNpubs.count))")
-            card {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(selectedNpubs, id: \.self) { npub in
-                            selectedChip(npub: npub, isLoading: isLoading)
-                        }
+        Section("Members (\(selectedNpubs.count))") {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(selectedNpubs, id: \.self) { npub in
+                        selectedChip(npub: npub, isLoading: isLoading)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.vertical, 4)
             }
         }
     }
 
     private func quickActionsSection(isLoading: Bool) -> some View {
-        card {
+        Section {
             HStack(spacing: 8) {
                 NativeQuickActionButton(
                     title: "Paste Code",
@@ -139,95 +130,78 @@ struct NewGroupChatView: View {
                     .disabled(isLoading)
                 }
             }
-            .padding(16)
+            .padding(.vertical, 8)
         }
     }
 
     @ViewBuilder
     private func followsSection(isLoading: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        Section {
+            if state.isFetchingFollowList && state.followList.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView("Loading follows...")
+                    Spacer()
+                }
+            } else if state.followList.isEmpty {
+                emptyStateRow(
+                    title: "No follows found",
+                    message: "Follow people or paste a code to add them."
+                )
+            } else if filteredFollowList.isEmpty {
+                emptyStateRow(
+                    title: "No matches found",
+                    message: "Try a different search."
+                )
+            } else {
+                ForEach(filteredFollowList, id: \.pubkey) { entry in
+                    Button {
+                        toggleSelection(npub: entry.npub)
+                    } label: {
+                        followListRow(entry: entry)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoading)
+                }
+            }
+        } header: {
             HStack(spacing: 6) {
-                sectionHeader("Follows")
+                Text("Follows")
                 if state.isFetchingFollowList {
                     ProgressView()
                         .controlSize(.small)
-                }
-            }
-
-            if state.isFetchingFollowList && state.followList.isEmpty {
-                card {
-                    HStack {
-                        Spacer()
-                        ProgressView("Loading follows...")
-                        Spacer()
-                    }
-                    .padding(.vertical, 20)
-                }
-            } else if state.followList.isEmpty {
-                card {
-                    Text("No follows found.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 20)
-                }
-            } else if filteredFollowList.isEmpty {
-                card {
-                    Text("No matches found.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 20)
-                }
-            } else {
-                card {
-                    LazyVStack(spacing: 0) {
-                        ForEach(filteredFollowList, id: \.pubkey) { entry in
-                            Button {
-                                toggleSelection(npub: entry.npub)
-                            } label: {
-                                followListRow(entry: entry)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 14)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isLoading)
-
-                            if entry.pubkey != filteredFollowList.last?.pubkey {
-                                Divider()
-                                    .padding(.leading, 68)
-                            }
-                        }
-                    }
                 }
             }
         }
     }
 
     private func createButton(isLoading: Bool) -> some View {
-        Button {
-            onCreateGroup(
-                groupName.trimmingCharacters(in: .whitespacesAndNewlines),
-                selectedNpubs
-            )
-        } label: {
-            HStack {
-                Spacer()
-                if isLoading {
-                    HStack(spacing: 8) {
-                        ProgressView().tint(.white)
-                        Text("Creating...")
+        Section {
+            Button {
+                onCreateGroup(
+                    groupName.trimmingCharacters(in: .whitespacesAndNewlines),
+                    selectedNpubs
+                )
+            } label: {
+                HStack {
+                    Spacer()
+                    if isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().tint(.white)
+                            Text("Creating...")
+                        }
+                    } else {
+                        Text("Create Group")
                     }
-                } else {
-                    Text("Create Group")
+                    Spacer()
                 }
-                Spacer()
+                .frame(height: 50)
             }
-            .frame(height: 50)
+            .buttonStyle(.borderedProminent)
+            .disabled(!canCreate)
+            .accessibilityIdentifier(TestIds.newGroupCreate)
         }
-        .buttonStyle(.borderedProminent)
-        .disabled(!canCreate)
-        .accessibilityIdentifier(TestIds.newGroupCreate)
     }
 
     private func followListRow(entry: FollowListEntry) -> some View {
@@ -298,6 +272,19 @@ struct NewGroupChatView: View {
         handleIncomingPeer(raw)
     }
 
+    private func emptyStateRow(title: String, message: String) -> some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+    }
+
     private func handleIncomingPeer(_ input: String) {
         let normalized = normalizePeerKey(input: input)
         guard isValidPeerKey(input: normalized) else {
@@ -315,32 +302,29 @@ struct NewGroupChatView: View {
 
     private func manualEntrySheet(isLoading: Bool) -> some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Enter a code to add someone to the group.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+            Form {
+                Section {
+                    Text("Enter a code to add someone to the group.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
 
-                TextField("Code", text: $npubInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier(TestIds.newGroupPeerNpub)
+                    TextField("Code", text: $npubInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier(TestIds.newGroupPeerNpub)
 
-                Button("Add Member") {
-                    let peer = normalizePeerKey(input: npubInput)
-                    handleIncomingPeer(peer)
-                    if isValidPeerKey(input: peer), selectedNpubs.contains(peer) {
-                        npubInput = ""
-                        showManualEntrySheet = false
+                    Button("Add Member") {
+                        let peer = normalizePeerKey(input: npubInput)
+                        handleIncomingPeer(peer)
+                        if isValidPeerKey(input: peer), selectedNpubs.contains(peer) {
+                            npubInput = ""
+                            showManualEntrySheet = false
+                        }
                     }
+                    .disabled(normalizePeerKey(input: npubInput).isEmpty || isLoading)
+                    .accessibilityIdentifier(TestIds.newGroupAddMember)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(normalizePeerKey(input: npubInput).isEmpty || isLoading)
-                .accessibilityIdentifier(TestIds.newGroupAddMember)
-
-                Spacer()
             }
-            .padding(20)
             .navigationTitle("Add Member")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -351,24 +335,6 @@ struct NewGroupChatView: View {
                 }
             }
         }
-    }
-
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
-    }
-
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(spacing: 0, content: content)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color(.separator).opacity(0.18), lineWidth: 0.8)
-            }
-            .shadow(color: .black.opacity(0.04), radius: 10, y: 2)
     }
 
     private func truncatedNpub(_ npub: String) -> String {

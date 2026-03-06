@@ -17,27 +17,30 @@ struct LoginView: View {
         let loginBusy = state.loggingIn
         let anyBusy = createBusy || loginBusy
 
-        VStack(spacing: 0) {
-            Spacer()
+        List {
+            Section {
+                VStack(spacing: 0) {
+                    Image("PikaLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 140, height: 140)
+                        .clipShape(RoundedRectangle(cornerRadius: 28))
 
-            Image("PikaLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 140, height: 140)
-                .clipShape(RoundedRectangle(cornerRadius: 28))
+                    Text("Pika")
+                        .font(.largeTitle.weight(.bold))
+                        .padding(.top, 16)
 
-            Text("Pika")
-                .font(.largeTitle.weight(.bold))
-                .padding(.top, 16)
+                    Text("Encrypted messaging over Nostr")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            }
+            .listRowBackground(Color.clear)
 
-            Text("Encrypted messaging over Nostr")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(.top, 4)
-
-            Spacer()
-
-            VStack(spacing: 12) {
+            Section {
                 Button {
                     onCreateAccount()
                 } label: {
@@ -54,21 +57,26 @@ struct LoginView: View {
                 .controlSize(.large)
                 .disabled(anyBusy)
                 .accessibilityIdentifier(TestIds.loginCreateAccount)
+            } footer: {
+                Text("Or sign in with your private key.")
+            }
 
-                HStack {
-                    Rectangle()
-                        .frame(height: 1)
-                        .foregroundStyle(.quaternary)
-                    Text("or")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    Rectangle()
-                        .frame(height: 1)
-                        .foregroundStyle(.quaternary)
+            Section("Private Key") {
+                HStack(spacing: 12) {
+                    SecureField("Enter your private key (nsec123...)", text: $nsecInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(.password)
+                        .disabled(anyBusy)
+                        .accessibilityIdentifier(TestIds.loginNsecInput)
+
+                    Button("Paste") {
+                        nsecInput = UIPasteboard.general.string?
+                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    }
+                    .accessibilityIdentifier(TestIds.loginPastePrivateKey)
+                    .disabled(anyBusy)
                 }
-                .padding(.vertical, 4)
-
-                privateKeyInput(isDisabled: anyBusy)
 
                 Button {
                     onLogin(nsecInput)
@@ -82,32 +90,17 @@ struct LoginView: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.large)
                 .disabled(anyBusy || nsecInput.isEmpty)
                 .accessibilityIdentifier(TestIds.loginSubmit)
+            }
 
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        showAdvanced.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Advanced")
-                            .font(.caption)
-                        Image(systemName: "chevron.down")
-                            .font(.caption2)
-                            .rotationEffect(.degrees(showAdvanced ? 180 : 0))
-                    }
-                    .foregroundStyle(.secondary)
-                }
-
-                if showAdvanced {
-                    textInputCard(
-                        prompt: "Enter bunker URI",
-                        text: $bunkerUriInput,
-                        isDisabled: anyBusy,
-                        accessibilityIdentifier: TestIds.loginBunkerUriInput
-                    )
+            Section {
+                DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
+                    TextField("Enter bunker URI", text: $bunkerUriInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .disabled(anyBusy)
+                        .accessibilityIdentifier(TestIds.loginBunkerUriInput)
 
                     Button {
                         onBunkerLogin(bunkerUriInput)
@@ -149,66 +142,10 @@ struct LoginView: View {
                     .accessibilityIdentifier(TestIds.loginNostrConnectReset)
                 }
             }
-            .padding(.bottom, 32)
         }
-        .padding(.horizontal, 28)
-    }
-
-    private func privateKeyInput(isDisabled: Bool) -> some View {
-        HStack(spacing: 12) {
-            SecureField("Enter your private key (nsec123...)", text: $nsecInput)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textContentType(.password)
-                .disabled(isDisabled)
-                .accessibilityIdentifier(TestIds.loginNsecInput)
-
-            Button("Paste") {
-                nsecInput = UIPasteboard.general.string?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            }
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.tint)
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .background(Color(.secondarySystemBackground), in: Capsule())
-            .disabled(isDisabled)
-            .accessibilityIdentifier(TestIds.loginPastePrivateKey)
-        }
-        .padding(.leading, 16)
-        .padding(.trailing, 12)
-        .frame(minHeight: 56)
-        .background(inputBackground)
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color(.separator).opacity(0.18), lineWidth: 0.8)
-        }
-        .shadow(color: .black.opacity(0.04), radius: 10, y: 2)
-    }
-
-    private func textInputCard(
-        prompt: String,
-        text: Binding<String>,
-        isDisabled: Bool,
-        accessibilityIdentifier: String
-    ) -> some View {
-        TextField(prompt, text: text)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .disabled(isDisabled)
-            .padding(.horizontal, 16)
-            .frame(minHeight: 56)
-            .background(inputBackground)
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color(.separator).opacity(0.18), lineWidth: 0.8)
-            }
-            .shadow(color: .black.opacity(0.04), radius: 10, y: 2)
-            .accessibilityIdentifier(accessibilityIdentifier)
-    }
-
-    private var inputBackground: some ShapeStyle {
-        Color(.systemBackground)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemGroupedBackground))
     }
 }
 

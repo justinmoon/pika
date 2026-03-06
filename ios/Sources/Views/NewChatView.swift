@@ -28,15 +28,12 @@ struct NewChatView: View {
     var body: some View {
         let isLoading = state.isCreatingChat
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                quickActionsSection(isLoading: isLoading)
-                followsSection(isLoading: isLoading)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 28)
+        List {
+            quickActionsSection(isLoading: isLoading)
+            followsSection(isLoading: isLoading)
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
         .background(Color(.systemGroupedBackground))
         .navigationTitle("New Chat")
         .navigationBarTitleDisplayMode(.large)
@@ -89,7 +86,7 @@ struct NewChatView: View {
     }
 
     private func quickActionsSection(isLoading: Bool) -> some View {
-        card {
+        Section {
             HStack(spacing: 8) {
                 NativeQuickActionButton(
                     title: "Paste Code",
@@ -112,66 +109,47 @@ struct NewChatView: View {
                     .disabled(isLoading)
                 }
             }
-            .padding(16)
+            .padding(.vertical, 8)
         }
     }
 
     @ViewBuilder
     private func followsSection(isLoading: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        Section {
+            if state.isFetchingFollowList && state.followList.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView("Loading follows...")
+                    Spacer()
+                }
+            } else if state.followList.isEmpty {
+                emptyStateRow(
+                    title: "No follows found",
+                    message: "Follow people to start chats here."
+                )
+            } else if filteredFollowList.isEmpty {
+                emptyStateRow(
+                    title: "No matches found",
+                    message: "Try a different search."
+                )
+            } else {
+                ForEach(filteredFollowList, id: \.pubkey) { entry in
+                    Button {
+                        onCreateChat(entry.npub)
+                    } label: {
+                        followListRow(entry: entry)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoading)
+                }
+            }
+        } header: {
             HStack(spacing: 6) {
-                sectionHeader("Follows")
+                Text("Follows")
                 if state.isFetchingFollowList {
                     ProgressView()
                         .controlSize(.small)
-                }
-            }
-
-            if state.isFetchingFollowList && state.followList.isEmpty {
-                card {
-                    HStack {
-                        Spacer()
-                        ProgressView("Loading follows...")
-                        Spacer()
-                    }
-                    .padding(.vertical, 20)
-                }
-            } else if state.followList.isEmpty {
-                card {
-                    Text("No follows found.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 20)
-                }
-            } else if filteredFollowList.isEmpty {
-                card {
-                    Text("No matches found.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 20)
-                }
-            } else {
-                card {
-                    LazyVStack(spacing: 0) {
-                        ForEach(filteredFollowList, id: \.pubkey) { entry in
-                            Button {
-                                onCreateChat(entry.npub)
-                            } label: {
-                                followListRow(entry: entry)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 14)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isLoading)
-
-                            if entry.pubkey != filteredFollowList.last?.pubkey {
-                                Divider()
-                                    .padding(.leading, 68)
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -209,6 +187,19 @@ struct NewChatView: View {
         handleIncomingPeer(raw)
     }
 
+    private func emptyStateRow(title: String, message: String) -> some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+    }
+
     private func handleIncomingPeer(_ input: String) {
         let peer = normalizePeerKey(input: input)
         guard isValidPeerKey(input: peer) else {
@@ -221,34 +212,28 @@ struct NewChatView: View {
 
     private func manualEntrySheet(isLoading: Bool) -> some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Enter a code (npub1… or 64-character hex public key).")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+            Form {
+                Section {
+                    Text("Enter a code (npub1… or 64-character hex public key).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
 
-                TextField("Code", text: $npubInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier(TestIds.newChatPeerNpub)
+                    TextField("Code", text: $npubInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier(TestIds.newChatPeerNpub)
 
-                Button {
-                    let peer = normalizePeerKey(input: npubInput)
-                    handleIncomingPeer(peer)
-                    if isValidPeerKey(input: peer) {
-                        showManualEntrySheet = false
+                    Button("Start Chat") {
+                        let peer = normalizePeerKey(input: npubInput)
+                        handleIncomingPeer(peer)
+                        if isValidPeerKey(input: peer) {
+                            showManualEntrySheet = false
+                        }
                     }
-                } label: {
-                    Text("Start Chat")
-                        .frame(maxWidth: .infinity)
+                    .disabled(normalizePeerKey(input: npubInput).isEmpty || isLoading)
+                    .accessibilityIdentifier(TestIds.newChatStart)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(normalizePeerKey(input: npubInput).isEmpty || isLoading)
-                .accessibilityIdentifier(TestIds.newChatStart)
-
-                Spacer()
             }
-            .padding(20)
             .navigationTitle("Enter Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -259,24 +244,6 @@ struct NewChatView: View {
                 }
             }
         }
-    }
-
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
-    }
-
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(spacing: 0, content: content)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color(.separator).opacity(0.18), lineWidth: 0.8)
-            }
-            .shadow(color: .black.opacity(0.04), radius: 10, y: 2)
     }
 
     private func truncatedNpub(_ npub: String) -> String {
