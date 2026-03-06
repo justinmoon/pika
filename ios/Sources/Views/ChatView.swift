@@ -366,7 +366,6 @@ struct ChatView: View {
                     callback(chatId, oldestId, 30)
                 }
             },
-            viewportMetrics: viewportMetrics,
             followsBottom: $followsBottom,
             activeReactionMessageId: activeReactionMessageId,
             scrollRequest: scrollRequest

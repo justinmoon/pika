@@ -34,7 +34,6 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
     var onRetryMessage: ((String) -> Void)?
     var onLoadOlderMessages: (() -> Void)?
 
-    let viewportMetrics: MessageCollectionViewportMetrics
     @Binding var followsBottom: Bool
     var activeReactionMessageId: String?
     var scrollRequest: MessageCollectionScrollRequest?
@@ -96,8 +95,8 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
 
         let renderedRows = buildRenderedRows()
         context.coordinator.applyRows(renderedRows, animated: false)
-        context.coordinator.applyViewportMetricsIfNeeded(viewportMetrics)
         viewController.updateAccessory(rootView: accessoryContent, keepVisible: !isInputFocused)
+        context.coordinator.applyViewportInsetsIfNeeded()
         context.coordinator.scrollToBottom(animated: false)
 
         return viewController
@@ -112,10 +111,11 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         coordinator.collectionView = viewController.collectionView
         coordinator.viewController = viewController
 
+        let wasNearBottom = coordinator.isNearBottom()
         let newRows = buildRenderedRows()
         let newIDs = newRows.map(\.id)
         let updateKind = MessageCollectionLayout.classifyUpdate(oldIDs: coordinator.currentIDs, newIDs: newIDs)
-        let anchor = followsBottom ? nil : coordinator.captureTopAnchor()
+        let anchor = wasNearBottom ? nil : coordinator.captureTopAnchor()
         let contentChanged = coordinator.lastContentState != contentState
         coordinator.lastContentState = contentState
 
@@ -123,11 +123,11 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
             rootView: accessoryContent,
             keepVisible: !isInputFocused
         )
-        if accessoryHeightChanged, !followsBottom {
+        if accessoryHeightChanged, !wasNearBottom {
             coordinator.pendingViewportAnchor = anchor
         }
 
-        let viewportChanged = coordinator.applyViewportMetricsIfNeeded(viewportMetrics)
+        let viewportChanged = coordinator.applyViewportInsetsIfNeeded()
 
         let pendingScrollRequest = scrollRequest.flatMap { request in
             coordinator.consumeScrollRequestIfNeeded(request)
@@ -136,7 +136,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         let completion = {
             if let pendingScrollRequest {
                 coordinator.handle(scrollRequest: pendingScrollRequest)
-            } else if coordinator.parent.followsBottom {
+            } else if wasNearBottom {
                 let animateToBottom = updateKind == .tailMutation
                 coordinator.scrollToBottom(animated: animateToBottom)
             } else if let anchor {
@@ -153,7 +153,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
                 completion()
             }
         case .tailMutation, .structural:
-            let animateDifferences = followsBottom && updateKind == .tailMutation
+            let animateDifferences = wasNearBottom && updateKind == .tailMutation
             coordinator.applyRows(newRows, animated: animateDifferences, completion: completion)
         }
     }
@@ -186,7 +186,6 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         weak var collectionView: UICollectionView?
         weak var viewController: MessageCollectionHostController<AccessoryContent>?
         private var requestedOldestId: String?
-        private var lastAppliedViewportMetrics: MessageCollectionViewportMetrics?
         private var lastAppliedEffectiveInset: UIEdgeInsets?
         private var lastHandledScrollRequestID: Int?
         var lastContentState: ContentState?
@@ -240,13 +239,8 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         }
 
         @discardableResult
-        func applyViewportMetricsIfNeeded(_ viewportMetrics: MessageCollectionViewportMetrics) -> Bool {
-            let metricsChanged = viewportMetrics != lastAppliedViewportMetrics
-            if metricsChanged {
-                lastAppliedViewportMetrics = viewportMetrics
-            }
-            let insetChanged = applyEffectiveInsetsIfNeeded()
-            return metricsChanged || insetChanged
+        func applyViewportInsetsIfNeeded() -> Bool {
+            applyEffectiveInsetsIfNeeded()
         }
 
         func consumeScrollRequestIfNeeded(_ request: MessageCollectionScrollRequest) -> MessageCollectionScrollRequest? {
@@ -263,13 +257,14 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         }
 
         func handleViewportGeometryChange() {
+            let wasNearBottom = isNearBottom()
             _ = applyEffectiveInsetsIfNeeded()
             if let anchor = pendingViewportAnchor {
                 pendingViewportAnchor = nil
                 restore(anchor: anchor)
                 return
             }
-            guard parent.followsBottom else { return }
+            guard wasNearBottom else { return }
             scrollToBottom(animated: false)
         }
 
@@ -327,12 +322,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            let nearBottom = MessageCollectionLayout.isNearBottom(
-                contentOffsetY: scrollView.contentOffset.y,
-                boundsHeight: scrollView.bounds.height,
-                contentHeight: scrollView.contentSize.height,
-                adjustedInsets: scrollView.adjustedContentInset
-            )
+            let nearBottom = isNearBottom()
             if nearBottom != parent.followsBottom {
                 DispatchQueue.main.async {
                     self.parent.followsBottom = nearBottom
@@ -409,6 +399,16 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
                 .compactMap { dataSource.itemIdentifier(for: $0) }
         }
 
+        func isNearBottom() -> Bool {
+            guard let collectionView else { return parent.followsBottom }
+            return MessageCollectionLayout.isNearBottom(
+                contentOffsetY: collectionView.contentOffset.y,
+                boundsHeight: collectionView.bounds.height,
+                contentHeight: collectionView.contentSize.height,
+                adjustedInsets: collectionView.adjustedContentInset
+            )
+        }
+
         @discardableResult
         private func applyEffectiveInsetsIfNeeded() -> Bool {
             guard let collectionView, let viewController else { return false }
@@ -422,7 +422,12 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
             guard effectiveInset != lastAppliedEffectiveInset else { return false }
             lastAppliedEffectiveInset = effectiveInset
             collectionView.contentInset = effectiveInset
-            collectionView.verticalScrollIndicatorInsets.bottom = effectiveInset.bottom
+            collectionView.verticalScrollIndicatorInsets = UIEdgeInsets(
+                top: effectiveInset.top,
+                left: 0,
+                bottom: effectiveInset.bottom,
+                right: 0
+            )
             return true
         }
 
