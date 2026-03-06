@@ -10,15 +10,6 @@ struct MessageCollectionScrollRequest: Equatable {
     let action: Action
 }
 
-struct ComposerLayoutState: Equatable {
-    let text: String
-    let stagedMediaCount: Int
-    let showsMentionPicker: Bool
-    let replyDraftMessageId: String?
-    let hasActiveVoiceRecording: Bool
-    let isInputFocused: Bool
-}
-
 /// A UICollectionView-based message transcript for chat with an accessory-backed composer.
 struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresentable {
     struct ContentState: Equatable {
@@ -31,7 +22,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
     let messagesById: [String: ChatMessage]
     let isGroup: Bool
     let accessoryContent: AccessoryContent
-    let composerLayoutState: ComposerLayoutState
+    let isInputFocused: Bool
 
     let onSendMessage: @MainActor (String, String?) -> Void
     var onTapSender: (@MainActor (String) -> Void)?
@@ -79,7 +70,6 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         context.coordinator.collectionView = collectionView
         context.coordinator.viewController = viewController
         context.coordinator.lastContentState = contentState
-        context.coordinator.lastComposerLayoutState = composerLayoutState
 
         let registration = UICollectionView.CellRegistration<UICollectionViewCell, String> {
             [weak coordinator = context.coordinator] cell, _, itemID in
@@ -107,7 +97,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         let renderedRows = buildRenderedRows()
         context.coordinator.applyRows(renderedRows, animated: false)
         context.coordinator.applyViewportMetricsIfNeeded(viewportMetrics)
-        viewController.updateAccessory(rootView: accessoryContent, keepVisible: !composerLayoutState.isInputFocused)
+        viewController.updateAccessory(rootView: accessoryContent, keepVisible: !isInputFocused)
         context.coordinator.scrollToBottom(animated: false)
 
         return viewController
@@ -129,17 +119,15 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         let contentChanged = coordinator.lastContentState != contentState
         coordinator.lastContentState = contentState
 
-        let composerChanged = coordinator.lastComposerLayoutState != composerLayoutState
-        coordinator.lastComposerLayoutState = composerLayoutState
-        if composerChanged, !followsBottom {
+        let accessoryHeightChanged = viewController.updateAccessory(
+            rootView: accessoryContent,
+            keepVisible: !isInputFocused
+        )
+        if accessoryHeightChanged, !followsBottom {
             coordinator.pendingViewportAnchor = anchor
         }
 
         let viewportChanged = coordinator.applyViewportMetricsIfNeeded(viewportMetrics)
-        viewController.updateAccessory(
-            rootView: accessoryContent,
-            keepVisible: !composerLayoutState.isInputFocused
-        )
 
         let pendingScrollRequest = scrollRequest.flatMap { request in
             coordinator.consumeScrollRequestIfNeeded(request)
@@ -202,7 +190,6 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         private var lastAppliedEffectiveInset: UIEdgeInsets?
         private var lastHandledScrollRequestID: Int?
         var lastContentState: ContentState?
-        var lastComposerLayoutState: ComposerLayoutState?
         var pendingViewportAnchor: ScrollAnchor?
 
         init(parent: MessageCollectionList) {
@@ -424,17 +411,18 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
 
         @discardableResult
         private func applyEffectiveInsetsIfNeeded() -> Bool {
-            guard let collectionView, let viewportMetrics = lastAppliedViewportMetrics else { return false }
+            guard let collectionView, let viewController else { return false }
             collectionView.layoutIfNeeded()
 
             let effectiveInset = MessageCollectionLayout.effectiveContentInset(
                 boundsHeight: collectionView.bounds.height,
                 contentHeight: collectionView.contentSize.height,
-                baseInset: viewportMetrics.baseContentInset
+                bottomInset: viewController.bottomViewportInset
             )
             guard effectiveInset != lastAppliedEffectiveInset else { return false }
             lastAppliedEffectiveInset = effectiveInset
             collectionView.contentInset = effectiveInset
+            collectionView.verticalScrollIndicatorInsets.bottom = effectiveInset.bottom
             return true
         }
 
@@ -450,8 +438,12 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
 final class MessageCollectionHostController<AccessoryContent: View>: UIViewController {
     fileprivate let collectionView: BoundsAwareCollectionView
     private let accessoryContainerView: InputAccessoryHostingView<AccessoryContent>
-    private var collectionViewBottomConstraint: NSLayoutConstraint?
     var onViewportGeometryChange: (() -> Void)?
+    private var lastReportedBottomViewportInset: CGFloat = 0
+
+    var bottomViewportInset: CGFloat {
+        accessoryContainerView.currentHeight + keyboardOverlapHeight
+    }
 
     init(layout: UICollectionViewLayout, accessoryContent: AccessoryContent) {
         self.collectionView = BoundsAwareCollectionView(frame: .zero, collectionViewLayout: layout)
@@ -478,15 +470,11 @@ final class MessageCollectionHostController<AccessoryContent: View>: UIViewContr
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(collectionView)
-        let bottomConstraint = collectionView.bottomAnchor.constraint(
-            equalTo: view.keyboardLayoutGuide.topAnchor
-        )
-        self.collectionViewBottomConstraint = bottomConstraint
         NSLayoutConstraint.activate([
             collectionView.topAnchor.constraint(equalTo: view.topAnchor),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            bottomConstraint,
+            collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
         accessoryContainerView.onHeightChange = { [weak self] in
@@ -513,15 +501,27 @@ final class MessageCollectionHostController<AccessoryContent: View>: UIViewContr
         onViewportGeometryChange?()
     }
 
-    func updateAccessory(rootView: AccessoryContent, keepVisible: Bool) {
-        accessoryContainerView.update(rootView: rootView)
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let bottomViewportInset = self.bottomViewportInset
+        guard abs(bottomViewportInset - lastReportedBottomViewportInset) > 0.5 else { return }
+        lastReportedBottomViewportInset = bottomViewportInset
+        onViewportGeometryChange?()
+    }
+
+    @discardableResult
+    func updateAccessory(rootView: AccessoryContent, keepVisible: Bool) -> Bool {
+        let accessoryHeightChanged = accessoryContainerView.update(rootView: rootView)
 
         if keepVisible, view.window != nil, !isFirstResponder {
             becomeFirstResponder()
         }
-        if isFirstResponder {
-            reloadInputViews()
-        }
+        return accessoryHeightChanged
+    }
+
+    private var keyboardOverlapHeight: CGFloat {
+        let overlap = view.bounds.maxY - view.keyboardLayoutGuide.layoutFrame.minY - view.safeAreaInsets.bottom
+        return max(0, overlap)
     }
 }
 
@@ -530,10 +530,16 @@ final class InputAccessoryHostingView<AccessoryContent: View>: UIInputView {
     private var lastReportedHeight: CGFloat = 0
     var onHeightChange: (() -> Void)?
 
+    var currentHeight: CGFloat {
+        lastReportedHeight
+    }
+
     init(rootView: AccessoryContent) {
-        super.init(frame: .zero, inputViewStyle: .keyboard)
+        super.init(frame: .zero, inputViewStyle: .default)
         allowsSelfSizing = true
         backgroundColor = .clear
+        isOpaque = false
+        clipsToBounds = false
         autoresizingMask = [.flexibleHeight]
         update(rootView: rootView)
     }
@@ -543,7 +549,8 @@ final class InputAccessoryHostingView<AccessoryContent: View>: UIInputView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(rootView: AccessoryContent) {
+    @discardableResult
+    func update(rootView: AccessoryContent) -> Bool {
         let configuration = UIHostingConfiguration {
             rootView
         }
@@ -551,9 +558,12 @@ final class InputAccessoryHostingView<AccessoryContent: View>: UIInputView {
 
         if let hostedView {
             hostedView.configuration = configuration
+            hostedView.backgroundColor = .clear
         } else {
             let contentView = configuration.makeContentView()
             contentView.translatesAutoresizingMaskIntoConstraints = false
+            contentView.backgroundColor = .clear
+            contentView.isOpaque = false
             addSubview(contentView)
             NSLayoutConstraint.activate([
                 contentView.topAnchor.constraint(equalTo: topAnchor),
@@ -567,7 +577,7 @@ final class InputAccessoryHostingView<AccessoryContent: View>: UIInputView {
         invalidateIntrinsicContentSize()
         setNeedsLayout()
         layoutIfNeeded()
-        updatePreferredContentSize()
+        return updatePreferredContentSize()
     }
 
     override var intrinsicContentSize: CGSize {
@@ -583,12 +593,14 @@ final class InputAccessoryHostingView<AccessoryContent: View>: UIInputView {
         updatePreferredContentSize()
     }
 
-    private func updatePreferredContentSize() {
+    @discardableResult
+    private func updatePreferredContentSize() -> Bool {
         let fittingWidth = max(bounds.width, UIScreen.main.bounds.width)
         let height = preferredSize(forWidth: fittingWidth).height.rounded(.up)
-        guard abs(height - lastReportedHeight) > 0.5 else { return }
+        guard abs(height - lastReportedHeight) > 0.5 else { return false }
         lastReportedHeight = height
         onHeightChange?()
+        return true
     }
 
     private func preferredSize(forWidth width: CGFloat) -> CGSize {

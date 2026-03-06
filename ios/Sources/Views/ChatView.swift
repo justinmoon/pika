@@ -124,6 +124,23 @@ struct ChatView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             topOverlay(chat)
         }
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFileImport(result)
+        }
+        .alert("Microphone Access Denied", isPresented: $showMicPermissionDenied) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enable microphone access in Settings to send voice messages.")
+        }
         .blur(radius: contextMenuMessage == nil ? 0 : 24)
         .allowsHitTesting(contextMenuMessage == nil)
         .navigationTitle(chat.isGroup ? chatTitle(chat) : "")
@@ -315,14 +332,7 @@ struct ChatView: View {
             messagesById: messagesById,
             isGroup: chat.isGroup,
             accessoryContent: messageInputBar(chat: chat),
-            composerLayoutState: ComposerLayoutState(
-                text: messageText,
-                stagedMediaCount: stagedMedia.count,
-                showsMentionPicker: showMentionPicker,
-                replyDraftMessageId: replyDraftMessage?.id,
-                hasActiveVoiceRecording: activeVoiceRecording != nil,
-                isInputFocused: isInputFocused
-            ),
+            isInputFocused: isInputFocused,
             onSendMessage: onSendMessage,
             onTapSender: onTapSender,
             onReact: onReact,
@@ -704,13 +714,17 @@ struct ChatView: View {
                     messageText: $messageText,
                     selectedPhotoItems: $selectedPhotoItems,
                     stagedMedia: $stagedMedia,
-                    showFileImporter: $showFileImporter,
-                    showPollComposer: $showPollComposer,
                     showAttachButton: onSendMedia != nil,
                     showMicButton: onSendMedia != nil,
                     isInputFocused: $isInputFocused,
                     onSend: { sendMessage() },
                     onStartVoiceRecording: { startVoiceRecording() },
+                    onChooseFile: {
+                        showFileImporter = true
+                    },
+                    onCreatePoll: {
+                        showPollComposer = true
+                    },
                     onImagePaste: onSendMedia == nil ? nil : { data, mimeType in
                         let ext = mimeType == "image/gif" ? "gif" : "png"
                         let filename = "sticker.\(ext)"
@@ -779,44 +793,9 @@ struct ChatView: View {
                         }
                     }
                 }
-                .fileImporter(
-                    isPresented: $showFileImporter,
-                    allowedContentTypes: [.item],
-                    allowsMultipleSelection: false
-                ) { result in
-                    switch result {
-                    case .success(let urls):
-                        guard let url = urls.first else { return }
-                        let didStartAccess = url.startAccessingSecurityScopedResource()
-                        defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
-
-                        guard let data = try? Data(contentsOf: url) else { return }
-
-                        let filename = url.lastPathComponent
-
-                        let caption = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !caption.isEmpty { messageText = "" }
-
-                        // mime_type empty — Rust infers from filename extension
-                        onSendMedia?(chatId, data, "", filename, caption)
-
-                    case .failure(let error):
-                        print("File import error: \(error.localizedDescription)")
-                    }
-                }
             }
         }
         .animation(.easeInOut(duration: 0.2), value: activeVoiceRecording?.phase)
-        .alert("Microphone Access Denied", isPresented: $showMicPermissionDenied) {
-            Button("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Enable microphone access in Settings to send voice messages.")
-        }
     }
 
     private func sendVoiceRecording(using recording: VoiceRecordingState) {
@@ -860,6 +839,27 @@ struct ChatView: View {
             } else {
                 showMicPermissionDenied = true
             }
+        }
+    }
+
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let didStartAccess = url.startAccessingSecurityScopedResource()
+            defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
+
+            guard let data = try? Data(contentsOf: url) else { return }
+
+            let filename = url.lastPathComponent
+            let caption = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !caption.isEmpty { messageText = "" }
+
+            // mime_type empty — Rust infers from filename extension
+            onSendMedia?(chatId, data, "", filename, caption)
+
+        case .failure(let error):
+            print("File import error: \(error.localizedDescription)")
         }
     }
 }

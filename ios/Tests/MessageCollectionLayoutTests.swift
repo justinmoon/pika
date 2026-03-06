@@ -4,12 +4,9 @@ import XCTest
 final class MessageCollectionLayoutTests: XCTestCase {
     func testViewportMetricsShareChromeGeometryAcrossListAndJumpButton() {
         let metrics = MessageCollectionLayout.viewportMetrics(
-            extraBottomSpacing: 20,
             jumpButtonSpacing: 12
         )
 
-        XCTAssertEqual(metrics.baseContentInset.top, 0)
-        XCTAssertEqual(metrics.baseContentInset.bottom, 20)
         XCTAssertEqual(metrics.jumpButtonBottomOffset, 12)
     }
 
@@ -17,7 +14,7 @@ final class MessageCollectionLayoutTests: XCTestCase {
         let inset = MessageCollectionLayout.effectiveContentInset(
             boundsHeight: 600,
             contentHeight: 180,
-            baseInset: UIEdgeInsets(top: 0, left: 0, bottom: 20, right: 0)
+            bottomInset: 20
         )
 
         XCTAssertEqual(inset.top, 400)

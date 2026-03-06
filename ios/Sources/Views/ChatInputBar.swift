@@ -7,13 +7,13 @@ struct ChatInputBar: View {
     @Binding var messageText: String
     @Binding var selectedPhotoItems: [PhotosPickerItem]
     @Binding var stagedMedia: [StagedMediaItem]
-    @Binding var showFileImporter: Bool
-    @Binding var showPollComposer: Bool
     let showAttachButton: Bool
     let showMicButton: Bool
     @Binding var isInputFocused: Bool
     let onSend: () -> Void
     let onStartVoiceRecording: () -> Void
+    let onChooseFile: () -> Void
+    let onCreatePoll: () -> Void
     var onImagePaste: ((Data, String) -> Void)? = nil
 
     @State private var showPhotoPicker = false
@@ -47,13 +47,13 @@ struct ChatInputBar: View {
                         }
 
                         Button {
-                            showFileImporter = true
+                            onChooseFile()
                         } label: {
                             Label("File", systemImage: "doc")
                         }
 
                         Button {
-                            showPollComposer = true
+                            onCreatePoll()
                         } label: {
                             Label("Poll", systemImage: "chart.bar")
                         }
@@ -454,8 +454,6 @@ private struct ChatInputBarPreview: View {
     @State var messageText = ""
     @State var selectedPhotoItems: [PhotosPickerItem] = []
     @State var stagedMedia: [StagedMediaItem] = []
-    @State var showFileImporter = false
-    @State var showPollComposer = false
     @State var isInputFocused = false
 
     let showAttach: Bool
@@ -466,13 +464,13 @@ private struct ChatInputBarPreview: View {
             messageText: $messageText,
             selectedPhotoItems: $selectedPhotoItems,
             stagedMedia: $stagedMedia,
-            showFileImporter: $showFileImporter,
-            showPollComposer: $showPollComposer,
             showAttachButton: showAttach,
             showMicButton: showMic,
             isInputFocused: $isInputFocused,
             onSend: {},
-            onStartVoiceRecording: {}
+            onStartVoiceRecording: {},
+            onChooseFile: {},
+            onCreatePoll: {}
         )
     }
 }

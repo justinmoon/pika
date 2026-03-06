@@ -1,7 +1,6 @@
 import UIKit
 
 struct MessageCollectionViewportMetrics: Equatable {
-    let baseContentInset: UIEdgeInsets
     let jumpButtonBottomOffset: CGFloat
 }
 
@@ -17,11 +16,9 @@ enum MessageCollectionUpdateKind: Equatable {
 
 enum MessageCollectionLayout {
     static func viewportMetrics(
-        extraBottomSpacing: CGFloat = 20,
         jumpButtonSpacing: CGFloat = 12
     ) -> MessageCollectionViewportMetrics {
         return MessageCollectionViewportMetrics(
-            baseContentInset: UIEdgeInsets(top: 0, left: 0, bottom: extraBottomSpacing, right: 0),
             jumpButtonBottomOffset: jumpButtonSpacing
         )
     }
@@ -29,15 +26,15 @@ enum MessageCollectionLayout {
     static func effectiveContentInset(
         boundsHeight: CGFloat,
         contentHeight: CGFloat,
-        baseInset: UIEdgeInsets
+        bottomInset: CGFloat
     ) -> UIEdgeInsets {
-        let availableHeight = max(0, boundsHeight - baseInset.bottom)
+        let availableHeight = max(0, boundsHeight - bottomInset)
         let extraTopInset = max(0, availableHeight - contentHeight)
         return UIEdgeInsets(
-            top: baseInset.top + extraTopInset,
-            left: baseInset.left,
-            bottom: baseInset.bottom,
-            right: baseInset.right
+            top: extraTopInset,
+            left: 0,
+            bottom: bottomInset,
+            right: 0
         )
     }
 
