@@ -1175,6 +1175,20 @@ impl AppCore {
         });
     }
 
+    /// Return a human-readable name for a peer, falling back to a truncated hex pubkey.
+    fn peer_display_name(&self, pk: &PublicKey) -> String {
+        let hex = pk.to_hex();
+        if let Some(profile) = self.profiles.get(&hex) {
+            if let Some(name) = &profile.name {
+                return name.clone();
+            }
+            if let Some(username) = &profile.username {
+                return username.clone();
+            }
+        }
+        hex[..8].to_string()
+    }
+
     fn toast(&mut self, msg: impl Into<String>) {
         self.state.toast = Some(msg.into());
         self.toast_dismiss_token = self.toast_dismiss_token.saturating_add(1);
@@ -3716,7 +3730,10 @@ impl AppCore {
             self.set_busy(|b| b.creating_chat = false);
             let names: Vec<String> = failed_peers
                 .iter()
-                .map(|(pk, e)| format!("{}: {e}", &pk.to_hex()[..8]))
+                .map(|(pk, e)| {
+                    let display = self.peer_display_name(pk);
+                    format!("{display}: {e}")
+                })
                 .collect();
             self.toast(format!("No key packages found: {}", names.join(", ")));
             return;
@@ -3725,7 +3742,7 @@ impl AppCore {
         if !failed_peers.is_empty() {
             let names: Vec<String> = failed_peers
                 .iter()
-                .map(|(pk, _)| pk.to_hex()[..8].to_string())
+                .map(|(pk, _)| self.peer_display_name(pk))
                 .collect();
             self.toast(format!(
                 "Could not add {} peer(s): {}",
@@ -5460,6 +5477,10 @@ impl AppCore {
                 let fallback_kp_relays = self.key_package_relays();
                 let fallback_popular_relays = self.default_relays();
                 let chat_id_clone = chat_id.clone();
+                let peer_names: HashMap<PublicKey, String> = peer_pubkeys
+                    .iter()
+                    .map(|pk| (*pk, self.peer_display_name(pk)))
+                    .collect();
 
                 // Fetch key packages then add members.
                 self.runtime.spawn(async move {
@@ -5485,7 +5506,12 @@ impl AppCore {
                         let names: Vec<String> = fetched
                             .failed_peers
                             .iter()
-                            .map(|(pk, e)| format!("{}: {e}", &pk.to_hex()[..8]))
+                            .map(|(pk, e)| {
+                                let hex = pk.to_hex();
+                                let name =
+                                    peer_names.get(pk).map(|s| s.as_str()).unwrap_or(&hex[..8]);
+                                format!("{name}: {e}")
+                            })
                             .collect();
                         let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
                             format!("Failed to fetch key packages for: {}", names.join(", ")),
