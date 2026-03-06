@@ -71,8 +71,8 @@ final class ZoomableScrollView: UIView, UIScrollViewDelegate {
         guard !bounds.isEmpty else { return }
         let needsReset = scrollView.frame.size != bounds.size
         scrollView.frame = bounds
-        imageView.frame = bounds
         if needsReset {
+            imageView.frame = bounds
             scrollView.setZoomScale(1.0, animated: false)
             scrollView.isScrollEnabled = false
             onZoomScaleChange?(1.0)
