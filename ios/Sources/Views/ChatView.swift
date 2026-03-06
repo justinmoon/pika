@@ -43,11 +43,10 @@ struct ChatView: View {
     @State private var fullscreenImageAttachment: ChatMediaAttachment?
     @State private var fullscreenImageAttachments: [ChatMediaAttachment] = []
     @State private var showPollComposer = false
-    @State private var scrollRequest: MessageCollectionList.ScrollRequest?
+    @State private var scrollRequest: MessageCollectionScrollRequest?
     @State private var voiceRecorder: VoiceRecorder
     @State private var showMicPermissionDenied = false
-    @State private var inputBarHeight: CGFloat = 76
-    @FocusState private var isInputFocused: Bool
+    @State private var isInputFocused = false
 
     init(
         chatId: String,
@@ -106,9 +105,7 @@ struct ChatView: View {
 
     @ViewBuilder
     private func loadedChat(_ chat: ChatViewState) -> some View {
-        let viewportMetrics = MessageCollectionLayout.viewportMetrics(
-            bottomChromeHeight: inputBarHeight
-        )
+        let viewportMetrics = MessageCollectionLayout.viewportMetrics()
         ZStack {
             chatBackground
                 .ignoresSafeArea()
@@ -126,13 +123,6 @@ struct ChatView: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             topOverlay(chat)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            messageInputBar(chat: chat)
-                .captureHeight { height in
-                    guard abs(height - inputBarHeight) > 0.5 else { return }
-                    inputBarHeight = height
-                }
         }
         .blur(radius: contextMenuMessage == nil ? 0 : 24)
         .allowsHitTesting(contextMenuMessage == nil)
@@ -324,6 +314,15 @@ struct ChatView: View {
             chat: chat,
             messagesById: messagesById,
             isGroup: chat.isGroup,
+            accessoryContent: messageInputBar(chat: chat),
+            composerLayoutState: ComposerLayoutState(
+                text: messageText,
+                stagedMediaCount: stagedMedia.count,
+                showsMentionPicker: showMentionPicker,
+                replyDraftMessageId: replyDraftMessage?.id,
+                hasActiveVoiceRecording: activeVoiceRecording != nil,
+                isInputFocused: isInputFocused
+            ),
             onSendMessage: onSendMessage,
             onTapSender: onTapSender,
             onReact: onReact,
@@ -418,7 +417,7 @@ struct ChatView: View {
 
     private func requestScrollToBottom(animated: Bool) {
         followsBottom = true
-        scrollRequest = MessageCollectionList.ScrollRequest(
+        scrollRequest = MessageCollectionScrollRequest(
             id: (scrollRequest?.id ?? 0) + 1,
             action: .scrollToBottom(animated: animated)
         )
@@ -865,26 +864,6 @@ struct ChatView: View {
     }
 }
 
-private struct ViewHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private extension View {
-    func captureHeight(_ onChange: @escaping (CGFloat) -> Void) -> some View {
-        background {
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: ViewHeightPreferenceKey.self, value: proxy.size.height)
-            }
-        }
-        .onPreferenceChange(ViewHeightPreferenceKey.self, perform: onChange)
-    }
-}
-
 private struct MentionPickerPopup: View {
     let members: [MemberInfo]
     let query: String
@@ -1144,6 +1123,7 @@ private struct EmojiPickerSheet: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func emojiSection(title: String, emojis: [String]) -> some View {

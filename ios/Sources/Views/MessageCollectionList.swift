@@ -1,30 +1,37 @@
 import SwiftUI
 import UIKit
 
-/// A UICollectionView-based message transcript for chat.
-///
-/// The collection view uses a normal top-to-bottom layout so scroll math,
-/// sticky-bottom detection, and chrome reserves stay aligned with UIKit.
-struct MessageCollectionList: UIViewRepresentable {
-    struct ScrollRequest: Equatable {
-        enum Action: Equatable {
-            case scrollToBottom(animated: Bool)
-        }
-
-        let id: Int
-        let action: Action
+struct MessageCollectionScrollRequest: Equatable {
+    enum Action: Equatable {
+        case scrollToBottom(animated: Bool)
     }
 
+    let id: Int
+    let action: Action
+}
+
+struct ComposerLayoutState: Equatable {
+    let text: String
+    let stagedMediaCount: Int
+    let showsMentionPicker: Bool
+    let replyDraftMessageId: String?
+    let hasActiveVoiceRecording: Bool
+    let isInputFocused: Bool
+}
+
+/// A UICollectionView-based message transcript for chat with an accessory-backed composer.
+struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresentable {
     struct ContentState: Equatable {
         let chat: ChatViewState
         let activeReactionMessageId: String?
-        let bottomSpacerHeight: CGFloat
     }
 
     let rows: [ChatView.ChatTimelineRow]
     let chat: ChatViewState
     let messagesById: [String: ChatMessage]
     let isGroup: Bool
+    let accessoryContent: AccessoryContent
+    let composerLayoutState: ComposerLayoutState
 
     let onSendMessage: @MainActor (String, String?) -> Void
     var onTapSender: (@MainActor (String) -> Void)?
@@ -39,23 +46,22 @@ struct MessageCollectionList: UIViewRepresentable {
     let viewportMetrics: MessageCollectionViewportMetrics
     @Binding var followsBottom: Bool
     var activeReactionMessageId: String?
-    var scrollRequest: ScrollRequest?
+    var scrollRequest: MessageCollectionScrollRequest?
 
     private var contentState: ContentState {
-        ContentState(
-            chat: chat,
-            activeReactionMessageId: activeReactionMessageId,
-            bottomSpacerHeight: viewportMetrics.bottomSpacerHeight
-        )
+        ContentState(chat: chat, activeReactionMessageId: activeReactionMessageId)
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
 
-    func makeUIView(context: Context) -> UICollectionView {
-        let layout = MessageCollectionList.makeLayout()
-        let collectionView = BoundsAwareCollectionView(frame: .zero, collectionViewLayout: layout)
+    func makeUIViewController(context: Context) -> MessageCollectionHostController<AccessoryContent> {
+        let viewController = MessageCollectionHostController(
+            layout: MessageCollectionList.makeLayout(),
+            accessoryContent: accessoryContent
+        )
+        let collectionView = viewController.collectionView
         collectionView.backgroundColor = .clear
         collectionView.contentInsetAdjustmentBehavior = .automatic
         collectionView.alwaysBounceVertical = true
@@ -64,10 +70,16 @@ struct MessageCollectionList: UIViewRepresentable {
         collectionView.showsVerticalScrollIndicator = true
         collectionView.alwaysBounceHorizontal = false
         collectionView.onBoundsSizeChange = { [weak coordinator = context.coordinator] _ in
-            coordinator?.handleBoundsSizeChange()
+            coordinator?.handleViewportGeometryChange()
         }
+        viewController.onViewportGeometryChange = { [weak coordinator = context.coordinator] in
+            coordinator?.handleViewportGeometryChange()
+        }
+
         context.coordinator.collectionView = collectionView
+        context.coordinator.viewController = viewController
         context.coordinator.lastContentState = contentState
+        context.coordinator.lastComposerLayoutState = composerLayoutState
 
         let registration = UICollectionView.CellRegistration<UICollectionViewCell, String> {
             [weak coordinator = context.coordinator] cell, _, itemID in
@@ -95,21 +107,40 @@ struct MessageCollectionList: UIViewRepresentable {
         let renderedRows = buildRenderedRows()
         context.coordinator.applyRows(renderedRows, animated: false)
         context.coordinator.applyViewportMetricsIfNeeded(viewportMetrics)
+        viewController.updateAccessory(rootView: accessoryContent, keepVisible: !composerLayoutState.isInputFocused)
         context.coordinator.scrollToBottom(animated: false)
 
-        return collectionView
+        return viewController
     }
 
-    func updateUIView(_ collectionView: UICollectionView, context: Context) {
+    func updateUIViewController(
+        _ viewController: MessageCollectionHostController<AccessoryContent>,
+        context: Context
+    ) {
         let coordinator = context.coordinator
         coordinator.parent = self
+        coordinator.collectionView = viewController.collectionView
+        coordinator.viewController = viewController
+
         let newRows = buildRenderedRows()
         let newIDs = newRows.map(\.id)
         let updateKind = MessageCollectionLayout.classifyUpdate(oldIDs: coordinator.currentIDs, newIDs: newIDs)
         let anchor = followsBottom ? nil : coordinator.captureTopAnchor()
         let contentChanged = coordinator.lastContentState != contentState
         coordinator.lastContentState = contentState
+
+        let composerChanged = coordinator.lastComposerLayoutState != composerLayoutState
+        coordinator.lastComposerLayoutState = composerLayoutState
+        if composerChanged, !followsBottom {
+            coordinator.pendingViewportAnchor = anchor
+        }
+
         let viewportChanged = coordinator.applyViewportMetricsIfNeeded(viewportMetrics)
+        viewController.updateAccessory(
+            rootView: accessoryContent,
+            keepVisible: !composerLayoutState.isInputFocused
+        )
+
         let pendingScrollRequest = scrollRequest.flatMap { request in
             coordinator.consumeScrollRequestIfNeeded(request)
         }
@@ -156,7 +187,6 @@ struct MessageCollectionList: UIViewRepresentable {
         if !chat.typingMembers.isEmpty {
             rendered.append(.typing)
         }
-        rendered.append(.bottomSpacer(height: viewportMetrics.bottomSpacerHeight))
         return rendered
     }
 
@@ -166,11 +196,14 @@ struct MessageCollectionList: UIViewRepresentable {
         var rowsByID: [String: RenderedRow] = [:]
         var currentIDs: [String] = []
         weak var collectionView: UICollectionView?
+        weak var viewController: MessageCollectionHostController<AccessoryContent>?
         private var requestedOldestId: String?
         private var lastAppliedViewportMetrics: MessageCollectionViewportMetrics?
         private var lastAppliedEffectiveInset: UIEdgeInsets?
         private var lastHandledScrollRequestID: Int?
         var lastContentState: ContentState?
+        var lastComposerLayoutState: ComposerLayoutState?
+        var pendingViewportAnchor: ScrollAnchor?
 
         init(parent: MessageCollectionList) {
             self.parent = parent
@@ -221,35 +254,36 @@ struct MessageCollectionList: UIViewRepresentable {
 
         @discardableResult
         func applyViewportMetricsIfNeeded(_ viewportMetrics: MessageCollectionViewportMetrics) -> Bool {
-            guard let collectionView else { return false }
             let metricsChanged = viewportMetrics != lastAppliedViewportMetrics
             if metricsChanged {
                 lastAppliedViewportMetrics = viewportMetrics
-                collectionView.scrollIndicatorInsets = viewportMetrics.scrollIndicatorInsets
             }
             let insetChanged = applyEffectiveInsetsIfNeeded()
             return metricsChanged || insetChanged
         }
 
-        func consumeScrollRequestIfNeeded(_ request: ScrollRequest) -> ScrollRequest? {
+        func consumeScrollRequestIfNeeded(_ request: MessageCollectionScrollRequest) -> MessageCollectionScrollRequest? {
             guard request.id != lastHandledScrollRequestID else { return nil }
             lastHandledScrollRequestID = request.id
             return request
         }
 
-        func handle(scrollRequest: ScrollRequest) {
+        func handle(scrollRequest: MessageCollectionScrollRequest) {
             switch scrollRequest.action {
             case .scrollToBottom(let animated):
                 scrollToBottom(animated: animated)
             }
         }
 
-        func handleBoundsSizeChange() {
-            let insetChanged = applyEffectiveInsetsIfNeeded()
-            guard parent.followsBottom else { return }
-            if insetChanged {
-                scrollToBottom(animated: false)
+        func handleViewportGeometryChange() {
+            _ = applyEffectiveInsetsIfNeeded()
+            if let anchor = pendingViewportAnchor {
+                pendingViewportAnchor = nil
+                restore(anchor: anchor)
+                return
             }
+            guard parent.followsBottom else { return }
+            scrollToBottom(animated: false)
         }
 
         func captureTopAnchor() -> ScrollAnchor? {
@@ -329,10 +363,6 @@ struct MessageCollectionList: UIViewRepresentable {
                 )
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
-
-            case .bottomSpacer(let height):
-                Color.clear
-                    .frame(height: height)
 
             case .timeline(let timelineRow):
                 Group {
@@ -417,7 +447,166 @@ struct MessageCollectionList: UIViewRepresentable {
     }
 }
 
-private final class BoundsAwareCollectionView: UICollectionView {
+final class MessageCollectionHostController<AccessoryContent: View>: UIViewController {
+    fileprivate let collectionView: BoundsAwareCollectionView
+    private let accessoryContainerView: InputAccessoryHostingView<AccessoryContent>
+    private var collectionViewBottomConstraint: NSLayoutConstraint?
+    var onViewportGeometryChange: (() -> Void)?
+
+    init(layout: UICollectionViewLayout, accessoryContent: AccessoryContent) {
+        self.collectionView = BoundsAwareCollectionView(frame: .zero, collectionViewLayout: layout)
+        self.accessoryContainerView = InputAccessoryHostingView(rootView: accessoryContent)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var inputAccessoryView: UIView? {
+        accessoryContainerView
+    }
+
+    override var canBecomeFirstResponder: Bool {
+        true
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(collectionView)
+        let bottomConstraint = collectionView.bottomAnchor.constraint(
+            equalTo: view.keyboardLayoutGuide.topAnchor
+        )
+        self.collectionViewBottomConstraint = bottomConstraint
+        NSLayoutConstraint.activate([
+            collectionView.topAnchor.constraint(equalTo: view.topAnchor),
+            collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bottomConstraint,
+        ])
+
+        accessoryContainerView.onHeightChange = { [weak self] in
+            self?.onViewportGeometryChange?()
+        }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !isFirstResponder {
+            becomeFirstResponder()
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if isFirstResponder {
+            resignFirstResponder()
+        }
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        onViewportGeometryChange?()
+    }
+
+    func updateAccessory(rootView: AccessoryContent, keepVisible: Bool) {
+        accessoryContainerView.update(rootView: rootView)
+
+        if keepVisible, view.window != nil, !isFirstResponder {
+            becomeFirstResponder()
+        }
+        if isFirstResponder {
+            reloadInputViews()
+        }
+    }
+}
+
+final class InputAccessoryHostingView<AccessoryContent: View>: UIInputView {
+    private var hostedView: (UIView & UIContentView)?
+    private var lastReportedHeight: CGFloat = 0
+    var onHeightChange: (() -> Void)?
+
+    init(rootView: AccessoryContent) {
+        super.init(frame: .zero, inputViewStyle: .keyboard)
+        allowsSelfSizing = true
+        backgroundColor = .clear
+        autoresizingMask = [.flexibleHeight]
+        update(rootView: rootView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(rootView: AccessoryContent) {
+        let configuration = UIHostingConfiguration {
+            rootView
+        }
+        .margins(.all, 0)
+
+        if let hostedView {
+            hostedView.configuration = configuration
+        } else {
+            let contentView = configuration.makeContentView()
+            contentView.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(contentView)
+            NSLayoutConstraint.activate([
+                contentView.topAnchor.constraint(equalTo: topAnchor),
+                contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
+                contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
+                contentView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ])
+            hostedView = contentView
+        }
+
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+        layoutIfNeeded()
+        updatePreferredContentSize()
+    }
+
+    override var intrinsicContentSize: CGSize {
+        preferredSize(forWidth: bounds.width)
+    }
+
+    override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize {
+        preferredSize(forWidth: targetSize.width)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updatePreferredContentSize()
+    }
+
+    private func updatePreferredContentSize() {
+        let fittingWidth = max(bounds.width, UIScreen.main.bounds.width)
+        let height = preferredSize(forWidth: fittingWidth).height.rounded(.up)
+        guard abs(height - lastReportedHeight) > 0.5 else { return }
+        lastReportedHeight = height
+        onHeightChange?()
+    }
+
+    private func preferredSize(forWidth width: CGFloat) -> CGSize {
+        guard let hostedView else {
+            return CGSize(width: UIView.noIntrinsicMetric, height: 0)
+        }
+        let fittingWidth = width > 0 ? width : UIScreen.main.bounds.width
+        let targetSize = CGSize(width: fittingWidth, height: UIView.layoutFittingCompressedSize.height)
+        let size = hostedView.systemLayoutSizeFitting(
+            targetSize,
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+        return CGSize(width: UIView.noIntrinsicMetric, height: ceil(size.height))
+    }
+}
+
+fileprivate final class BoundsAwareCollectionView: UICollectionView {
     var onBoundsSizeChange: ((CGSize) -> Void)?
     private var lastReportedSize: CGSize = .zero
 
@@ -436,15 +625,12 @@ struct ScrollAnchor {
 
 enum RenderedRow: Identifiable {
     case typing
-    case bottomSpacer(height: CGFloat)
     case timeline(ChatView.ChatTimelineRow)
 
     var id: String {
         switch self {
         case .typing:
             return MessageCollectionRowID.typingIndicator
-        case .bottomSpacer:
-            return MessageCollectionRowID.bottomSpacer
         case .timeline(let row):
             return row.id
         }

@@ -4,16 +4,13 @@ import XCTest
 final class MessageCollectionLayoutTests: XCTestCase {
     func testViewportMetricsShareChromeGeometryAcrossListAndJumpButton() {
         let metrics = MessageCollectionLayout.viewportMetrics(
-            bottomChromeHeight: 72,
             extraBottomSpacing: 20,
             jumpButtonSpacing: 12
         )
 
-        XCTAssertEqual(metrics.bottomSpacerHeight, 92)
         XCTAssertEqual(metrics.baseContentInset.top, 0)
-        XCTAssertEqual(metrics.baseContentInset.bottom, 0)
-        XCTAssertEqual(metrics.scrollIndicatorInsets.bottom, 72)
-        XCTAssertEqual(metrics.jumpButtonBottomOffset, 84)
+        XCTAssertEqual(metrics.baseContentInset.bottom, 20)
+        XCTAssertEqual(metrics.jumpButtonBottomOffset, 12)
     }
 
     func testEffectiveContentInsetBottomAlignsShortChats() {
@@ -60,15 +57,15 @@ final class MessageCollectionLayoutTests: XCTestCase {
     func testUpdateClassificationUsesTailMutationForAppendAndTrim() {
         XCTAssertEqual(
             MessageCollectionLayout.classifyUpdate(
-                oldIDs: ["a", "b", MessageCollectionRowID.bottomSpacer],
-                newIDs: ["a", "b", "c", MessageCollectionRowID.bottomSpacer]
+                oldIDs: ["a", "b"],
+                newIDs: ["a", "b", "c"]
             ),
             .tailMutation
         )
         XCTAssertEqual(
             MessageCollectionLayout.classifyUpdate(
-                oldIDs: ["a", "b", "c", MessageCollectionRowID.bottomSpacer],
-                newIDs: ["a", "b", MessageCollectionRowID.bottomSpacer]
+                oldIDs: ["a", "b", "c"],
+                newIDs: ["a", "b"]
             ),
             .tailMutation
         )

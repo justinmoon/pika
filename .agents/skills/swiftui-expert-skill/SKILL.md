@@ -75,6 +75,10 @@ Use this skill to build, review, or improve SwiftUI features with correct state 
 - Use `LabeledContent`, plain text sections, or list rows for read-only content; do not mimic editable form fields for display-only data
 - Prefer system row, disclosure, and destructive-action patterns over custom button bars when the semantics match
 - Use raw `VStack` and `HStack` for screen-level structure only when semantic containers cannot express the UI cleanly
+- Treat `safeAreaInset` as layout ownership, not just presentation. A custom bottom `safeAreaInset` is not equivalent to nav bars, toolbars, or an `inputAccessoryView`, especially when UIKit scroll views are involved.
+- Be cautious using `safeAreaInset` for chat composers or other keyboard-attached bottom chrome over `UIScrollView` / `UITableView` / `UICollectionView`. It often breaks the illusion of full-bleed underlap while still failing to make the scroll viewport truly "attached" to the custom chrome.
+- Do not feed measured `safeAreaInset` heights back into a UIKit scroll view unless there is no cleaner ownership boundary. That creates fragile bidirectional layout coupling and often diverges from keyboard/safe-area behavior.
+- For transcript-style UIs that need Instagram/iMessage behavior, prefer UIKit-owned bottom chrome (`inputAccessoryView`, or a child view controller that owns both transcript and composer) over SwiftUI `safeAreaInset`.
 - Keep accessibility identifiers unique and preserve existing IDs during refactors unless tests and callers are updated together
 - Do not remove working actions or ship placeholder/debug copy during visual changes
 - Validate visual refactors in the simulator one screen at a time; treat simulator review as required, not optional
@@ -227,6 +231,7 @@ Button("Confirm") { }
 - [ ] Action handlers reference methods (not inline logic)
 - [ ] Using relative layout (not hard-coded constants)
 - [ ] Views work in any context (context-agnostic)
+- [ ] `safeAreaInset` is not being used to fake system-owned keyboard/chrome behavior for UIKit scroll views
 
 ### Animations (see `references/animation-basics.md`, `references/animation-transitions.md`, `references/animation-advanced.md`)
 - [ ] Using `.animation(_:value:)` with value parameter
