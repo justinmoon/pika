@@ -20,7 +20,7 @@ struct InvertedMessageList: UIViewRepresentable {
     var onTapSender: (@MainActor (String) -> Void)?
     var onReact: (@MainActor (String, String) -> Void)?
     var onDownloadMedia: ((String, String) -> Void)?
-    var onTapImage: ((ChatMediaAttachment) -> Void)?
+    var onTapImage: (([ChatMediaAttachment], ChatMediaAttachment) -> Void)?
     var onHypernoteAction: ((String, String, [String: String]) -> Void)?
     var onLongPressMessage: ((ChatMessage, CGRect) -> Void)?
     var onRetryMessage: ((String) -> Void)?

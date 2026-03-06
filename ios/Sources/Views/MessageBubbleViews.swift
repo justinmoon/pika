@@ -42,7 +42,7 @@ struct MessageGroupRow: View {
     @Binding var activeReactionMessageId: String?
     var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
-    var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
+    var onTapImage: (([ChatMediaAttachment], ChatMediaAttachment) -> Void)? = nil
     var onHypernoteAction: ((String, String, [String: String]) -> Void)? = nil
     var onRetryMessage: ((String) -> Void)? = nil
 
@@ -155,7 +155,7 @@ private struct MessageBubbleStack: View {
     @Binding var activeReactionMessageId: String?
     var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
-    var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
+    var onTapImage: (([ChatMediaAttachment], ChatMediaAttachment) -> Void)? = nil
     var onHypernoteAction: ((String, String, [String: String]) -> Void)? = nil
 
     var body: some View {
@@ -311,7 +311,16 @@ struct MediaAttachmentView: View {
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture { onTapImage?() }
+            .overlay(
+                GeometryReader { geo in
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            ImageViewerTransition.sourceFrame = geo.frame(in: .global)
+                            onTapImage?()
+                        }
+                }
+            )
             .allowsHitTesting(attachment.uploadProgress == nil && onTapImage != nil)
         } else if isAutoDownloadKind {
             // Auto-downloading: show placeholder with spinner
@@ -434,7 +443,7 @@ private struct MessageBubble: View {
     @Binding var activeReactionMessageId: String?
     var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
-    var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
+    var onTapImage: (([ChatMediaAttachment], ChatMediaAttachment) -> Void)? = nil
     var onHypernoteAction: ((String, String, [String: String]) -> Void)? = nil
 
     @State private var isBeingPressed = false
@@ -676,7 +685,8 @@ private struct MessageBubble: View {
                 onDownloadMedia?(message.id, attachment.originalHashHex)
             },
             onTapImage: {
-                onTapImage?(attachment)
+                let imageAttachments = message.media.filter { $0.kind == .image }
+                onTapImage?(imageAttachments, attachment)
             }
         )
         .clipped()

@@ -45,10 +45,12 @@ struct ChatMediaGalleryView: View {
         }
         .navigationTitle("Media")
         .navigationBarTitleDisplayMode(.inline)
-        .fullScreenCover(item: $fullscreenAttachment) { attachment in
+        .overFullScreenCover(item: $fullscreenAttachment) { attachment in
             FullscreenImageViewer(
                 attachments: viewableAttachments,
-                selected: attachment
+                selected: attachment,
+                sourceFrame: ImageViewerTransition.sourceFrame,
+                onDismiss: { fullscreenAttachment = nil }
             )
         }
     }
@@ -57,12 +59,17 @@ struct ChatMediaGalleryView: View {
     private func mediaThumbnail(_ item: MediaGalleryItem) -> some View {
         let attachment = item.attachment
         if let localPath = attachment.localPath {
-            Button {
-                fullscreenAttachment = attachment
-            } label: {
-                ThumbnailImage(url: URL(fileURLWithPath: localPath))
-            }
-            .buttonStyle(.plain)
+            ThumbnailImage(url: URL(fileURLWithPath: localPath))
+                .overlay(
+                    GeometryReader { geo in
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                ImageViewerTransition.sourceFrame = geo.frame(in: .global)
+                                fullscreenAttachment = attachment
+                            }
+                    }
+                )
         } else {
             Rectangle()
                 .fill(Color(.systemGray5))
