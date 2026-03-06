@@ -172,6 +172,7 @@ struct ContentView: View {
             CallScreenView(
                 call: call,
                 peerName: callPeerDisplayName(for: call, in: state),
+                peerPictureUrl: callPeerPictureUrl(for: call, in: state),
                 onAcceptCall: {
                     manager.dispatch(.openChat(chatId: call.chatId))
                     manager.dispatch(.acceptCall(chatId: call.chatId))
@@ -633,6 +634,23 @@ private func callPeerDisplayName(for call: CallState, in state: AppState) -> Str
     }
 
     return shortenedNpub(call.peerNpub)
+}
+
+@MainActor
+private func callPeerPictureUrl(for call: CallState, in state: AppState) -> String? {
+    if let currentChat = state.currentChat, currentChat.chatId == call.chatId {
+        if let peer = currentChat.members.first {
+            return peer.pictureUrl
+        }
+    }
+
+    if let summary = state.chatList.first(where: { $0.chatId == call.chatId }) {
+        if let peer = summary.members.first {
+            return peer.pictureUrl
+        }
+    }
+
+    return nil
 }
 
 @MainActor
