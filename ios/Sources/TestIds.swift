@@ -40,6 +40,7 @@ enum TestIds {
     static let newGroupName = "newgroup_name"
     static let newGroupPeerNpub = "newgroup_peer_npub"
     static let newGroupPasteCode = "newgroup_paste_code"
+    static let newGroupScanQr = "newgroup_scan_qr"
     static let newGroupAddMember = "newgroup_add_member"
     static let newGroupCreate = "newgroup_create"
     static let newGroupManualEntry = "newgroup_manual_entry"

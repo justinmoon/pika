@@ -441,21 +441,36 @@ private func screenView(
             set: { if !$0 { manager.dispatch(.closePeerProfile) } }
         )) {
             if let profile = state.peerProfile {
+                let directChatId = directMessageChatId(for: profile, in: state)
                 PeerProfileSheet(
                     profile: profile,
                     onMessage: {
                         onSetPendingPeerProfileAction(nil)
-                        manager.dispatch(.createChat(peerNpub: profile.npub))
+                        if let directChatId {
+                            manager.dispatch(.openChat(chatId: directChatId))
+                        } else {
+                            manager.dispatch(.createChat(peerNpub: profile.npub))
+                        }
                         manager.dispatch(.closePeerProfile)
                     },
                     onStartCall: {
-                        onSetPendingPeerProfileAction(.init(kind: .audio, npub: profile.npub))
-                        manager.dispatch(.createChat(peerNpub: profile.npub))
+                        onSetPendingPeerProfileAction(nil)
+                        if let directChatId {
+                            manager.dispatch(.startCall(chatId: directChatId))
+                        } else {
+                            onSetPendingPeerProfileAction(.init(kind: .audio, npub: profile.npub))
+                            manager.dispatch(.createChat(peerNpub: profile.npub))
+                        }
                         manager.dispatch(.closePeerProfile)
                     },
                     onStartVideoCall: {
-                        onSetPendingPeerProfileAction(.init(kind: .video, npub: profile.npub))
-                        manager.dispatch(.createChat(peerNpub: profile.npub))
+                        onSetPendingPeerProfileAction(nil)
+                        if let directChatId {
+                            manager.dispatch(.startVideoCall(chatId: directChatId))
+                        } else {
+                            onSetPendingPeerProfileAction(.init(kind: .video, npub: profile.npub))
+                            manager.dispatch(.createChat(peerNpub: profile.npub))
+                        }
                         manager.dispatch(.closePeerProfile)
                     },
                     onFollow: { manager.dispatch(.followUser(pubkey: profile.pubkey)) },

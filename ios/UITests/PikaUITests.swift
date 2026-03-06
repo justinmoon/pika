@@ -99,6 +99,33 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(nav.waitForExistence(timeout: timeout))
     }
 
+    private func copyMyCodeAndCloseProfile(
+        _ app: XCUIApplication,
+        profileNavBar: XCUIElement? = nil,
+        timeout: TimeInterval = 5
+    ) {
+        let copyCode = app.buttons.matching(identifier: "chatlist_my_npub_copy").firstMatch
+        XCTAssertTrue(copyCode.waitForExistence(timeout: timeout))
+        copyCode.tap()
+
+        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
+        if close.exists {
+            close.tap()
+        } else if let profileNavBar {
+            profileNavBar.buttons.element(boundBy: 0).tap()
+        } else {
+            app.navigationBars["Profile"].buttons.element(boundBy: 0).tap()
+        }
+    }
+
+    private func createNoteToSelfViaPaste(_ app: XCUIApplication, timeout: TimeInterval = 10) {
+        openNewChatFromChatList(app, timeout: timeout)
+
+        let paste = app.buttons.matching(identifier: "newchat_paste").firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: timeout))
+        paste.tap()
+    }
+
     private func waitForChatComposer(_ app: XCUIApplication, timeout: TimeInterval = 10) -> XCUIElement {
         let textView = app.textViews.matching(identifier: "chat_message_input").firstMatch
         let textField = app.textFields.matching(identifier: "chat_message_input").firstMatch
@@ -195,21 +222,8 @@ final class PikaUITests: XCTestCase {
         let myNpub = npubValue.label
         XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
 
-        let copyNpub = app.buttons.matching(identifier: "chatlist_my_npub_copy").firstMatch
-        XCTAssertTrue(copyNpub.waitForExistence(timeout: 5))
-        copyNpub.tap()
-
-        // Close the sheet.
-        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
-        if close.exists { close.tap() }
-        else { myNpubNavBar.buttons.element(boundBy: 0).tap() }
-
-        // New chat.
-        openNewChatFromChatList(app, timeout: 10)
-
-        let paste = app.buttons.matching(identifier: "newchat_paste").firstMatch
-        XCTAssertTrue(paste.waitForExistence(timeout: 10))
-        paste.tap()
+        copyMyCodeAndCloseProfile(app, profileNavBar: myNpubNavBar)
+        createNoteToSelfViaPaste(app)
         // Note-to-self is synchronous; navigation to the chat happens immediately.
 
         // Send a message and ensure it appears.
@@ -277,21 +291,8 @@ final class PikaUITests: XCTestCase {
         let myNpub = npubValue.label
         XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
 
-        let copyNpub = app.buttons.matching(identifier: "chatlist_my_npub_copy").firstMatch
-        XCTAssertTrue(copyNpub.waitForExistence(timeout: 5))
-        copyNpub.tap()
-
-        // Close sheet.
-        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
-        if close.exists { close.tap() }
-        else { app.navigationBars["Profile"].buttons.element(boundBy: 0).tap() }
-
-        // Create note-to-self chat.
-        openNewChatFromChatList(app, timeout: 10)
-
-        let paste = app.buttons.matching(identifier: "newchat_paste").firstMatch
-        XCTAssertTrue(paste.waitForExistence(timeout: 10))
-        paste.tap()
+        copyMyCodeAndCloseProfile(app)
+        createNoteToSelfViaPaste(app)
 
         // Send a message so we have something to verify after relaunch.
         let msgField = app.textViews.matching(identifier: "chat_message_input").firstMatch
@@ -377,19 +378,8 @@ final class PikaUITests: XCTestCase {
         let myNpub = npubValue.label
         XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
 
-        let copyNpub = app.buttons.matching(identifier: "chatlist_my_npub_copy").firstMatch
-        XCTAssertTrue(copyNpub.waitForExistence(timeout: 5))
-        copyNpub.tap()
-
-        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
-        if close.exists { close.tap() }
-        else { app.navigationBars["Profile"].buttons.element(boundBy: 0).tap() }
-
-        openNewChatFromChatList(app, timeout: 10)
-
-        let paste = app.buttons.matching(identifier: "newchat_paste").firstMatch
-        XCTAssertTrue(paste.waitForExistence(timeout: 10))
-        paste.tap()
+        copyMyCodeAndCloseProfile(app)
+        createNoteToSelfViaPaste(app)
 
         let composer = waitForChatComposer(app, timeout: 10)
         XCTAssertTrue(composer.exists, "Composer missing after opening chat")
@@ -464,19 +454,8 @@ final class PikaUITests: XCTestCase {
         let myNpub = npubValue.label
         XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
 
-        let copyNpub = app.buttons.matching(identifier: "chatlist_my_npub_copy").firstMatch
-        XCTAssertTrue(copyNpub.waitForExistence(timeout: 5))
-        copyNpub.tap()
-
-        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
-        if close.exists { close.tap() }
-        else { myNpubNavBar.buttons.element(boundBy: 0).tap() }
-
-        openNewChatFromChatList(app, timeout: 10)
-
-        let paste = app.buttons.matching(identifier: "newchat_paste").firstMatch
-        XCTAssertTrue(paste.waitForExistence(timeout: 10))
-        paste.tap()
+        copyMyCodeAndCloseProfile(app, profileNavBar: myNpubNavBar)
+        createNoteToSelfViaPaste(app)
 
         let msgField = app.textViews.matching(identifier: "chat_message_input").firstMatch
         let msgFieldFallback = app.textFields.matching(identifier: "chat_message_input").firstMatch

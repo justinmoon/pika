@@ -126,7 +126,7 @@ struct NewGroupChatView: View {
                     NativeQuickActionButton(
                         title: "Scan Code",
                         systemImage: "qrcode.viewfinder",
-                        accessibilityIdentifier: TestIds.newChatScanQr
+                        accessibilityIdentifier: TestIds.newGroupScanQr
                     ) {
                         showScanner = true
                     }
@@ -292,7 +292,7 @@ struct NewGroupChatView: View {
     private func handleIncomingPeer(_ input: String) -> Bool {
         let normalized = normalizePeerKey(input: input)
         guard isValidPeerKey(input: normalized) else {
-            invalidNpubMessage = "Paste or scan a valid code (npub1… or 64-character hex public key)."
+            invalidNpubMessage = "Enter, paste, or scan a valid code (npub1… or 64-character hex public key)."
             showInvalidNpubAlert = true
             return false
         }

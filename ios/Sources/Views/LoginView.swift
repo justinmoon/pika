@@ -79,8 +79,10 @@ struct LoginView: View {
                         .accessibilityIdentifier(TestIds.loginNsecInput)
 
                     Button("Paste") {
-                        nsecInput = UIPasteboard.general.string?
-                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        guard let pasted = UIPasteboard.general.string?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                              !pasted.isEmpty else { return }
+                        nsecInput = pasted
                     }
                     .accessibilityIdentifier(TestIds.loginPastePrivateKey)
                     .disabled(anyBusy)
@@ -147,6 +149,7 @@ struct LoginView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
+                    .disabled(anyBusy)
                     .accessibilityIdentifier(TestIds.loginNostrConnectReset)
                 }
             }

@@ -40,10 +40,12 @@ struct NewChatView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    guard !isLoading else { return }
                     showManualEntrySheet = true
                 } label: {
                     Image(systemName: "keyboard")
                 }
+                .disabled(isLoading)
                 .accessibilityIdentifier(TestIds.newChatManualEntry)
             }
         }
@@ -205,7 +207,7 @@ struct NewChatView: View {
     private func handleIncomingPeer(_ input: String) {
         let peer = normalizePeerKey(input: input)
         guard isValidPeerKey(input: peer) else {
-            invalidNpubMessage = "Paste or scan a valid code (npub1… or 64-character hex public key)."
+            invalidNpubMessage = "Enter, paste, or scan a valid code (npub1… or 64-character hex public key)."
             showInvalidNpubAlert = true
             return
         }
