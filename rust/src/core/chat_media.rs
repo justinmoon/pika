@@ -754,16 +754,16 @@ impl AppCore {
         // Validate session and get group info for encryption.
         let (group, local_keys) = {
             let Some(sess) = self.session.as_ref() else {
-                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id);
+                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
                 return;
             };
             let Some(group) = sess.groups.get(&chat_id).cloned() else {
-                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id);
+                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
                 self.toast("Chat not found");
                 return;
             };
             let Some(local_keys) = sess.local_keys.clone() else {
-                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id);
+                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
                 self.toast("Media upload requires local key signer");
                 return;
             };
@@ -782,7 +782,7 @@ impl AppCore {
             ) {
                 Ok(upload) => upload,
                 Err(e) => {
-                    self.cleanup_outbox_entry(&chat_id, &temp_rumor_id);
+                    self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
                     self.toast(format!("Media encryption failed: {e}"));
                     return;
                 }
@@ -936,13 +936,22 @@ impl AppCore {
         }
     }
 
-    /// Clean up an optimistic outbox entry and refresh UI.
-    fn cleanup_outbox_entry(&mut self, chat_id: &str, temp_rumor_id: &str) {
+    /// Clean up an optimistic outbox entry, optionally remove the cached media file,
+    /// and refresh UI.
+    fn cleanup_outbox_entry(
+        &mut self,
+        chat_id: &str,
+        temp_rumor_id: &str,
+        local_path: Option<&str>,
+    ) {
         if let Some(outbox) = self.local_outbox.get_mut(chat_id) {
             outbox.remove(temp_rumor_id);
         }
         if let Some(overrides) = self.delivery_overrides.get_mut(chat_id) {
             overrides.remove(temp_rumor_id);
+        }
+        if let Some(path) = local_path {
+            let _ = std::fs::remove_file(path);
         }
         self.refresh_current_chat_if_open(chat_id);
         self.refresh_chat_list_from_storage();

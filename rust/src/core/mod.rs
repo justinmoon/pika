@@ -7717,10 +7717,21 @@ mod tests {
                 );
             assert!(!core.media_cache.is_empty());
 
+            // Populate the local path cache.
+            core.local_path_cache
+                .entry("chat1".to_string())
+                .or_default()
+                .insert("hash1".to_string(), "/tmp/photo.jpg".to_string());
+            assert!(!core.local_path_cache.is_empty());
+
             core.handle_action(AppAction::WipeMediaCache);
             assert!(
                 core.media_cache.is_empty(),
                 "WipeMediaCache should clear in-memory media cache"
+            );
+            assert!(
+                core.local_path_cache.is_empty(),
+                "WipeMediaCache should clear local path cache"
             );
         }
     }
