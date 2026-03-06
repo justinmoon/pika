@@ -30,8 +30,7 @@ struct ChatView: View {
     @State private var stagedMedia: [StagedMediaItem] = []
     @State private var showFileImporter = false
     @State private var messageText = ""
-    @State private var isAtBottom = true
-    @State private var shouldStickToBottom = true
+    @State private var followsBottom = true
     @State private var activeReactionMessageId: String?
     @State private var contextMenuMessage: ChatMessage?
     @State private var contextMenuAnchorFrame: CGRect = .zero
@@ -44,14 +43,10 @@ struct ChatView: View {
     @State private var fullscreenImageAttachment: ChatMediaAttachment?
     @State private var fullscreenImageAttachments: [ChatMediaAttachment] = []
     @State private var showPollComposer = false
-    @State private var scrollToBottomTrigger = 0
-    @State private var messageInputBarHeight: CGFloat = 0
-    @State private var topOverlayHeight: CGFloat = 0
+    @State private var scrollRequest: MessageCollectionList.ScrollRequest?
     @State private var voiceRecorder: VoiceRecorder
     @State private var showMicPermissionDenied = false
     @FocusState private var isInputFocused: Bool
-
-    private let scrollButtonBottomPadding: CGFloat = 12
 
     init(
         chatId: String,
@@ -110,31 +105,26 @@ struct ChatView: View {
 
     @ViewBuilder
     private func loadedChat(_ chat: ChatViewState) -> some View {
-        GeometryReader { geo in
-            ZStack {
-                chatBackground
-                    .ignoresSafeArea()
+        let viewportMetrics = MessageCollectionLayout.viewportMetrics()
+        ZStack {
+            chatBackground
+                .ignoresSafeArea()
 
-                messageList(
-                    chat,
-                    visualTopInset: topOverlayHeight,
-                    visualBottomInset: messageInputBarHeight
-                )
-                .ignoresSafeArea(edges: [.top, .bottom])
-            }
-            .overlay(alignment: .top) {
-                topOverlay(chat)
-                    .measureHeight($topOverlayHeight)
-            }
-            .overlay(alignment: .bottom) {
-                messageInputBar(chat: chat)
-                    .measureHeight($messageInputBarHeight)
-            }
+            messageList(
+                chat,
+                viewportMetrics: viewportMetrics
+            )
             .overlay(alignment: .bottomTrailing) {
                 scrollToBottomButton(
-                    bottomPadding: geo.safeAreaInsets.bottom + messageInputBarHeight + scrollButtonBottomPadding
+                    bottomPadding: viewportMetrics.jumpButtonBottomOffset
                 )
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            topOverlay(chat)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            messageInputBar(chat: chat)
         }
         .blur(radius: contextMenuMessage == nil ? 0 : 24)
         .allowsHitTesting(contextMenuMessage == nil)
@@ -318,8 +308,7 @@ struct ChatView: View {
     @ViewBuilder
     private func messageList(
         _ chat: ChatViewState,
-        visualTopInset: CGFloat,
-        visualBottomInset: CGFloat
+        viewportMetrics: MessageCollectionViewportMetrics
     ) -> some View {
         let messagesById = Dictionary(uniqueKeysWithValues: chat.messages.map { ($0.id, $0) })
         MessageCollectionList(
@@ -360,25 +349,13 @@ struct ChatView: View {
                     callback(chatId, oldestId, 30)
                 }
             },
-            visualTopInset: visualTopInset,
-            visualBottomInset: visualBottomInset,
-            isAtBottom: $isAtBottom,
-            shouldStickToBottom: $shouldStickToBottom,
+            viewportMetrics: viewportMetrics,
+            followsBottom: $followsBottom,
             activeReactionMessageId: activeReactionMessageId,
-            scrollToBottomTrigger: scrollToBottomTrigger
+            scrollRequest: scrollRequest
         )
-        .onChangeCompat(of: chat.messages.last?.id) { newMessageId in
-            guard shouldStickToBottom else { return }
-            scrollToBottomTrigger += 1
-        }
         .onChangeCompat(of: chat.chatId) {
-            shouldStickToBottom = true
-            scrollToBottomTrigger += 1
-        }
-        .onChangeCompat(of: isInputFocused) { focused in
-            guard focused else { return }
-            guard shouldStickToBottom else { return }
-            scrollToBottomTrigger += 1
+            requestScrollToBottom(animated: false)
         }
     }
 
@@ -414,10 +391,9 @@ struct ChatView: View {
 
     @ViewBuilder
     private func scrollToBottomButton(bottomPadding: CGFloat) -> some View {
-        if !isAtBottom {
+        if !followsBottom {
             Button {
-                shouldStickToBottom = true
-                scrollToBottomTrigger += 1
+                requestScrollToBottom(animated: true)
             } label: {
                 Image(systemName: "arrow.down")
                     .font(.footnote.weight(.semibold))
@@ -430,6 +406,14 @@ struct ChatView: View {
             .padding(.bottom, bottomPadding)
             .accessibilityLabel("Scroll to bottom")
         }
+    }
+
+    private func requestScrollToBottom(animated: Bool) {
+        followsBottom = true
+        scrollRequest = MessageCollectionList.ScrollRequest(
+            id: (scrollRequest?.id ?? 0) + 1,
+            action: .scrollToBottom(animated: animated)
+        )
     }
 
     private func chatTitle(_ chat: ChatViewState) -> String {
@@ -1168,28 +1152,6 @@ struct UnreadDividerRow: View {
             Divider()
         }
         .padding(.vertical, 8)
-    }
-}
-private struct HeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private extension View {
-    func measureHeight(_ height: Binding<CGFloat>) -> some View {
-        background(
-            GeometryReader { geo in
-                Color.clear
-                    .preference(key: HeightPreferenceKey.self, value: geo.size.height)
-            }
-        )
-        .onPreferenceChange(HeightPreferenceKey.self) { newHeight in
-            guard abs(newHeight - height.wrappedValue) > 0.5 else { return }
-            height.wrappedValue = newHeight
-        }
     }
 }
 

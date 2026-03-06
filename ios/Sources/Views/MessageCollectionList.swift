@@ -6,6 +6,20 @@ import UIKit
 /// The collection view uses a normal top-to-bottom layout so scroll math,
 /// sticky-bottom detection, and chrome reserves stay aligned with UIKit.
 struct MessageCollectionList: UIViewRepresentable {
+    struct ScrollRequest: Equatable {
+        enum Action: Equatable {
+            case scrollToBottom(animated: Bool)
+        }
+
+        let id: Int
+        let action: Action
+    }
+
+    struct ContentState: Equatable {
+        let chat: ChatViewState
+        let activeReactionMessageId: String?
+    }
+
     let rows: [ChatView.ChatTimelineRow]
     let chat: ChatViewState
     let messagesById: [String: ChatMessage]
@@ -21,12 +35,14 @@ struct MessageCollectionList: UIViewRepresentable {
     var onRetryMessage: ((String) -> Void)?
     var onLoadOlderMessages: (() -> Void)?
 
-    var visualTopInset: CGFloat
-    var visualBottomInset: CGFloat
-    @Binding var isAtBottom: Bool
-    @Binding var shouldStickToBottom: Bool
+    let viewportMetrics: MessageCollectionViewportMetrics
+    @Binding var followsBottom: Bool
     var activeReactionMessageId: String?
-    var scrollToBottomTrigger: Int
+    var scrollRequest: ScrollRequest?
+
+    private var contentState: ContentState {
+        ContentState(chat: chat, activeReactionMessageId: activeReactionMessageId)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -34,18 +50,19 @@ struct MessageCollectionList: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UICollectionView {
         let layout = MessageCollectionList.makeLayout()
-        let collectionView = InsetAwareCollectionView(frame: .zero, collectionViewLayout: layout)
+        let collectionView = BoundsAwareCollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
         collectionView.contentInsetAdjustmentBehavior = .never
-        collectionView.alwaysBounceVertical = false
+        collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .interactive
         collectionView.delegate = context.coordinator
         collectionView.showsVerticalScrollIndicator = true
         collectionView.alwaysBounceHorizontal = false
-        collectionView.onLayoutChange = { [weak coordinator = context.coordinator] in
-            _ = coordinator?.applyLayoutMetricsIfNeeded()
+        collectionView.onBoundsSizeChange = { [weak coordinator = context.coordinator] _ in
+            coordinator?.handleBoundsSizeChange()
         }
         context.coordinator.collectionView = collectionView
+        context.coordinator.lastContentState = contentState
 
         let registration = UICollectionView.CellRegistration<UICollectionViewCell, String> {
             [weak coordinator = context.coordinator] cell, _, itemID in
@@ -59,7 +76,6 @@ struct MessageCollectionList: UIViewRepresentable {
             .minSize(width: 0, height: 0)
             .margins(.all, 0)
         }
-        context.coordinator.cellRegistration = registration
 
         let dataSource = UICollectionViewDiffableDataSource<Int, String>(collectionView: collectionView) {
             collectionView, indexPath, itemID in
@@ -73,7 +89,7 @@ struct MessageCollectionList: UIViewRepresentable {
 
         let renderedRows = buildRenderedRows()
         context.coordinator.applyRows(renderedRows, animated: false)
-        context.coordinator.applyLayoutMetricsIfNeeded()
+        context.coordinator.applyViewportMetricsIfNeeded(viewportMetrics)
         context.coordinator.scrollToBottom(animated: false)
 
         return collectionView
@@ -82,45 +98,39 @@ struct MessageCollectionList: UIViewRepresentable {
     func updateUIView(_ collectionView: UICollectionView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
-        let layoutMetricsChanged = coordinator.applyLayoutMetricsIfNeeded()
-
         let newRows = buildRenderedRows()
         let newIDs = newRows.map(\.id)
+        let updateKind = MessageCollectionLayout.classifyUpdate(oldIDs: coordinator.currentIDs, newIDs: newIDs)
+        let anchor = followsBottom ? nil : coordinator.captureTopAnchor()
+        let contentChanged = coordinator.lastContentState != contentState
+        coordinator.lastContentState = contentState
+        let viewportChanged = coordinator.applyViewportMetricsIfNeeded(viewportMetrics)
+        let pendingScrollRequest = scrollRequest.flatMap { request in
+            coordinator.consumeScrollRequestIfNeeded(request)
+        }
 
-        if newIDs != coordinator.currentIDs {
-            let stickyBottom = shouldStickToBottom
-            let anchor = stickyBottom ? nil : coordinator.captureTopAnchor()
-            coordinator.applyRows(newRows, animated: false) {
-                if stickyBottom {
-                    coordinator.scrollToBottom(animated: false)
-                } else if let anchor {
-                    coordinator.restore(anchor: anchor)
-                }
-            }
-        } else if let dataSource = coordinator.dataSource {
-            coordinator.rowsByID = Dictionary(uniqueKeysWithValues: newRows.map { ($0.id, $0) })
-            var snapshot = dataSource.snapshot()
-            let visibleIDs = collectionView.indexPathsForVisibleItems
-                .sorted { lhs, rhs in
-                    if lhs.section == rhs.section {
-                        return lhs.item < rhs.item
-                    }
-                    return lhs.section < rhs.section
-                }
-                .compactMap { dataSource.itemIdentifier(for: $0) }
-            if !visibleIDs.isEmpty {
-                snapshot.reconfigureItems(visibleIDs)
-                dataSource.apply(snapshot, animatingDifferences: false)
+        let completion = {
+            if let pendingScrollRequest {
+                coordinator.handle(scrollRequest: pendingScrollRequest)
+            } else if coordinator.parent.followsBottom {
+                let animateToBottom = updateKind == .tailMutation
+                coordinator.scrollToBottom(animated: animateToBottom)
+            } else if let anchor {
+                coordinator.restore(anchor: anchor)
             }
         }
 
-        if scrollToBottomTrigger != coordinator.lastScrollToBottomTrigger {
-            coordinator.lastScrollToBottomTrigger = scrollToBottomTrigger
-            coordinator.scrollToBottom(animated: true)
-        }
-
-        if layoutMetricsChanged && shouldStickToBottom {
-            coordinator.scrollToBottom(animated: false)
+        switch updateKind {
+        case .reconfigureOnly:
+            let didApplyVisibleRefresh = contentChanged
+                ? coordinator.reconfigureVisibleRows(with: newRows, completion: completion)
+                : false
+            if !didApplyVisibleRefresh && (viewportChanged || pendingScrollRequest != nil) {
+                completion()
+            }
+        case .tailMutation, .structural:
+            let animateDifferences = followsBottom && updateKind == .tailMutation
+            coordinator.applyRows(newRows, animated: animateDifferences, completion: completion)
         }
     }
 
@@ -147,17 +157,16 @@ struct MessageCollectionList: UIViewRepresentable {
     final class Coordinator: NSObject, UICollectionViewDelegate {
         var parent: MessageCollectionList
         var dataSource: UICollectionViewDiffableDataSource<Int, String>?
-        var cellRegistration: UICollectionView.CellRegistration<UICollectionViewCell, String>?
         var rowsByID: [String: RenderedRow] = [:]
         var currentIDs: [String] = []
         weak var collectionView: UICollectionView?
-        var lastScrollToBottomTrigger: Int = 0
         private var requestedOldestId: String?
-        private var lastAppliedLayoutMetrics: MessageCollectionLayoutMetrics?
+        private var lastAppliedViewportMetrics: MessageCollectionViewportMetrics?
+        private var lastHandledScrollRequestID: Int?
+        var lastContentState: ContentState?
 
         init(parent: MessageCollectionList) {
             self.parent = parent
-            self.lastScrollToBottomTrigger = parent.scrollToBottomTrigger
         }
 
         func applyRows(_ rows: [RenderedRow], animated: Bool, completion: (() -> Void)? = nil) {
@@ -170,6 +179,23 @@ struct MessageCollectionList: UIViewRepresentable {
             dataSource?.apply(snapshot, animatingDifferences: animated) {
                 completion?()
             }
+        }
+
+        @discardableResult
+        func reconfigureVisibleRows(with rows: [RenderedRow], completion: (() -> Void)? = nil) -> Bool {
+            currentIDs = rows.map(\.id)
+            rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+
+            guard let dataSource else { return false }
+            let visibleIDs = visibleItemIDs()
+            guard !visibleIDs.isEmpty else { return false }
+
+            var snapshot = dataSource.snapshot()
+            snapshot.reconfigureItems(visibleIDs)
+            dataSource.apply(snapshot, animatingDifferences: false) {
+                completion?()
+            }
+            return true
         }
 
         func scrollToBottom(animated: Bool) {
@@ -186,30 +212,37 @@ struct MessageCollectionList: UIViewRepresentable {
         }
 
         @discardableResult
-        func applyLayoutMetricsIfNeeded() -> Bool {
+        func applyViewportMetricsIfNeeded(_ viewportMetrics: MessageCollectionViewportMetrics) -> Bool {
             guard let collectionView else { return false }
-
-            let metrics = MessageCollectionLayout.metrics(
-                visualTopReserve: parent.visualTopInset,
-                visualBottomReserve: parent.visualBottomInset,
-                safeAreaInsets: collectionView.safeAreaInsets
-            )
-            guard metrics != lastAppliedLayoutMetrics else { return false }
-            lastAppliedLayoutMetrics = metrics
-            collectionView.contentInset = metrics.contentInset
-            collectionView.scrollIndicatorInsets = metrics.scrollIndicatorInsets
+            guard viewportMetrics != lastAppliedViewportMetrics else { return false }
+            lastAppliedViewportMetrics = viewportMetrics
+            collectionView.contentInset = viewportMetrics.contentInset
+            collectionView.scrollIndicatorInsets = viewportMetrics.scrollIndicatorInsets
             return true
+        }
+
+        func consumeScrollRequestIfNeeded(_ request: ScrollRequest) -> ScrollRequest? {
+            guard request.id != lastHandledScrollRequestID else { return nil }
+            lastHandledScrollRequestID = request.id
+            return request
+        }
+
+        func handle(scrollRequest: ScrollRequest) {
+            switch scrollRequest.action {
+            case .scrollToBottom(let animated):
+                scrollToBottom(animated: animated)
+            }
+        }
+
+        func handleBoundsSizeChange() {
+            guard parent.followsBottom else { return }
+            scrollToBottom(animated: false)
         }
 
         func captureTopAnchor() -> ScrollAnchor? {
             guard let collectionView,
                   let dataSource,
-                  let indexPath = collectionView.indexPathsForVisibleItems.min(by: { lhs, rhs in
-                      if lhs.section == rhs.section {
-                          return lhs.item < rhs.item
-                      }
-                      return lhs.section < rhs.section
-                  }),
+                  let indexPath = collectionView.indexPathsForVisibleItems.sorted(by: indexPathSort).first,
                   let itemID = dataSource.itemIdentifier(for: indexPath),
                   let attributes = collectionView.layoutAttributesForItem(at: indexPath)
             else { return nil }
@@ -265,52 +298,9 @@ struct MessageCollectionList: UIViewRepresentable {
                 contentHeight: scrollView.contentSize.height,
                 adjustedInsets: scrollView.adjustedContentInset
             )
-            if parent.isAtBottom != nearBottom {
+            if nearBottom != parent.followsBottom {
                 DispatchQueue.main.async {
-                    self.parent.isAtBottom = nearBottom
-                }
-            }
-            if nearBottom && !parent.shouldStickToBottom {
-                DispatchQueue.main.async {
-                    self.parent.shouldStickToBottom = true
-                }
-            }
-        }
-
-        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-            let nearBottom = MessageCollectionLayout.isNearBottom(
-                contentOffsetY: scrollView.contentOffset.y,
-                boundsHeight: scrollView.bounds.height,
-                contentHeight: scrollView.contentSize.height,
-                adjustedInsets: scrollView.adjustedContentInset
-            )
-            if !nearBottom && parent.shouldStickToBottom {
-                DispatchQueue.main.async {
-                    self.parent.shouldStickToBottom = false
-                }
-            }
-        }
-
-        func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-            if !decelerate {
-                updateStickyAfterScroll(scrollView)
-            }
-        }
-
-        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-            updateStickyAfterScroll(scrollView)
-        }
-
-        private func updateStickyAfterScroll(_ scrollView: UIScrollView) {
-            let nearBottom = MessageCollectionLayout.isNearBottom(
-                contentOffsetY: scrollView.contentOffset.y,
-                boundsHeight: scrollView.bounds.height,
-                contentHeight: scrollView.contentSize.height,
-                adjustedInsets: scrollView.adjustedContentInset
-            )
-            if nearBottom != parent.shouldStickToBottom {
-                DispatchQueue.main.async {
-                    self.parent.shouldStickToBottom = nearBottom
+                    self.parent.followsBottom = nearBottom
                 }
             }
         }
@@ -376,20 +366,32 @@ struct MessageCollectionList: UIViewRepresentable {
 
             collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: true)
         }
+
+        private func visibleItemIDs() -> [String] {
+            guard let collectionView, let dataSource else { return [] }
+            return collectionView.indexPathsForVisibleItems
+                .sorted(by: indexPathSort)
+                .compactMap { dataSource.itemIdentifier(for: $0) }
+        }
+
+        private func indexPathSort(_ lhs: IndexPath, _ rhs: IndexPath) -> Bool {
+            if lhs.section == rhs.section {
+                return lhs.item < rhs.item
+            }
+            return lhs.section < rhs.section
+        }
     }
 }
 
-private final class InsetAwareCollectionView: UICollectionView {
-    var onLayoutChange: (() -> Void)?
+private final class BoundsAwareCollectionView: UICollectionView {
+    var onBoundsSizeChange: ((CGSize) -> Void)?
+    private var lastReportedSize: CGSize = .zero
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        onLayoutChange?()
-    }
-
-    override func safeAreaInsetsDidChange() {
-        super.safeAreaInsetsDidChange()
-        onLayoutChange?()
+        guard bounds.size != lastReportedSize else { return }
+        lastReportedSize = bounds.size
+        onBoundsSizeChange?(bounds.size)
     }
 }
 
