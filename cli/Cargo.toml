@@ -8,28 +8,28 @@ name = "pikachat"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
-base64 = "0.22"
-clap = { version = "4", features = ["derive", "env"] }
-hex = "0.4"
+anyhow = { workspace = true }
+base64 = { workspace = true }
+clap = { workspace = true, features = ["env"] }
+hex = { workspace = true }
 mdk-core = { workspace = true }
 mdk-sqlite-storage = { workspace = true }
 mdk-storage-traits = { workspace = true }
-nostr-blossom = "0.44.0"
-nostr-sdk = { version = "0.44.1", features = ["nip59"] }
+nostr-blossom = { workspace = true }
+nostr-sdk = { workspace = true, features = ["nip59"] }
 pika-agent-protocol = { path = "../crates/pika-agent-protocol" }
 pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-marmot-runtime = { path = "../crates/pika-marmot-runtime" }
 pikachat-sidecar = { path = "../crates/pikachat-sidecar" }
-rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-tokio = { version = "1.47", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["json", "native-tls"] }
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 hypernote-protocol = { workspace = true }
 qr2term = "0.3"
 

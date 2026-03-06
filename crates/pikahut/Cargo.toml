@@ -13,23 +13,23 @@ path = "src/main.rs"
 [dependencies]
 pika-marmot-runtime = { path = "../pika-marmot-runtime" }
 pika-relay-profiles = { path = "../pika-relay-profiles" }
-tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+tokio = { workspace = true, features = ["full"] }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+reqwest = { workspace = true, features = ["json", "native-tls"] }
 nix = { version = "0.29", features = ["signal", "process"] }
-tempfile = "3"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow = "1"
-chrono = { version = "0.4", features = ["serde"] }
-base64 = "0.22"
+tempfile = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+base64 = { workspace = true }
 bech32 = "0.11"
-rand = "0.8"
-nostr-blossom = "0.44.0"
-nostr-sdk = "0.44.1"
-sha2 = "0.10"
-hex = "0.4"
-url = "2"
+rand = { workspace = true }
+nostr-blossom = { workspace = true }
+nostr-sdk = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+url = { workspace = true }

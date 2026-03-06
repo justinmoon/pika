@@ -8,32 +8,32 @@ name = "pika-server"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0"
-askama = "0.12"
+anyhow = { workspace = true }
+askama = { workspace = true }
 async-trait = "0.1"
 axum = "0.6.16"
-chrono = { version = "0.4.26", features = ["serde"] }
+chrono = { workspace = true, features = ["serde"] }
 diesel = { version = "2.1", features = ["postgres", "r2d2", "chrono", "numeric"] }
 diesel_migrations = "2.1.0"
 dotenv = "0.15.0"
 futures = "0.3.28"
-hex = "0.4"
+hex = { workspace = true }
 hmac = "0.12"
-nostr = "0.44"
-nostr-sdk = { version = "0.44", features = ["nip59"] }
+nostr = { workspace = true }
+nostr-sdk = { workspace = true, features = ["nip59"] }
 pika-agent-control-plane = { path = "../pika-agent-control-plane" }
 pika-agent-microvm = { path = "../pika-agent-microvm" }
 pika-relay-profiles = { path = "../pika-relay-profiles" }
-rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = "1.0"
-serde_json = "1.0"
-sha2 = "0.10"
-tokio = { version = "1.12.0", features = ["full"] }
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["json", "native-tls"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 a2 = "0.10"
-base64 = "0.22"
+base64 = { workspace = true }
 fcm-rs = "0.2"
 
 [dev-dependencies]

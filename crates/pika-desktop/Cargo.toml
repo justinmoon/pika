@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-flume = "0.11"
+flume = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "image", "wgpu"] }
 image = "0.24"
 nokhwa = { version = "0.10", features = ["input-native"] }
@@ -13,9 +13,9 @@ openh264 = "0.6"
 pika_core = { path = "../../rust" }
 pika-media = { path = "../pika-media" }
 rfd = "0.15"
-base64 = "0.22"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 pika-relay-profiles = { path = "../pika-relay-profiles" }

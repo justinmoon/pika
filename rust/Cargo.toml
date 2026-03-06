@@ -8,11 +8,11 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-anyhow = "1"
-base64 = "0.22"
+anyhow = { workspace = true }
+base64 = { workspace = true }
 blurhash = "0.2"
-flume = "0.11"
-hex = "0.4"
+flume = { workspace = true }
+hex = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 # NOTE: CI-compatible dependency pinning. Do not use local path deps here.
 # If you need to develop against a local MDK checkout, use a gitignored
@@ -22,40 +22,40 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 mdk-core = { workspace = true }
 mdk-sqlite-storage = { workspace = true }
 mdk-storage-traits = { workspace = true }
-keyring-core = "0.7"
-nostr-sdk = { version = "0.44.1", features = ["nip59"] }
-nostr-connect = "0.44.0"
-nostr-blossom = "0.44.0"
+keyring-core = { workspace = true }
+nostr-sdk = { workspace = true, features = ["nip59"] }
+nostr-connect = { workspace = true }
+nostr-blossom = { workspace = true }
 pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-media = { path = "../crates/pika-media", features = ["network"] }
 pika-tls = { path = "../crates/pika-tls" }
-rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
-rusqlite = "0.32"
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync", "time"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
-uniffi = "0.31.0"
-uuid = { version = "1", features = ["v4"] }
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["json", "native-tls"] }
+rusqlite = { workspace = true }
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["registry"] }
+uniffi = { workspace = true }
+uuid = { workspace = true }
 cpal = "0.16"
 hypernote-mdx = { workspace = true }
 hypernote-protocol = { workspace = true }
-chrono = "0.4"
+chrono = { workspace = true }
 regex = "1"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 # SQLCipher without vendored OpenSSL. Apple targets use CommonCrypto; desktop targets can use
 # system roots/crypto. This keeps iOS builds free of OpenSSL toolchain issues.
-libsqlite3-sys = { version = "0.30.1", features = ["bundled-sqlcipher"] }
+libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Android NDK doesn't ship OpenSSL headers/libs, but SQLCipher's default crypto backend is OpenSSL.
 # Vendor OpenSSL for Android builds so `bundled-sqlcipher` compiles.
-libsqlite3-sys = { version = "0.30.1", features = ["bundled-sqlcipher-vendored-openssl"] }
+libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
 android-native-keyring-store = "0.5.0"
 jni = "0.21"
 ndk-context = "0.1.1"
@@ -63,12 +63,12 @@ paranoid-android = "0.2"
 
 [dev-dependencies]
 futures-util = "0.3"
-nostr-connect = "0.44.0"
+nostr-connect = { workspace = true }
 pikahut = { path = "../crates/pikahut" }
-tempfile = "3"
-tokio = { version = "1.47", features = ["rt-multi-thread"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-tungstenite = "0.27"
 
 [target.'cfg(target_os = "ios")'.dependencies]
-apple-native-keyring-store = { version = "0.2.2", features = ["protected"] }
+apple-native-keyring-store = { workspace = true }
 tracing-oslog = "0.3"

@@ -4,21 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
-hex = "0.4"
+anyhow = { workspace = true }
+hex = { workspace = true }
 mdk-core = { workspace = true }
 mdk-sqlite-storage = { workspace = true }
 mdk-storage-traits = { workspace = true }
-nostr-blossom = "0.44.0"
-nostr-sdk = { version = "0.44.1", features = ["nip44", "nip59"] }
+nostr-blossom = { workspace = true }
+nostr-sdk = { workspace = true, features = ["nip44", "nip59"] }
 pika-marmot-runtime = { path = "../pika-marmot-runtime" }
 pika-relay-profiles = { path = "../pika-relay-profiles" }
 pika-media = { path = "../pika-media", features = ["network"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 hound = "3.5"
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1.47", features = ["full"] }
-tracing = "0.1"
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
 hypernote-protocol = { workspace = true }
