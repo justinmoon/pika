@@ -150,6 +150,10 @@ final class CallE2ETests: XCTestCase {
         // --- Create chat with bot ---
         openNewChatFromChatList(app, timeout: 15)
 
+        let manualEntry = app.buttons.matching(identifier: "newchat_manual_entry").firstMatch
+        XCTAssertTrue(manualEntry.waitForExistence(timeout: 10))
+        manualEntry.tap()
+
         let peerField = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
         XCTAssertTrue(peerField.waitForExistence(timeout: 10))
         peerField.tap()

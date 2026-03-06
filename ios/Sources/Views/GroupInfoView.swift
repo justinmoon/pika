@@ -141,7 +141,7 @@ struct GroupInfoView: View {
                 if chat.isAdmin {
                     Section("Add Member") {
                         HStack(spacing: 8) {
-                            TextField("Peer npub", text: $npubInput)
+                            TextField("Person's code", text: $npubInput)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .textFieldStyle(.roundedBorder)

@@ -8,9 +8,11 @@ struct NewGroupChatView: View {
     @State private var groupName = ""
     @State private var selectedNpubs: [String] = []
     @State private var searchText = ""
-    @State private var showManualEntry = false
     @State private var npubInput = ""
     @State private var showScanner = false
+    @State private var showInvalidNpubAlert = false
+    @State private var invalidNpubMessage = ""
+    @State private var showManualEntrySheet = false
 
     private var filteredFollowList: [FollowListEntry] {
         let base = state.followList.filter { $0.npub != state.myNpub }
@@ -35,129 +37,173 @@ struct NewGroupChatView: View {
         let isLoading = state.isCreatingChat
 
         List {
-            // Group name
-            Section {
-                TextField("Group name", text: $groupName)
-                    .disabled(isLoading)
-                    .accessibilityIdentifier(TestIds.newGroupName)
-            }
-
-            // Selected members chips
+            groupNameSection(isLoading: isLoading)
             if !selectedNpubs.isEmpty {
-                Section("Selected (\(selectedNpubs.count))") {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(selectedNpubs, id: \.self) { npub in
-                                selectedChip(npub: npub, isLoading: isLoading)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
+                selectedMembersSection(isLoading: isLoading)
             }
-
-            // Manual entry section
-            Section {
-                DisclosureGroup("Add member manually", isExpanded: $showManualEntry) {
-                    manualEntryContent(isLoading: isLoading)
-                }
-            }
-
-            // Follow list section
-            if state.isFetchingFollowList && state.followList.isEmpty {
-                Section {
-                    HStack {
-                        Spacer()
-                        ProgressView("Loading follows...")
-                        Spacer()
-                    }
-                    .padding(.vertical, 8)
-                }
-            } else if state.followList.isEmpty {
-                Section {
-                    Text("No follows found.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                }
-            } else {
-                Section {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(filteredFollowList, id: \.pubkey) { entry in
-                                Button {
-                                    toggleSelection(npub: entry.npub)
-                                } label: {
-                                    followListRow(entry: entry)
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 6)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(isLoading)
-                                if entry.pubkey != filteredFollowList.last?.pubkey {
-                                    Divider()
-                                }
-                            }
-                        }
-                    }
-                    .modifier(ScrollBounceAlwaysModifier())
-                    .frame(maxHeight: 300)
-                } header: {
-                    if state.isFetchingFollowList {
-                        HStack(spacing: 6) {
-                            Text("Follows")
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    } else {
-                        Text("Follows")
-                    }
-                }
-            }
-
-            // Create button
-            Section {
-                Button {
-                    onCreateGroup(
-                        groupName.trimmingCharacters(in: .whitespacesAndNewlines),
-                        selectedNpubs
-                    )
-                } label: {
-                    HStack {
-                        Spacer()
-                        if isLoading {
-                            HStack(spacing: 8) {
-                                ProgressView().tint(.white)
-                                Text("Creating...")
-                            }
-                        } else {
-                            Text("Create Group")
-                        }
-                        Spacer()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canCreate)
-                .accessibilityIdentifier(TestIds.newGroupCreate)
-            }
+            quickActionsSection(isLoading: isLoading)
+            followsSection(isLoading: isLoading)
+            createButton(isLoading: isLoading)
         }
         .listStyle(.insetGrouped)
-        .searchable(text: $searchText, prompt: "Search follows")
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemGroupedBackground))
         .navigationTitle("New Group")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showManualEntrySheet = true
+                } label: {
+                    Image(systemName: "keyboard")
+                }
+                .disabled(isLoading)
+                .accessibilityIdentifier(TestIds.newGroupManualEntry)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            NativeBottomSearchField(title: "Search follows", text: $searchText)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
+                .background(.bar)
+        }
         .onAppear {
             onRefreshFollowList()
         }
         .sheet(isPresented: $showScanner) {
             QrScannerSheet { scanned in
-                let normalized = normalizePeerKey(input: scanned)
-                if isValidPeerKey(input: normalized) && !selectedNpubs.contains(normalized) {
-                    selectedNpubs.append(normalized)
-                } else {
-                    npubInput = scanned
-                    showManualEntry = true
+                handleIncomingPeer(scanned)
+            }
+        }
+        .sheet(isPresented: $showManualEntrySheet, onDismiss: {
+            npubInput = ""
+        }) {
+            manualEntrySheet(isLoading: isLoading)
+        }
+        .alert("Invalid code", isPresented: $showInvalidNpubAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(invalidNpubMessage)
+        }
+    }
+
+    private func groupNameSection(isLoading: Bool) -> some View {
+        Section {
+            TextField("Group name", text: $groupName)
+                .disabled(isLoading)
+                .accessibilityIdentifier(TestIds.newGroupName)
+        }
+    }
+
+    private func selectedMembersSection(isLoading: Bool) -> some View {
+        Section("Members (\(selectedNpubs.count))") {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(selectedNpubs, id: \.self) { npub in
+                        selectedChip(npub: npub, isLoading: isLoading)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func quickActionsSection(isLoading: Bool) -> some View {
+        Section {
+            HStack(spacing: 8) {
+                NativeQuickActionButton(
+                    title: "Paste Code",
+                    systemImage: "doc.on.clipboard",
+                    isPrimary: true,
+                    accessibilityIdentifier: TestIds.newGroupPasteCode
+                ) {
+                    handlePaste()
+                }
+                .disabled(isLoading)
+
+                if ProcessInfo.processInfo.isiOSAppOnMac == false {
+                    NativeQuickActionButton(
+                        title: "Scan Code",
+                        systemImage: "qrcode.viewfinder",
+                        accessibilityIdentifier: TestIds.newGroupScanQr
+                    ) {
+                        showScanner = true
+                    }
+                    .disabled(isLoading)
                 }
             }
+            .padding(.vertical, 8)
+        }
+    }
+
+    @ViewBuilder
+    private func followsSection(isLoading: Bool) -> some View {
+        Section {
+            if state.isFetchingFollowList && state.followList.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView("Loading follows...")
+                    Spacer()
+                }
+            } else if state.followList.isEmpty {
+                emptyStateRow(
+                    title: "No follows found",
+                    message: "Follow people or paste a code to add them."
+                )
+            } else if filteredFollowList.isEmpty {
+                emptyStateRow(
+                    title: "No matches found",
+                    message: "Try a different search."
+                )
+            } else {
+                ForEach(filteredFollowList, id: \.pubkey) { entry in
+                    Button {
+                        toggleSelection(npub: entry.npub)
+                    } label: {
+                        followListRow(entry: entry)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoading)
+                }
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Text("Follows")
+                if state.isFetchingFollowList {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func createButton(isLoading: Bool) -> some View {
+        Section {
+            Button {
+                onCreateGroup(
+                    groupName.trimmingCharacters(in: .whitespacesAndNewlines),
+                    selectedNpubs
+                )
+            } label: {
+                HStack {
+                    Spacer()
+                    if isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().tint(.white)
+                            Text("Creating...")
+                        }
+                    } else {
+                        Text("Create Group")
+                    }
+                    Spacer()
+                }
+                .frame(height: 50)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canCreate)
+            .accessibilityIdentifier(TestIds.newGroupCreate)
         }
     }
 
@@ -188,7 +234,7 @@ struct NewGroupChatView: View {
 
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.tint)
             }
         }
         .contentShape(Rectangle())
@@ -216,41 +262,6 @@ struct NewGroupChatView: View {
         .background(Color(.secondarySystemFill), in: Capsule())
     }
 
-    @ViewBuilder
-    private func manualEntryContent(isLoading: Bool) -> some View {
-        HStack(spacing: 8) {
-            TextField("npub1… or hex pubkey", text: $npubInput)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .disabled(isLoading)
-                .accessibilityIdentifier(TestIds.newGroupPeerNpub)
-
-            Button {
-                let raw = UIPasteboard.general.string ?? ""
-                npubInput = normalizePeerKey(input: raw)
-            } label: {
-                Image(systemName: "doc.on.clipboard")
-            }
-            .disabled(isLoading)
-
-            if ProcessInfo.processInfo.isiOSAppOnMac == false {
-                Button {
-                    showScanner = true
-                } label: {
-                    Image(systemName: "qrcode.viewfinder")
-                }
-                .disabled(isLoading)
-            }
-
-            Button("Add") {
-                addManualMember()
-            }
-            .fontWeight(.medium)
-            .disabled(!isValidPeerKey(input: normalizePeerKey(input: npubInput)) || isLoading)
-            .accessibilityIdentifier(TestIds.newGroupAddMember)
-        }
-    }
-
     private func toggleSelection(npub: String) {
         if let idx = selectedNpubs.firstIndex(of: npub) {
             selectedNpubs.remove(at: idx)
@@ -259,13 +270,76 @@ struct NewGroupChatView: View {
         }
     }
 
-    private func addManualMember() {
-        let normalized = normalizePeerKey(input: npubInput)
-        guard isValidPeerKey(input: normalized) else { return }
+    private func handlePaste() {
+        let raw = UIPasteboard.general.string ?? ""
+        handleIncomingPeer(raw)
+    }
+
+    private func emptyStateRow(title: String, message: String) -> some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+    }
+
+    @discardableResult
+    private func handleIncomingPeer(_ input: String) -> Bool {
+        let normalized = normalizePeerKey(input: input)
+        guard isValidPeerKey(input: normalized) else {
+            invalidNpubMessage = "Enter, paste, or scan a valid code (npub1… or 64-character hex public key)."
+            showInvalidNpubAlert = true
+            return false
+        }
         if !selectedNpubs.contains(normalized) {
             selectedNpubs.append(normalized)
+            return true
         }
-        npubInput = ""
+        invalidNpubMessage = "That person is already selected."
+        showInvalidNpubAlert = true
+        return false
+    }
+
+    private func manualEntrySheet(isLoading: Bool) -> some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Enter a code to add someone to the group.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    TextField("Code", text: $npubInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier(TestIds.newGroupPeerNpub)
+
+                    Button("Add Member") {
+                        let peer = normalizePeerKey(input: npubInput)
+                        if handleIncomingPeer(peer) {
+                            npubInput = ""
+                            showManualEntrySheet = false
+                        }
+                    }
+                    .disabled(normalizePeerKey(input: npubInput).isEmpty || isLoading)
+                    .accessibilityIdentifier(TestIds.newGroupAddMember)
+                }
+            }
+            .navigationTitle("Add Member")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        npubInput = ""
+                        showManualEntrySheet = false
+                    }
+                }
+            }
+        }
     }
 
     private func truncatedNpub(_ npub: String) -> String {

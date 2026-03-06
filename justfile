@@ -715,7 +715,7 @@ ios-build-sim: ios-xcframework ios-xcodeproj
     else
       DEST="platform=iOS Simulator,name=iPhone 16"
     fi
-    ./tools/xcode-run xcodebuild \
+    ./tools/xcodebuild-compact \
       -project ios/Pika.xcodeproj \
       -scheme Pika \
       -configuration Debug \

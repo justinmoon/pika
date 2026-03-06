@@ -4,6 +4,7 @@ enum TestIds {
     // Login
     static let loginCreateAccount = "login_create_account"
     static let loginNsecInput = "login_nsec_input"
+    static let loginPastePrivateKey = "login_paste_private_key"
     static let loginSubmit = "login_submit"
     static let loginBunkerUriInput = "login_bunker_uri_input"
     static let loginBunkerSubmit = "login_bunker_submit"
@@ -33,12 +34,16 @@ enum TestIds {
     static let newChatStart = "newchat_start"
     static let newChatScanQr = "newchat_scan_qr"
     static let newChatPaste = "newchat_paste"
+    static let newChatManualEntry = "newchat_manual_entry"
 
     // New group chat
     static let newGroupName = "newgroup_name"
     static let newGroupPeerNpub = "newgroup_peer_npub"
+    static let newGroupPasteCode = "newgroup_paste_code"
+    static let newGroupScanQr = "newgroup_scan_qr"
     static let newGroupAddMember = "newgroup_add_member"
     static let newGroupCreate = "newgroup_create"
+    static let newGroupManualEntry = "newgroup_manual_entry"
 
     // Chat
     static let chatMessageInput = "chat_message_input"

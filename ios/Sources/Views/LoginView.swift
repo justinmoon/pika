@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LoginView: View {
     let state: LoginViewState
@@ -11,32 +12,43 @@ struct LoginView: View {
     @State private var bunkerUriInput = ""
     @State private var showAdvanced = false
 
+    private var trimmedNsecInput: String {
+        nsecInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedBunkerUriInput: String {
+        bunkerUriInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         let createBusy = state.creatingAccount
         let loginBusy = state.loggingIn
         let anyBusy = createBusy || loginBusy
 
-        VStack(spacing: 0) {
-            Spacer()
+        List {
+            Section {
+                VStack(spacing: 0) {
+                    Image("PikaLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 140, height: 140)
+                        .clipShape(RoundedRectangle(cornerRadius: 28))
 
-            Image("PikaLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 140, height: 140)
-                .clipShape(RoundedRectangle(cornerRadius: 28))
+                    Text("Pika")
+                        .font(.largeTitle.weight(.bold))
+                        .padding(.top, 16)
 
-            Text("Pika")
-                .font(.largeTitle.weight(.bold))
-                .padding(.top, 16)
+                    Text("Encrypted messaging over Nostr")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            }
+            .listRowBackground(Color.clear)
 
-            Text("Encrypted messaging over Nostr")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .padding(.top, 4)
-
-            Spacer()
-
-            VStack(spacing: 12) {
+            Section {
                 Button {
                     onCreateAccount()
                 } label: {
@@ -53,29 +65,31 @@ struct LoginView: View {
                 .controlSize(.large)
                 .disabled(anyBusy)
                 .accessibilityIdentifier(TestIds.loginCreateAccount)
+            } footer: {
+                Text("Or sign in with your account private key.")
+            }
 
-                HStack {
-                    Rectangle()
-                        .frame(height: 1)
-                        .foregroundStyle(.quaternary)
-                    Text("or")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    Rectangle()
-                        .frame(height: 1)
-                        .foregroundStyle(.quaternary)
-                }
-                .padding(.vertical, 4)
+            Section("Account Private Key") {
+                HStack(spacing: 12) {
+                    SecureField("Enter your private key (nsec123...)", text: $nsecInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(.password)
+                        .disabled(anyBusy)
+                        .accessibilityIdentifier(TestIds.loginNsecInput)
 
-                SecureField("Enter your nsec", text: $nsecInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder)
+                    Button("Paste") {
+                        guard let pasted = UIPasteboard.general.string?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                              !pasted.isEmpty else { return }
+                        nsecInput = pasted
+                    }
+                    .accessibilityIdentifier(TestIds.loginPastePrivateKey)
                     .disabled(anyBusy)
-                    .accessibilityIdentifier(TestIds.loginNsecInput)
+                }
 
                 Button {
-                    onLogin(nsecInput)
+                    onLogin(trimmedNsecInput)
                 } label: {
                     if loginBusy {
                         ProgressView()
@@ -86,35 +100,20 @@ struct LoginView: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(anyBusy || nsecInput.isEmpty)
+                .disabled(anyBusy || trimmedNsecInput.isEmpty)
                 .accessibilityIdentifier(TestIds.loginSubmit)
+            }
 
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        showAdvanced.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Advanced")
-                            .font(.caption)
-                        Image(systemName: "chevron.down")
-                            .font(.caption2)
-                            .rotationEffect(.degrees(showAdvanced ? 180 : 0))
-                    }
-                    .foregroundStyle(.secondary)
-                }
-
-                if showAdvanced {
+            Section {
+                DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
                     TextField("Enter bunker URI", text: $bunkerUriInput)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .textFieldStyle(.roundedBorder)
                         .disabled(anyBusy)
                         .accessibilityIdentifier(TestIds.loginBunkerUriInput)
 
                     Button {
-                        onBunkerLogin(bunkerUriInput)
+                        onBunkerLogin(trimmedBunkerUriInput)
                     } label: {
                         if loginBusy {
                             ProgressView()
@@ -126,7 +125,7 @@ struct LoginView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
-                    .disabled(anyBusy || bunkerUriInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(anyBusy || trimmedBunkerUriInput.isEmpty)
                     .accessibilityIdentifier(TestIds.loginBunkerSubmit)
 
                     Button {
@@ -150,12 +149,14 @@ struct LoginView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
+                    .disabled(anyBusy)
                     .accessibilityIdentifier(TestIds.loginNostrConnectReset)
                 }
             }
-            .padding(.bottom, 32)
         }
-        .padding(.horizontal, 28)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemGroupedBackground))
     }
 }
 

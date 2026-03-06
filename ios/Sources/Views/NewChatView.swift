@@ -6,9 +6,11 @@ struct NewChatView: View {
     let onCreateChat: @MainActor (String) -> Void
     let onRefreshFollowList: @MainActor () -> Void
     @State private var searchText = ""
-    @State private var showManualEntry = true
     @State private var npubInput = ""
     @State private var showScanner = false
+    @State private var showInvalidNpubAlert = false
+    @State private var invalidNpubMessage = ""
+    @State private var showManualEntrySheet = false
 
     private var filteredFollowList: [FollowListEntry] {
         let base = state.followList.filter { $0.npub != state.myNpub }
@@ -27,69 +29,35 @@ struct NewChatView: View {
         let isLoading = state.isCreatingChat
 
         List {
-            // Manual entry section
-            Section {
-                DisclosureGroup("Enter npub manually", isExpanded: $showManualEntry) {
-                    manualEntryContent(isLoading: isLoading)
-                }
-            }
-
-            // Follow list section
-            if state.isFetchingFollowList && state.followList.isEmpty {
-                Section {
-                    HStack {
-                        Spacer()
-                        ProgressView("Loading follows...")
-                        Spacer()
-                    }
-                    .padding(.vertical, 8)
-                }
-            } else if state.followList.isEmpty {
-                Section {
-                    Text("No follows found.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                }
-            } else {
-                Section {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(filteredFollowList, id: \.pubkey) { entry in
-                                Button {
-                                    onCreateChat(entry.npub)
-                                } label: {
-                                    followListRow(entry: entry)
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 6)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(isLoading)
-                                if entry.pubkey != filteredFollowList.last?.pubkey {
-                                    Divider()
-                                }
-                            }
-                        }
-                    }
-                    .modifier(ScrollBounceAlwaysModifier())
-                    .frame(maxHeight: 300)
-                } header: {
-                    if state.isFetchingFollowList {
-                        HStack(spacing: 6) {
-                            Text("Follows")
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    } else {
-                        Text("Follows")
-                    }
-                }
-            }
+            quickActionsSection(isLoading: isLoading)
+            followsSection(isLoading: isLoading)
         }
         .listStyle(.insetGrouped)
-        .searchable(text: $searchText, prompt: "Search follows")
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemGroupedBackground))
         .navigationTitle("New Chat")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    guard !isLoading else { return }
+                    showManualEntrySheet = true
+                } label: {
+                    Image(systemName: "keyboard")
+                }
+                .disabled(isLoading)
+                .accessibilityIdentifier(TestIds.newChatManualEntry)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                NativeBottomSearchField(title: "Search follows", text: $searchText)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
+            .background(.bar)
+        }
         .overlay {
             if isLoading {
                 Color.black.opacity(0.15)
@@ -106,8 +74,87 @@ struct NewChatView: View {
         }
         .sheet(isPresented: $showScanner) {
             QrScannerSheet { scanned in
-                npubInput = scanned
-                showManualEntry = true
+                handleIncomingPeer(scanned)
+            }
+        }
+        .sheet(isPresented: $showManualEntrySheet, onDismiss: {
+            npubInput = ""
+        }) {
+            manualEntrySheet(isLoading: isLoading)
+        }
+        .alert("Invalid code", isPresented: $showInvalidNpubAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(invalidNpubMessage)
+        }
+    }
+
+    private func quickActionsSection(isLoading: Bool) -> some View {
+        Section {
+            HStack(spacing: 8) {
+                NativeQuickActionButton(
+                    title: "Paste Code",
+                    systemImage: "doc.on.clipboard",
+                    isPrimary: true,
+                    accessibilityIdentifier: TestIds.newChatPaste
+                ) {
+                    handlePaste()
+                }
+                .disabled(isLoading)
+
+                if ProcessInfo.processInfo.isiOSAppOnMac == false {
+                    NativeQuickActionButton(
+                        title: "Scan Code",
+                        systemImage: "qrcode.viewfinder",
+                        accessibilityIdentifier: TestIds.newChatScanQr
+                    ) {
+                        showScanner = true
+                    }
+                    .disabled(isLoading)
+                }
+            }
+            .padding(.vertical, 8)
+        }
+    }
+
+    @ViewBuilder
+    private func followsSection(isLoading: Bool) -> some View {
+        Section {
+            if state.isFetchingFollowList && state.followList.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView("Loading follows...")
+                    Spacer()
+                }
+            } else if state.followList.isEmpty {
+                emptyStateRow(
+                    title: "No follows found",
+                    message: "Follow people to start chats here."
+                )
+            } else if filteredFollowList.isEmpty {
+                emptyStateRow(
+                    title: "No matches found",
+                    message: "Try a different search."
+                )
+            } else {
+                ForEach(filteredFollowList, id: \.pubkey) { entry in
+                    Button {
+                        onCreateChat(entry.npub)
+                    } label: {
+                        followListRow(entry: entry)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoading)
+                }
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Text("Follows")
+                if state.isFetchingFollowList {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
         }
     }
@@ -139,53 +186,70 @@ struct NewChatView: View {
         .contentShape(Rectangle())
     }
 
-    @ViewBuilder
-    private func manualEntryContent(isLoading: Bool) -> some View {
-        let peer = normalizePeerKey(input: npubInput)
-        let isValidPeer = isValidPeerKey(input: peer)
+    private func handlePaste() {
+        let raw = UIPasteboard.general.string ?? ""
+        handleIncomingPeer(raw)
+    }
 
-        HStack(spacing: 8) {
-            TextField("npub1… or hex pubkey", text: $npubInput)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .disabled(isLoading)
-                .accessibilityIdentifier(TestIds.newChatPeerNpub)
-
-            Button {
-                let raw = UIPasteboard.general.string ?? ""
-                npubInput = normalizePeerKey(input: raw)
-            } label: {
-                Image(systemName: "doc.on.clipboard")
-            }
-            .disabled(isLoading)
-            .accessibilityIdentifier(TestIds.newChatPaste)
-
-            if ProcessInfo.processInfo.isiOSAppOnMac == false {
-                Button {
-                    showScanner = true
-                } label: {
-                    Image(systemName: "qrcode.viewfinder")
-                }
-                .disabled(isLoading)
-                .accessibilityIdentifier(TestIds.newChatScanQr)
-            }
-        }
-
-        if !peer.isEmpty && !isValidPeer {
-            Text("Enter a valid npub1… or 64-char hex pubkey.")
+    private func emptyStateRow(title: String, message: String) -> some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(message)
                 .font(.footnote)
-                .foregroundStyle(.red)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+    }
 
-        Button {
-            onCreateChat(peer)
-        } label: {
-            Text("Start Chat")
-                .frame(maxWidth: .infinity)
+    private func handleIncomingPeer(_ input: String) {
+        let peer = normalizePeerKey(input: input)
+        guard isValidPeerKey(input: peer) else {
+            invalidNpubMessage = "Enter, paste, or scan a valid code (npub1… or 64-character hex public key)."
+            showInvalidNpubAlert = true
+            return
         }
-        .buttonStyle(.borderedProminent)
-        .accessibilityIdentifier(TestIds.newChatStart)
-        .disabled(!isValidPeer || isLoading)
+        onCreateChat(peer)
+    }
+
+    private func manualEntrySheet(isLoading: Bool) -> some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Enter a code (npub1… or 64-character hex public key).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    TextField("Code", text: $npubInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier(TestIds.newChatPeerNpub)
+
+                    Button("Start Chat") {
+                        let peer = normalizePeerKey(input: npubInput)
+                        handleIncomingPeer(peer)
+                        if isValidPeerKey(input: peer) {
+                            npubInput = ""
+                            showManualEntrySheet = false
+                        }
+                    }
+                    .disabled(normalizePeerKey(input: npubInput).isEmpty || isLoading)
+                    .accessibilityIdentifier(TestIds.newChatStart)
+                }
+            }
+            .navigationTitle("Enter Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        npubInput = ""
+                        showManualEntrySheet = false
+                    }
+                }
+            }
+        }
     }
 
     private func truncatedNpub(_ npub: String) -> String {

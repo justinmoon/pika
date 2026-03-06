@@ -29,7 +29,7 @@ struct QrScannerSheet: View {
                 Spacer()
             }
             .padding(16)
-            .navigationTitle("Scan QR")
+            .navigationTitle("Scan Code")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Close") { dismiss() }
@@ -49,7 +49,7 @@ struct QrScannerSheet: View {
                     onScanned(normalized)
                     dismiss()
                 } else {
-                    errorMessage = "Scanned QR is not a valid npub."
+                    errorMessage = "Scanned QR does not contain a valid code."
                     // Restart capture (avoid being stuck after an invalid scan).
                     scannerNonce = UUID()
                 }
@@ -66,7 +66,7 @@ struct QrScannerSheet: View {
             VStack(spacing: 8) {
                 Text("Camera permission is required to scan QR codes.")
                     .foregroundStyle(.secondary)
-                Text("Use Paste on the New Chat screen instead.")
+                Text("Use Paste Code on the New Chat screen instead.")
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, minHeight: 240)
