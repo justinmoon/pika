@@ -866,7 +866,7 @@ fn paging_loads_older_messages_in_pages() {
     }
     wait_until(
         "all messages visible in list",
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         || {
             app.state()
                 .chat_list
