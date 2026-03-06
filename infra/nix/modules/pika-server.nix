@@ -8,6 +8,8 @@ let
   serviceUser = dbName;
   serviceGroup = dbName;
   serviceStateDir = "/var/lib/pika-server";
+  prodAdmins = import ../lib/prod-admins.nix;
+  prodAdminNpubs = map (admin: admin.npub) prodAdmins;
   startPikaServer = pkgs.writeShellScript "start-pika-server" ''
     set -euo pipefail
     export PIKA_ADMIN_SESSION_SECRET="$(${pkgs.coreutils}/bin/sha256sum ${serviceStateDir}/apns-key.p8 | ${pkgs.gawk}/bin/awk '{print $1}')"
@@ -106,7 +108,7 @@ in
       # Use the builder's stable tailnet IPv4 directly because MagicDNS
       # names may not resolve on this host.
       PIKA_AGENT_MICROVM_SPAWNER_URL=http://100.81.250.67:8080
-      PIKA_ADMIN_BOOTSTRAP_NPUBS=npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y,npub1rtrxx9eyvag0ap3v73c4dvsqq5d2yxwe5d72qxrfpwe5svr96wuqed4p38,npub1p4kg8zxukpym3h20erfa3samj00rm2gt4q5wfuyu3tg0x3jg3gesvncxf8
+      PIKA_ADMIN_BOOTSTRAP_NPUBS=${lib.concatStringsSep "," prodAdminNpubs}
       RUST_LOG=info
     '';
   };

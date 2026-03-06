@@ -5,6 +5,9 @@ let
   serviceUser = "pika-news";
   serviceGroup = "pika-news";
   serviceStateDir = "/var/lib/pika-news";
+  prodAdmins = import ../lib/prod-admins.nix;
+  prodAdminNpubs = map (admin: admin.npub) prodAdmins;
+  allowedNpubsToml = lib.concatMapStringsSep "\n" (npub: ''      "${npub}",'') prodAdminNpubs;
   configFile = pkgs.writeText "pika-news.toml" ''
     repos = ["sledtools/pika"]
     poll_interval_secs = 300
@@ -16,18 +19,7 @@ let
     bind_address = "127.0.0.1"
     bind_port = ${toString servicePort}
     allowed_npubs = [
-      "npub1dergggklka99wwrs92yz8wdjs952h2ux2ha2ed598ngwu9w7a6fsh9xzpc", # Gigi
-      "npub1trr5r2nrpsk6xkjk5a7p6pfcryyt6yzsflwjmz6r7uj7lfkjxxtq78hdpu", # Gladstein
-      "npub1qny3tkh0acurzla8x3zy4nhrjz5zd8l9sy9jys09umwng00manysew95gx", # Odell
-      "npub1u8lnhlw5usp3t9vmpz60ejpyt649z33hu82wc2hpv6m5xdqmuxhs46turz", # Carman
-      "npub15n94rarp3n7dz6edx9cugeshn0kcuxtugwu9nzprkpx7yekw7ygqplqru4", # Clark
-      "npub1dlkff8vcdwcty9hs3emc43yks8y7pr0tnn7jewvt63ph077sw48s4cc4qc", # Harrison
-      "npub1ye5ptcxfyyxl5vjvdjar2ua3f0hynkjzpx552mu5snj3qmx5pzjscpknpr", # hzrd
-      "npub1guh5grefa7vkay4ps6udxg8lrqxg2kgr3qh9n4gduxut64nfxq0q9y6hjy", # Marty
-      "npub1l2vyh47mk2p0qlsku7hg0vn29faehy9hy34ygaclpn66ukqp3afqutajft", # pablo
-      "npub1p4kg8zxukpym3h20erfa3samj00rm2gt4q5wfuyu3tg0x3jg3gesvncxf8", # Paul
-      "npub1330v3vee2mdvn2npdkquka2upmlrlsp0dl2c6kfnzwhpq6dvkjgq0d2k82", # Skyler
-      "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y", # justin
+${allowedNpubsToml}
     ]
   '';
 in
