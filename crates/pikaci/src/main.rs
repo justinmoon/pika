@@ -517,12 +517,9 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         }),
         "tart-ios-unit-tests" => Ok(TargetSpec {
             id: "tart-ios-unit-tests",
-            description: "Run the full PikaTests unit-test bundle in a Tart macOS guest",
+            description: "Run deterministic iOS unit-test suites in a Tart macOS guest",
             filters: &[],
-            jobs: vec![tart_ios_unit_tests_job(
-                "tart-ios-unit-tests",
-                "Run the full PikaTests unit-test bundle in a Tart macOS guest",
-            )],
+            jobs: tart_ios_unit_jobs(),
         }),
         "tart-ios-ui-test" => Ok(TargetSpec {
             id: "tart-ios-ui-test",
@@ -572,20 +569,18 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "tools/xcode-run",
                 "tools/xcodebuild-compact",
             ],
-            jobs: vec![
-                tart_ios_unit_tests_job(
-                    "tart-ios-unit-tests",
-                    "Run the full PikaTests unit-test bundle in a Tart macOS guest",
-                ),
-                tart_ios_ui_test_job(
+            jobs: {
+                let mut jobs = tart_ios_unit_jobs();
+                jobs.push(tart_ios_ui_test_job(
                     "tart-ios-ui-test",
                     "Run the deterministic ios-ui-test lane in a Tart macOS guest",
-                ),
-                tart_desktop_package_tests_job(
+                ));
+                jobs.push(tart_desktop_package_tests_job(
                     "tart-desktop-package-tests",
                     "Run pika-desktop package tests in a Tart macOS guest",
-                ),
-            ],
+                ));
+                jobs
+            },
         }),
         "pre-merge-rmp" => Ok(TargetSpec {
             id: "pre-merge-rmp",
@@ -835,15 +830,19 @@ fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec
         guest_command: GuestCommand::ShellCommand {
             command: concat!(
                 "set -euo pipefail; ",
-                "rm -rf ios/build ios/build-logs; ",
+                "local_ws=\"$(mktemp -d /tmp/pikaci-ios-workspace.XXXXXX)\"; ",
+                "trap 'rm -rf \"$local_ws\" /tmp/pikaci-ios-build' EXIT; ",
+                "ditto . \"$local_ws\"; ",
+                "cd \"$local_ws\"; ",
+                "rm -rf /tmp/pikaci-ios-build; ",
+                "mkdir -p '/Volumes/My Shared Files/artifacts/xcodebuild-logs'; ",
                 "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
                 "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
                 "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
-                "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
-                "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
+                "PIKA_XCODEBUILD_LOG_DIR='/Volumes/My Shared Files/artifacts/xcodebuild-logs' ./tools/xcodebuild-compact ",
                 "-project ios/Pika.xcodeproj ",
                 "-scheme Pika ",
-                "-derivedDataPath ios/build ",
+                "-derivedDataPath /tmp/pikaci-ios-build ",
                 "-destination \"id=$udid\" ",
                 "test ",
                 "-skipMacroValidation ",
@@ -859,35 +858,76 @@ fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec
     }
 }
 
-fn tart_ios_unit_tests_job(id: &'static str, description: &'static str) -> JobSpec {
+fn tart_ios_unit_jobs() -> Vec<JobSpec> {
+    vec![
+        tart_ios_unit_suite_job(
+            "tart-ios-agent-tests",
+            "Run AgentTests in a Tart macOS guest",
+            "PikaTests/AgentTests",
+        ),
+        tart_ios_unit_suite_job(
+            "tart-ios-app-manager-tests",
+            "Run AppManagerTests in a Tart macOS guest",
+            "PikaTests/AppManagerTests",
+        ),
+        tart_ios_unit_suite_job(
+            "tart-ios-chat-deeplink-tests",
+            "Run ChatDeepLinkTests in a Tart macOS guest",
+            "PikaTests/ChatDeepLinkTests",
+        ),
+        tart_ios_unit_suite_job(
+            "tart-ios-keychain-tests",
+            "Run KeychainNsecStoreTests in a Tart macOS guest",
+            "PikaTests/KeychainNsecStoreTests",
+        ),
+    ]
+}
+
+fn tart_ios_unit_suite_job(
+    id: &'static str,
+    description: &'static str,
+    only_testing: &'static str,
+) -> JobSpec {
+    let command = format!(
+        concat!(
+            "set -euo pipefail; ",
+            "local_ws=\"$(mktemp -d /tmp/pikaci-ios-workspace.XXXXXX)\"; ",
+            "trap 'rm -rf \"$local_ws\" /tmp/pikaci-ios-build' EXIT; ",
+            "ditto . \"$local_ws\"; ",
+            "cd \"$local_ws\"; ",
+            "rm -rf /tmp/pikaci-ios-build; ",
+            "mkdir -p '/Volumes/My Shared Files/artifacts/xcodebuild-logs'; ",
+            "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
+            "cp /tmp/pikaci-ios-sim-ensure.log '/Volumes/My Shared Files/artifacts/ios-sim-ensure.log'; ",
+            "\"$DEVELOPER_DIR/usr/bin/xcodebuild\" -showsdks > '/Volumes/My Shared Files/artifacts/xcode-showsdks.txt'; ",
+            "\"$DEVELOPER_DIR/usr/bin/simctl\" list runtimes > '/Volumes/My Shared Files/artifacts/simctl-runtimes.txt'; ",
+            "\"$DEVELOPER_DIR/usr/bin/simctl\" list devices > '/Volumes/My Shared Files/artifacts/simctl-devices.txt'; ",
+            "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
+            "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
+            "PIKA_XCODEBUILD_LOG_DIR='/Volumes/My Shared Files/artifacts/xcodebuild-logs' ./tools/xcodebuild-compact ",
+            "-project ios/Pika.xcodeproj ",
+            "-scheme Pika ",
+            "-derivedDataPath /tmp/pikaci-ios-build ",
+            "-destination \"id=$udid\" ",
+            "test ",
+            "-skipMacroValidation ",
+            "ARCHS=arm64 ",
+            "ONLY_ACTIVE_ARCH=YES ",
+            "CODE_SIGNING_ALLOWED=NO ",
+            "PIKA_APP_BUNDLE_ID=\"${{PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}}\" ",
+            "PIKA_IOS_URL_SCHEME=\"${{PIKA_IOS_URL_SCHEME:-pika}}\" ",
+            "-only-testing:{} ",
+            "-skip-testing:PikaUITests"
+        ),
+        only_testing
+    );
     JobSpec {
         id,
         description,
         timeout_secs: 7200,
         writable_workspace: true,
         guest_command: GuestCommand::ShellCommand {
-            command: concat!(
-                "set -euo pipefail; ",
-                "rm -rf ios/build ios/build-logs; ",
-                "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
-                "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
-                "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
-                "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
-                "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
-                "-project ios/Pika.xcodeproj ",
-                "-scheme Pika ",
-                "-derivedDataPath ios/build ",
-                "-destination \"id=$udid\" ",
-                "test ",
-                "-skipMacroValidation ",
-                "ARCHS=arm64 ",
-                "ONLY_ACTIVE_ARCH=YES ",
-                "CODE_SIGNING_ALLOWED=NO ",
-                "PIKA_APP_BUNDLE_ID=\"${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}\" ",
-                "PIKA_IOS_URL_SCHEME=\"${PIKA_IOS_URL_SCHEME:-pika}\" ",
-                "-only-testing:PikaTests ",
-                "-skip-testing:PikaUITests",
-            ),
+            command: Box::leak(command.into_boxed_str()),
         },
     }
 }
@@ -901,15 +941,19 @@ fn tart_ios_ui_test_job(id: &'static str, description: &'static str) -> JobSpec 
         guest_command: GuestCommand::ShellCommand {
             command: concat!(
                 "set -euo pipefail; ",
-                "rm -rf ios/build ios/build-logs; ",
+                "local_ws=\"$(mktemp -d /tmp/pikaci-ios-workspace.XXXXXX)\"; ",
+                "trap 'rm -rf \"$local_ws\" /tmp/pikaci-ios-build' EXIT; ",
+                "ditto . \"$local_ws\"; ",
+                "cd \"$local_ws\"; ",
+                "rm -rf /tmp/pikaci-ios-build; ",
+                "mkdir -p '/Volumes/My Shared Files/artifacts/xcodebuild-logs'; ",
                 "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
                 "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
                 "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
-                "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
-                "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
+                "PIKA_XCODEBUILD_LOG_DIR='/Volumes/My Shared Files/artifacts/xcodebuild-logs' ./tools/xcodebuild-compact ",
                 "-project ios/Pika.xcodeproj ",
                 "-scheme Pika ",
-                "-derivedDataPath ios/build ",
+                "-derivedDataPath /tmp/pikaci-ios-build ",
                 "-destination \"id=$udid\" ",
                 "test ",
                 "-skipMacroValidation ",
@@ -935,15 +979,19 @@ fn tart_ios_ui_note_to_self_job(id: &'static str, description: &'static str) -> 
         guest_command: GuestCommand::ShellCommand {
             command: concat!(
                 "set -euo pipefail; ",
-                "rm -rf ios/build ios/build-logs; ",
+                "local_ws=\"$(mktemp -d /tmp/pikaci-ios-workspace.XXXXXX)\"; ",
+                "trap 'rm -rf \"$local_ws\" /tmp/pikaci-ios-build' EXIT; ",
+                "ditto . \"$local_ws\"; ",
+                "cd \"$local_ws\"; ",
+                "rm -rf /tmp/pikaci-ios-build; ",
+                "mkdir -p '/Volumes/My Shared Files/artifacts/xcodebuild-logs'; ",
                 "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
                 "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
                 "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
-                "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
-                "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
+                "PIKA_XCODEBUILD_LOG_DIR='/Volumes/My Shared Files/artifacts/xcodebuild-logs' ./tools/xcodebuild-compact ",
                 "-project ios/Pika.xcodeproj ",
                 "-scheme Pika ",
-                "-derivedDataPath ios/build ",
+                "-derivedDataPath /tmp/pikaci-ios-build ",
                 "-destination \"id=$udid\" ",
                 "test ",
                 "-skipMacroValidation ",

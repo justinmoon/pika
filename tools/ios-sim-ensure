@@ -11,6 +11,7 @@ DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
 export DEVELOPER_DIR="$DEV_DIR"
 
 SIMCTL="$DEV_DIR/usr/bin/simctl"
+XCODEBUILD="$DEV_DIR/usr/bin/xcodebuild"
 
 if [ -z "$("$SIMCTL" list runtimes | sed -n '2,$p' | tr -d '[:space:]')" ]; then
   # Keep this check in one place so `just run-ios` and `just ios-ui-test`
@@ -19,30 +20,67 @@ if [ -z "$("$SIMCTL" list runtimes | sed -n '2,$p' | tr -d '[:space:]')" ]; then
   exit 1
 fi
 
-# Pick the latest available iOS runtime identifier. `simctl list runtimes` prints both
-# a human-readable version/build in parentheses and the identifier after " - ".
-# Example:
-#   iOS 18.6 (18.6 - 22G86) - com.apple.CoreSimulator.SimRuntime.iOS-18-6
+supported_runtime_version="$(
+  "$XCODEBUILD" -showsdks 2>/dev/null | awk '
+    /-sdk iphonesimulator/ {
+      sdk = $NF
+      sub(/^.*iphonesimulator/, "", sdk)
+      print sdk
+      exit
+    }
+  '
+)"
+# Prefer the exact simulator runtime version that the selected Xcode advertises, then
+# fall back to the highest installed iOS runtime not newer than that SDK, and only then
+# fall back to the newest installed iOS runtime.
 runtime_id="$(
   "$SIMCTL" list -j runtimes | python3 -c '
-import json,sys,re
-j=json.load(sys.stdin)
-r=[]
-for rt in j.get("runtimes",[]):
-  ident=rt.get("identifier") or ""
-  name=rt.get("name") or ""
-  avail=rt.get("isAvailable")
-  if not name.startswith("iOS "):
-    continue
-  if avail is False:
-    continue
-  m=re.search(r"iOS-(\d+)-(\d+)$", ident)
-  if not m:
-    continue
-  r.append((int(m.group(1)), int(m.group(2)), ident))
-r.sort()
-sys.stdout.write(r[-1][2] if r else "")
-'
+import json
+import re
+import sys
+
+j = json.load(sys.stdin)
+supported = sys.argv[1].strip()
+supported_tuple = None
+if supported:
+    parts = supported.split(".")
+    try:
+        supported_tuple = tuple(int(part) for part in parts[:2])
+    except ValueError:
+        supported_tuple = None
+
+runtimes = []
+for rt in j.get("runtimes", []):
+    ident = rt.get("identifier") or ""
+    name = rt.get("name") or ""
+    avail = rt.get("isAvailable")
+    if not name.startswith("iOS "):
+        continue
+    if avail is False:
+        continue
+    m = re.search(r"iOS-(\d+)-(\d+)$", ident)
+    if not m:
+        continue
+    version = (int(m.group(1)), int(m.group(2)))
+    runtimes.append((version, ident))
+
+if not runtimes:
+    sys.exit(0)
+
+runtimes.sort()
+
+if supported_tuple is not None:
+    for version, ident in runtimes:
+        if version == supported_tuple:
+            sys.stdout.write(ident)
+            sys.exit(0)
+    eligible = [item for item in runtimes if item[0] <= supported_tuple]
+    if eligible:
+        sys.stdout.write(eligible[-1][1])
+        sys.exit(0)
+
+sys.stdout.write(runtimes[-1][1])
+' "$supported_runtime_version"
 )"
 if [ -z "${runtime_id:-}" ]; then
   echo "error: Failed to determine an iOS runtime identifier from simctl." >&2

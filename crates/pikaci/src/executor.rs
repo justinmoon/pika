@@ -831,9 +831,9 @@ EOF
 }
 
 fn use_host_xcode_mounts() -> bool {
-    !matches!(
+    matches!(
         std::env::var(TART_USE_HOST_XCODE_ENV),
-        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false")
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true")
     )
 }
 

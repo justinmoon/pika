@@ -13,6 +13,7 @@ the existing host-side checks until each migrated slice is proven.
 - `pre-merge-notifications`
 - `pre-merge-pika-rust`
 - `pre-merge-fixture-rust`
+- `pre-merge-apple-deterministic`
 
 ## Proven guest targets
 
@@ -192,15 +193,21 @@ For Android specifically, this likely means:
 - The current Tart probe remains green after the runner abstraction refactor.
   `tart-env-probe` now proves: boot guest, make `/nix` available when needed, see Xcode, see
   `cargo`/`rustc`, and create/boot an iOS simulator under `pikaci`.
-- `pre-merge-apple-deterministic` now exists in Rust and is wired through `just`.
-  The remaining work is to keep re-validating the composed Apple lane as the Tart helpers evolve,
-  not to invent another runner type.
-- As of tonight, the proven Tart/macOS pieces are:
-  - `tart-env-probe`
+- `pre-merge-apple-deterministic` is now green through both `pikaci` and `just`.
+  The deterministic Apple lane currently covers:
+  - `tart-ios-agent-tests`
+  - `tart-ios-app-manager-tests`
+  - `tart-ios-chat-deeplink-tests`
+  - `tart-ios-keychain-tests`
+  - `tart-ios-ui-test`
   - `tart-desktop-package-tests`
-  - the previously proven iOS targets from earlier in the session history
-  The combined Apple lane is still under revalidation while `tools/ios-sim-ensure` is being made
-  robust against stale simulator entries across runtimes.
+- The important runner lesson was to stop grafting the host Xcode/CoreSimulator stack into the
+  macOS guest by default. The Cirrus-based `pikaci-xcode16-base` image already has a coherent
+  Apple toolchain; using that guest-native Xcode made the iOS destination failures disappear.
+  Host Xcode mounting remains an opt-in fallback rather than the default path.
+- `tart-ios-unit-tests` is now intentionally split into deterministic XCTestCase jobs instead of
+  one opaque `PikaTests` bundle. That makes failures easier to localize and creates a better
+  sharding boundary for later parallelization/caching work.
 
 ## Refactoring opportunities
 
