@@ -62,7 +62,23 @@ if [ -z "${device_type_id:-}" ]; then
 fi
 
 device_name="Pika iPhone 15"
-udid="$("$SIMCTL" list devices | awk -F '[()]' -v name="$device_name" '$0 ~ name {print $2; exit}')"
+udid="$(
+  "$SIMCTL" list -j devices | python3 -c '
+import json, sys
+
+runtime_id = sys.argv[1]
+device_name = sys.argv[2]
+devices = json.load(sys.stdin).get("devices", {})
+
+for device in devices.get(runtime_id, []):
+    if device.get("name") != device_name:
+        continue
+    if device.get("isAvailable") is False:
+        continue
+    print(device.get("udid", ""))
+    break
+' "$runtime_id" "$device_name"
+)"
 if [ -z "${udid:-}" ]; then
   udid="$("$SIMCTL" create "$device_name" "$device_type_id" "$runtime_id" | tr -d '[:space:]')"
   echo "created simulator: $device_name ($udid)"

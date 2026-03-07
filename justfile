@@ -312,6 +312,18 @@ pre-merge-rmp:
     fi
     echo "pre-merge-rmp complete"
 
+# Deterministic Apple-platform lane (iOS + macOS desktop) via Tart.
+pre-merge-apple-deterministic:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
+        echo "error: pre-merge-apple-deterministic currently requires Apple Silicon macOS" >&2
+        exit 1
+    fi
+    PIKACI_TART_BASE_VM="${PIKACI_TART_BASE_VM:-pikaci-xcode16-base}" \
+      nix run .#pikaci -- run pre-merge-apple-deterministic
+    echo "pre-merge-apple-deterministic complete"
+
 # CI-safe pre-merge for the pikahut tooling lane.
 pre-merge-fixture:
     #!/usr/bin/env bash
