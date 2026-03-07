@@ -6,6 +6,9 @@ pub enum GuestCommand {
         package: &'static str,
         test_name: &'static str,
     },
+    PackageUnitTests {
+        package: &'static str,
+    },
 }
 
 #[derive(Clone, Debug)]

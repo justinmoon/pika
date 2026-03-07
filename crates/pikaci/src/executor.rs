@@ -309,14 +309,23 @@ fn render_guest_flake(
     artifacts_dir: &Path,
     socket_path: &Path,
 ) -> anyhow::Result<String> {
-    let (package, test_name) = match job.guest_command {
-        GuestCommand::ExactCargoTest { package, test_name } => (package, test_name),
+    let cargo_test_args = match job.guest_command {
+        GuestCommand::ExactCargoTest { package, test_name } => format!(
+            "cargo test -p {} {} -- --exact --nocapture",
+            shell_escape(package),
+            shell_escape(test_name)
+        ),
+        GuestCommand::PackageUnitTests { package } => {
+            format!(
+                "cargo test -p {} --lib -- --nocapture",
+                shell_escape(package)
+            )
+        }
     };
     let snapshot_dir = nix_escape(&snapshot_dir.display().to_string());
     let artifacts_dir = nix_escape(&artifacts_dir.display().to_string());
     let socket_path = nix_escape(&socket_path.display().to_string());
-    let cargo_package = nix_escape(package);
-    let cargo_test_name = nix_escape(test_name);
+    let cargo_test_args = nix_escape(&cargo_test_args);
     let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
     let timeout_secs = job.timeout_secs;
 
@@ -399,7 +408,7 @@ fn render_guest_flake(
               mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
 
               set +e
-              timeout {timeout_secs}s cargo test -p "{cargo_package}" "{cargo_test_name}" -- --exact --nocapture
+              timeout {timeout_secs}s {cargo_test_args}
               code=$?
               set -e
 
@@ -490,6 +499,10 @@ fn nix_escape(value: &str) -> String {
         .replace("${", "\\${")
 }
 
+fn shell_escape(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -520,7 +533,7 @@ mod tests {
         assert!(flake.contains("system = \"aarch64-linux\";"));
         assert!(flake.contains("hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;"));
         assert!(flake.contains("vmHostPackages = hostPkgs;"));
-        assert!(flake.contains("cargo test -p \"pika-agent-control-plane\" \"tests::command_envelope_round_trips\" -- --exact --nocapture"));
+        assert!(flake.contains("cargo test -p 'pika-agent-control-plane' 'tests::command_envelope_round_trips' -- --exact --nocapture"));
         assert!(flake.contains("source = \"/tmp/pikaci/snapshot\";"));
         assert!(flake.contains("source = \"/tmp/pikaci/jobs/beachhead/artifacts\";"));
         assert!(flake.contains("socket = \"/tmp/pikaci-beachhead.sock\";"));
@@ -554,5 +567,26 @@ mod tests {
         );
 
         assert_eq!(path, Path::new("/tmp/pikaci-20260307T024-beachhead.sock"));
+    }
+
+    #[test]
+    fn guest_flake_can_run_all_package_unit_tests() {
+        let spec = JobSpec {
+            id: "agent-control-plane-unit",
+            description: "test",
+            timeout_secs: 120,
+            guest_command: GuestCommand::PackageUnitTests {
+                package: "pika-agent-control-plane",
+            },
+        };
+        let flake = render_guest_flake(
+            &spec,
+            Path::new("/tmp/pikaci/snapshot"),
+            Path::new("/tmp/pikaci/jobs/agent-control-plane-unit/artifacts"),
+            Path::new("/tmp/pikaci-agent-control-plane-unit.sock"),
+        )
+        .expect("render flake");
+
+        assert!(flake.contains("cargo test -p 'pika-agent-control-plane' --lib -- --nocapture"));
     }
 }

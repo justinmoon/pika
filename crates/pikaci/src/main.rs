@@ -108,6 +108,14 @@ fn job_spec(name: &str) -> anyhow::Result<JobSpec> {
                 test_name: "tests::command_envelope_round_trips",
             },
         }),
+        "agent-control-plane-unit" => Ok(JobSpec {
+            id: "agent-control-plane-unit",
+            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+            timeout_secs: 1800,
+            guest_command: GuestCommand::PackageUnitTests {
+                package: "pika-agent-control-plane",
+            },
+        }),
         other => bail!("unknown job `{other}`"),
     }
 }
