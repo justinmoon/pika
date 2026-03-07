@@ -274,12 +274,40 @@ async fn probe_agent_allowlist(
     }
 }
 
+fn send_progress(
+    tx: &flume::Sender<CoreMsg>,
+    flow_token: u64,
+    phase: crate::state::AgentProvisioningPhase,
+    agent_npub: Option<String>,
+    poll_attempt: Option<u32>,
+) {
+    let _ = tx.send(CoreMsg::Internal(Box::new(
+        InternalEvent::AgentFlowProgress {
+            flow_token,
+            phase,
+            agent_npub,
+            poll_attempt,
+        },
+    )));
+}
+
 async fn run_agent_flow(
     client: reqwest::Client,
     keys: Keys,
     base_url: String,
+    tx: flume::Sender<CoreMsg>,
+    flow_token: u64,
 ) -> Result<String, AgentFlowError> {
     ensure_agent(&client, &keys, &base_url).await?;
+
+    send_progress(
+        &tx,
+        flow_token,
+        crate::state::AgentProvisioningPhase::Provisioning,
+        None,
+        Some(0),
+    );
+
     let mut recovered_stalled_creating = false;
 
     for attempt in 1..=AGENT_POLL_MAX_ATTEMPTS {
@@ -287,7 +315,21 @@ async fn run_agent_flow(
             Ok(state) => match state.state {
                 AgentAppState::Ready => return Ok(state.agent_id),
                 AgentAppState::Creating => {
+                    send_progress(
+                        &tx,
+                        flow_token,
+                        crate::state::AgentProvisioningPhase::Provisioning,
+                        Some(state.agent_id.clone()),
+                        Some(attempt),
+                    );
                     if !recovered_stalled_creating && attempt >= AGENT_RECOVER_AFTER_ATTEMPT {
+                        send_progress(
+                            &tx,
+                            flow_token,
+                            crate::state::AgentProvisioningPhase::Recovering,
+                            Some(state.agent_id.clone()),
+                            Some(attempt),
+                        );
                         recover_my_agent(&client, &keys, &base_url).await?;
                         recovered_stalled_creating = true;
                     }
@@ -296,6 +338,13 @@ async fn run_agent_flow(
                     }
                 }
                 AgentAppState::Error => {
+                    send_progress(
+                        &tx,
+                        flow_token,
+                        crate::state::AgentProvisioningPhase::Recovering,
+                        Some(state.agent_id.clone()),
+                        Some(attempt),
+                    );
                     recover_my_agent(&client, &keys, &base_url).await?;
                     if attempt < AGENT_POLL_MAX_ATTEMPTS {
                         tokio::time::sleep(AGENT_POLL_DELAY).await;
@@ -321,6 +370,7 @@ impl AppCore {
         if let Some(handle) = self.agent_flow_task.take() {
             handle.abort();
         }
+        self.agent_flow_start = None;
         self.set_busy(|b| b.starting_agent = false);
     }
 
@@ -443,9 +493,23 @@ impl AppCore {
         self.agent_flow_token = self.agent_flow_token.wrapping_add(1);
         let flow_token = self.agent_flow_token;
         self.set_busy(|b| b.starting_agent = true);
+        self.agent_flow_start = Some(std::time::Instant::now());
 
+        self.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+            phase: crate::state::AgentProvisioningPhase::Ensuring,
+            agent_npub: None,
+            status_message: "Requesting agent...".to_string(),
+            elapsed_secs: 0,
+            poll_attempt: None,
+            poll_max: None,
+        });
+        self.push_screen(crate::state::Screen::AgentProvisioning);
+        self.emit_state();
+
+        let progress_tx = tx.clone();
         let handle = self.runtime.spawn(async move {
-            let event = match run_agent_flow(client, keys, base_url).await {
+            let event = match run_agent_flow(client, keys, base_url, progress_tx, flow_token).await
+            {
                 Ok(agent_id) => InternalEvent::AgentFlowCompleted {
                     flow_token,
                     agent_id: Some(agent_id),
@@ -462,6 +526,55 @@ impl AppCore {
         self.agent_flow_task = Some(handle);
     }
 
+    pub(super) fn handle_agent_flow_progress(
+        &mut self,
+        flow_token: u64,
+        phase: crate::state::AgentProvisioningPhase,
+        agent_npub: Option<String>,
+        poll_attempt: Option<u32>,
+    ) {
+        if flow_token != self.agent_flow_token {
+            return;
+        }
+
+        let status_message = match &phase {
+            crate::state::AgentProvisioningPhase::Ensuring => "Requesting agent...".to_string(),
+            crate::state::AgentProvisioningPhase::Provisioning => {
+                if let Some(attempt) = poll_attempt {
+                    format!(
+                        "Starting microVM... (attempt {}/{})",
+                        attempt, AGENT_POLL_MAX_ATTEMPTS
+                    )
+                } else {
+                    "Starting microVM...".to_string()
+                }
+            }
+            crate::state::AgentProvisioningPhase::Recovering => "Recovering agent...".to_string(),
+            crate::state::AgentProvisioningPhase::PublishingKeyPackage => {
+                "Publishing key package...".to_string()
+            }
+            crate::state::AgentProvisioningPhase::CreatingChat => {
+                "Creating encrypted chat...".to_string()
+            }
+            crate::state::AgentProvisioningPhase::Error => "Error".to_string(),
+        };
+
+        let elapsed_secs = self
+            .agent_flow_start
+            .map(|start| start.elapsed().as_secs() as u32)
+            .unwrap_or(0);
+
+        self.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+            phase,
+            agent_npub,
+            status_message,
+            elapsed_secs,
+            poll_attempt,
+            poll_max: Some(AGENT_POLL_MAX_ATTEMPTS),
+        });
+        self.emit_state();
+    }
+
     pub(super) fn handle_agent_flow_completed(
         &mut self,
         flow_token: u64,
@@ -472,26 +585,39 @@ impl AppCore {
             return;
         }
         self.agent_flow_task = None;
+        self.agent_flow_start = None;
 
         if !self.is_logged_in() {
             self.set_busy(|b| b.starting_agent = false);
+            self.state.agent_provisioning = None;
             return;
         }
 
         if let Some(agent_id) = agent_id {
+            // Update provisioning phase to CreatingChat before opening the chat.
+            self.handle_agent_flow_progress(
+                flow_token,
+                crate::state::AgentProvisioningPhase::CreatingChat,
+                Some(agent_id.clone()),
+                None,
+            );
             if let Err(message) = self.open_or_create_direct_chat_for_agent(&agent_id) {
                 self.set_busy(|b| b.starting_agent = false);
+                self.state.agent_provisioning = None;
                 self.toast(message);
             }
             return;
         }
 
         self.set_busy(|b| b.starting_agent = false);
-        if let Some(message) = error {
-            self.toast(message);
-        } else {
-            self.toast("Agent flow failed");
+
+        // Show error on the provisioning screen instead of a toast.
+        let error_message = error.unwrap_or_else(|| "Agent flow failed".to_string());
+        if let Some(ref mut prov) = self.state.agent_provisioning {
+            prov.phase = crate::state::AgentProvisioningPhase::Error;
+            prov.status_message = error_message;
         }
+        self.emit_state();
     }
 
     fn open_or_create_direct_chat_for_agent(&mut self, peer_key: &str) -> Result<(), String> {
@@ -507,11 +633,13 @@ impl AppCore {
             self.refresh_current_chat(&chat_id);
             self.unread_counts.insert(chat_id.clone(), 0);
             self.refresh_chat_list_from_storage();
+            self.state.agent_provisioning = None;
             self.emit_router();
             self.set_busy(|b| b.starting_agent = false);
             return Ok(());
         }
 
+        self.state.agent_provisioning = None;
         self.set_busy(|b| b.starting_agent = false);
         self.handle_action(AppAction::CreateChat {
             peer_npub: normalized,
@@ -701,7 +829,8 @@ mod tests {
         let client = reqwest::Client::new();
         let keys = Keys::generate();
 
-        let agent_id = run_agent_flow(client, keys, base_url)
+        let (tx, _rx) = flume::unbounded();
+        let agent_id = run_agent_flow(client, keys, base_url, tx, 1)
             .await
             .expect("run agent flow");
         assert_eq!(agent_id, "npub1testagent");

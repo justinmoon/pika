@@ -822,6 +822,7 @@ pub struct AppCore {
     pending_direct_chat_creation: Option<PendingDirectChatCreation>,
     agent_flow_token: u64,
     agent_flow_task: Option<tokio::task::JoinHandle<()>>,
+    agent_flow_start: Option<std::time::Instant>,
 }
 
 impl AppCore {
@@ -948,6 +949,7 @@ impl AppCore {
             pending_direct_chat_creation: None,
             agent_flow_token: 0,
             agent_flow_task: None,
+            agent_flow_start: None,
         };
         this.state.developer_mode = developer_mode;
 
@@ -2887,14 +2889,14 @@ impl AppCore {
     }
 
     fn open_chat_screen(&mut self, chat_id: &str) {
-        // UX: creating a chat from "NewChat" or "NewGroupChat" should land you in the chat,
-        // with back returning to the chat list (not back to the compose screen).
-        if matches!(
-            self.state.router.screen_stack.last(),
-            Some(Screen::NewChat) | Some(Screen::NewGroupChat)
-        ) {
-            self.state.router.screen_stack.pop();
-        }
+        // UX: creating a chat from "NewChat", "NewGroupChat", or "AgentProvisioning" should
+        // land you in the chat, with back returning to the chat list.
+        self.state.router.screen_stack.retain(|s| {
+            !matches!(
+                s,
+                Screen::NewChat | Screen::NewGroupChat | Screen::AgentProvisioning
+            )
+        });
 
         // Prevent stacking multiple chat screens (and their child GroupInfo screens).
         self.state.router.screen_stack.retain(|s| {
@@ -3240,6 +3242,12 @@ impl AppCore {
                 allowlisted,
                 error,
             } => self.handle_agent_allowlist_resolved(token, pubkey, allowlisted, error),
+            InternalEvent::AgentFlowProgress {
+                flow_token,
+                phase,
+                agent_npub,
+                poll_attempt,
+            } => self.handle_agent_flow_progress(flow_token, phase, agent_npub, poll_attempt),
             InternalEvent::AgentFlowCompleted {
                 flow_token,
                 agent_id,
@@ -5086,6 +5094,20 @@ impl AppCore {
                 self.emit_router();
             }
             AppAction::UpdateScreenStack { stack } => {
+                // Detect if agent provisioning screen was removed by user navigation (back swipe).
+                let had_provisioning = self
+                    .state
+                    .router
+                    .screen_stack
+                    .iter()
+                    .any(|s| matches!(s, Screen::AgentProvisioning));
+                let has_provisioning = stack.iter().any(|s| matches!(s, Screen::AgentProvisioning));
+
+                if had_provisioning && !has_provisioning {
+                    self.invalidate_agent_flow();
+                    self.state.agent_provisioning = None;
+                }
+
                 self.state.router.screen_stack = stack;
 
                 self.sync_current_chat_to_router();
@@ -8094,6 +8116,147 @@ mod tests {
                 core.local_path_cache.is_empty(),
                 "WipeMediaCache should clear local path cache"
             );
+        }
+
+        mod agent_provisioning_tests {
+            use super::*;
+            use crate::actions::AppAction;
+            use crate::updates::InternalEvent;
+            use std::sync::Arc;
+
+            fn make_logged_in_core() -> (AppCore, tempfile::TempDir) {
+                let tmp = tempfile::tempdir().unwrap();
+                let data_dir = tmp.path().to_string_lossy().into_owned();
+                let mut core = make_core(data_dir.clone());
+                let keys = nostr_sdk::Keys::generate();
+                let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+                let client = nostr_sdk::Client::builder().signer(keys.clone()).build();
+                core.session = Some(super::super::super::Session {
+                    pubkey: keys.public_key(),
+                    local_keys: Some(keys),
+                    mdk,
+                    client,
+                    alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    giftwrap_sub: None,
+                    group_sub: None,
+                    groups: std::collections::HashMap::new(),
+                });
+                (core, tmp)
+            }
+
+            #[test]
+            fn agent_flow_progress_updates_provisioning_state() {
+                let (mut core, _tmp) = make_logged_in_core();
+                core.agent_flow_token = 5;
+                core.agent_flow_start = Some(std::time::Instant::now());
+
+                core.handle_internal(InternalEvent::AgentFlowProgress {
+                    flow_token: 5,
+                    phase: crate::state::AgentProvisioningPhase::Provisioning,
+                    agent_npub: Some("npub1agent".into()),
+                    poll_attempt: Some(3),
+                });
+
+                let prov = core
+                    .state
+                    .agent_provisioning
+                    .as_ref()
+                    .expect("provisioning state");
+                assert_eq!(
+                    prov.phase,
+                    crate::state::AgentProvisioningPhase::Provisioning
+                );
+                assert_eq!(prov.agent_npub.as_deref(), Some("npub1agent"));
+                assert_eq!(prov.poll_attempt, Some(3));
+                assert_eq!(prov.poll_max, Some(45));
+                assert!(prov.status_message.contains("Starting microVM"));
+                assert!(prov.status_message.contains("3/45"));
+            }
+
+            #[test]
+            fn stale_agent_flow_progress_is_ignored() {
+                let (mut core, _tmp) = make_logged_in_core();
+                core.agent_flow_token = 5;
+
+                core.handle_internal(InternalEvent::AgentFlowProgress {
+                    flow_token: 4,
+                    phase: crate::state::AgentProvisioningPhase::Provisioning,
+                    agent_npub: None,
+                    poll_attempt: Some(1),
+                });
+
+                assert!(core.state.agent_provisioning.is_none());
+            }
+
+            #[test]
+            fn agent_flow_completed_error_sets_error_phase() {
+                let (mut core, _tmp) = make_logged_in_core();
+                core.agent_flow_token = 7;
+                core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                    phase: crate::state::AgentProvisioningPhase::Provisioning,
+                    agent_npub: None,
+                    status_message: "Starting microVM...".into(),
+                    elapsed_secs: 0,
+                    poll_attempt: Some(5),
+                    poll_max: Some(45),
+                });
+
+                core.handle_internal(InternalEvent::AgentFlowCompleted {
+                    flow_token: 7,
+                    agent_id: None,
+                    error: Some("Agent is still starting. Try again in a moment.".into()),
+                });
+
+                let prov = core
+                    .state
+                    .agent_provisioning
+                    .as_ref()
+                    .expect("provisioning kept");
+                assert_eq!(prov.phase, crate::state::AgentProvisioningPhase::Error);
+                assert!(prov.status_message.contains("Try again"));
+            }
+
+            #[test]
+            fn update_screen_stack_cancels_agent_flow_on_back_swipe() {
+                let (mut core, _tmp) = make_logged_in_core();
+                core.agent_flow_token = 3;
+                core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                    phase: crate::state::AgentProvisioningPhase::Ensuring,
+                    agent_npub: None,
+                    status_message: "Requesting agent...".into(),
+                    elapsed_secs: 0,
+                    poll_attempt: None,
+                    poll_max: None,
+                });
+                core.state.router.screen_stack = vec![Screen::AgentProvisioning];
+
+                // Simulate user swiping back (empty stack).
+                core.handle_action(AppAction::UpdateScreenStack { stack: vec![] });
+
+                assert!(core.state.agent_provisioning.is_none());
+                assert!(!core.state.busy.starting_agent);
+            }
+
+            #[test]
+            fn open_chat_screen_pops_agent_provisioning() {
+                let (mut core, _tmp) = make_logged_in_core();
+                core.state.router.screen_stack = vec![Screen::AgentProvisioning];
+
+                core.open_chat_screen("chat_123");
+
+                assert!(!core
+                    .state
+                    .router
+                    .screen_stack
+                    .iter()
+                    .any(|s| matches!(s, Screen::AgentProvisioning)));
+                assert!(core
+                    .state
+                    .router
+                    .screen_stack
+                    .iter()
+                    .any(|s| matches!(s, Screen::Chat { .. })));
+            }
         }
     }
 }

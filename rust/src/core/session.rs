@@ -124,6 +124,12 @@ impl AppCore {
         self.agent_allowlist_state = AgentAllowlistState::Unknown;
         self.invalidate_agent_allowlist_probe();
         self.state.agent_button = None;
+        self.state.agent_provisioning = None;
+        self.agent_flow_start = None;
+        self.state
+            .router
+            .screen_stack
+            .retain(|s| !matches!(s, Screen::AgentProvisioning));
         self.group_profiles.clear();
 
         if let Some(sess) = self.session.take() {
