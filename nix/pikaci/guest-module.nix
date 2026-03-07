@@ -9,6 +9,7 @@
   cargoTargetDir,
   socketPath,
   rustToolchain ? null,
+  moqRelay ? null,
   androidSdk ? null,
   androidJdk ? null,
   androidGradle ? null,
@@ -36,6 +37,7 @@ let
     ++ lib.optionals (androidJdk != null) [ androidJdk ]
     ++ lib.optionals (androidGradle != null) [ androidGradle ]
     ++ lib.optionals (androidCargoNdk != null) [ androidCargoNdk ];
+  moqRelayPackages = lib.optionals (moqRelay != null) [ moqRelay ];
   rustPackages = if rustToolchain != null then [ rustToolchain ] else with pkgs; [ cargo rustc ];
   androidSdkRoot = if androidSdk != null then "${androidSdk}/share/android-sdk" else "";
 in
@@ -74,7 +76,7 @@ in
     postgresql
     procps
     util-linux
-  ] ++ rustPackages ++ androidPackages;
+  ] ++ rustPackages ++ androidPackages ++ moqRelayPackages;
 
   systemd.services.pikaci-job = {
     description = "Run pikaci guest job";
@@ -98,7 +100,7 @@ in
       procps
       pkg-config
       util-linux
-    ] ++ rustPackages ++ androidPackages;
+    ] ++ rustPackages ++ androidPackages ++ moqRelayPackages;
     serviceConfig = {
       Type = "oneshot";
     };

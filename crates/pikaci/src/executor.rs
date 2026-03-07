@@ -11,7 +11,7 @@ use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{GuestCommand, JobOutcome, JobSpec, RunStatus};
+use crate::model::{GuestCommand, JobOutcome, JobSpec, RunStatus, RunnerKind};
 
 #[derive(Clone, Debug)]
 pub struct HostContext {
@@ -30,6 +30,21 @@ struct GuestResult {
     exit_code: i32,
     finished_at: String,
     message: Option<String>,
+}
+
+const TART_BASE_VM_ENV: &str = "PIKACI_TART_BASE_VM";
+const TART_BASE_VM_DEFAULT: &str = "sequoia-base";
+const TART_USE_HOST_XCODE_ENV: &str = "PIKACI_TART_USE_HOST_XCODE";
+const TART_XCODE_APP_ENV: &str = "PIKACI_TART_XCODE_APP";
+const TART_XCODE_APP_DEFAULT: &str = "/Applications/Xcode-16.4.0.app";
+const TART_XCODE_TAG: &str = "pikaci-xcode";
+const TART_LIBRARY_DEVELOPER_TAG: &str = "pikaci-library-developer";
+
+pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
+    match job.runner_kind() {
+        RunnerKind::VfkitLocal => run_vfkit_job(job, ctx),
+        RunnerKind::TartLocal => run_tart_job(job, ctx),
+    }
 }
 
 pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
@@ -180,6 +195,203 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
     })
 }
 
+fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
+    ensure_supported_host()?;
+    ensure_tart_installed()?;
+
+    let vm_dir = ctx.job_dir.join("vm");
+    let artifacts_dir = ctx.job_dir.join("artifacts");
+    fs::create_dir_all(&vm_dir).with_context(|| format!("create {}", vm_dir.display()))?;
+    fs::create_dir_all(&artifacts_dir)
+        .with_context(|| format!("create {}", artifacts_dir.display()))?;
+    ensure_file(&ctx.host_log_path)?;
+    ensure_file(&ctx.guest_log_path)?;
+
+    let base_vm =
+        std::env::var(TART_BASE_VM_ENV).unwrap_or_else(|_| TART_BASE_VM_DEFAULT.to_string());
+    let use_host_xcode = use_host_xcode_mounts();
+    let vm_name = tart_vm_name(job, &ctx.job_dir);
+    let _ = Command::new("tart").arg("delete").arg(&vm_name).output();
+
+    run_command_to_log(
+        Command::new("tart")
+            .arg("clone")
+            .arg(&base_vm)
+            .arg(&vm_name),
+        &ctx.host_log_path,
+        "[pikaci] tart clone",
+    )
+    .with_context(|| {
+        format!(
+            "clone Tart base VM `{base_vm}` into `{vm_name}`; set {TART_BASE_VM_ENV} or pre-create `{}`",
+            TART_BASE_VM_DEFAULT
+        )
+    })?;
+
+    let workspace_share = tart_named_share(
+        "workspace",
+        &ctx.workspace_snapshot_dir,
+        ctx.workspace_read_only,
+    );
+    let artifacts_share = tart_named_share("artifacts", &artifacts_dir, false);
+    let xcode_share = if use_host_xcode {
+        Some(tart_tagged_share(
+            &host_xcode_app_path()?,
+            true,
+            TART_XCODE_TAG,
+        ))
+    } else {
+        None
+    };
+    let library_developer_share = if use_host_xcode {
+        Some(tart_tagged_share(
+            Path::new("/Library/Developer"),
+            true,
+            TART_LIBRARY_DEVELOPER_TAG,
+        ))
+    } else {
+        None
+    };
+
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] starting Tart VM `{}` from `{}` at {}",
+            vm_name,
+            base_vm,
+            Utc::now().to_rfc3339()
+        ),
+    )?;
+
+    let mut command = Command::new("tart");
+    command
+        .arg("run")
+        .arg("--no-graphics")
+        .arg("--no-audio")
+        .arg("--dir")
+        .arg(&workspace_share)
+        .arg("--dir")
+        .arg(&artifacts_share);
+    if let Some(xcode_share) = &xcode_share {
+        command.arg("--dir").arg(xcode_share);
+    }
+    if let Some(library_developer_share) = &library_developer_share {
+        command.arg("--dir").arg(library_developer_share);
+    }
+    let mut child = command
+        .arg(&vm_name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn `tart run`")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("tart stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("tart stderr unavailable"))?;
+
+    let log_file = Arc::new(Mutex::new(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&ctx.host_log_path)
+            .with_context(|| format!("open {}", ctx.host_log_path.display()))?,
+    ));
+    let stdout_handle = spawn_log_pump(stdout, Arc::clone(&log_file), "[tart:stdout]");
+    let stderr_handle = spawn_log_pump(stderr, Arc::clone(&log_file), "[tart:stderr]");
+
+    wait_for_tart_guest(&vm_name, &ctx.host_log_path, Duration::from_secs(180))?;
+
+    let (guest_command, run_as_root) = compiled_guest_command(job);
+    let guest_script = render_tart_guest_script(&guest_command, run_as_root, use_host_xcode);
+
+    let mut exec_child = Command::new("tart")
+        .arg("exec")
+        .arg(&vm_name)
+        .arg("bash")
+        .arg("-lc")
+        .arg(guest_script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn `tart exec`")?;
+
+    let exec_stdout = exec_child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("tart exec stdout unavailable"))?;
+    let exec_stderr = exec_child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("tart exec stderr unavailable"))?;
+    let exec_stdout_handle = spawn_log_pump(exec_stdout, Arc::clone(&log_file), "[exec:stdout]");
+    let exec_stderr_handle = spawn_log_pump(exec_stderr, Arc::clone(&log_file), "[exec:stderr]");
+
+    let deadline = Instant::now() + Duration::from_secs(job.timeout_secs);
+    let exec_status = loop {
+        if let Some(status) = exec_child.try_wait().context("poll tart exec")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            append_line(
+                &ctx.host_log_path,
+                &format!(
+                    "[pikaci] timeout after {}s, killing Tart exec",
+                    job.timeout_secs
+                ),
+            )?;
+            exec_child.kill().context("kill timed out tart exec")?;
+            let _ = exec_child.wait();
+            let _ = exec_stdout_handle.join();
+            let _ = exec_stderr_handle.join();
+            cleanup_tart_vm(&vm_name, &ctx.host_log_path);
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            return Ok(JobOutcome {
+                status: RunStatus::Failed,
+                exit_code: None,
+                message: format!("timed out after {}s", job.timeout_secs),
+            });
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+
+    let _ = exec_stdout_handle.join();
+    let _ = exec_stderr_handle.join();
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] tart exec exited with {:?} at {}",
+            exec_status.code(),
+            Utc::now().to_rfc3339()
+        ),
+    )?;
+
+    cleanup_tart_vm(&vm_name, &ctx.host_log_path);
+    let _ = child.wait();
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+
+    let result_path = artifacts_dir.join("result.json");
+    let guest_result = load_guest_result(&result_path)?;
+    let status = match guest_result.status.as_str() {
+        "passed" => RunStatus::Passed,
+        _ => RunStatus::Failed,
+    };
+    Ok(JobOutcome {
+        status,
+        exit_code: Some(guest_result.exit_code),
+        message: guest_result
+            .message
+            .unwrap_or_else(|| format!("guest finished with {}", guest_result.status)),
+    })
+}
+
 fn ensure_supported_host() -> anyhow::Result<()> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -217,6 +429,209 @@ fn ensure_linux_builder() -> anyhow::Result<()> {
         "no aarch64-linux builder available for this Apple Silicon host; configure a local linux-builder or remote aarch64-linux builder before running pikaci. builders=`{}` extra-platforms=`{}`",
         builders.trim(),
         extra_platforms.trim()
+    )
+}
+
+fn ensure_tart_installed() -> anyhow::Result<()> {
+    let output = Command::new("tart")
+        .arg("--version")
+        .output()
+        .context("run `tart --version`")?;
+    if !output.status.success() {
+        bail!("`tart --version` failed");
+    }
+    Ok(())
+}
+
+fn wait_for_tart_guest(vm_name: &str, log_path: &Path, timeout: Duration) -> anyhow::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let output = Command::new("tart")
+            .arg("exec")
+            .arg(vm_name)
+            .arg("true")
+            .output();
+        if let Ok(output) = output
+            && output.status.success()
+        {
+            append_line(
+                log_path,
+                &format!(
+                    "[pikaci] Tart guest `{vm_name}` is ready at {}",
+                    Utc::now().to_rfc3339()
+                ),
+            )?;
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("Timed out waiting for Tart guest agent in `{vm_name}`");
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn cleanup_tart_vm(vm_name: &str, log_path: &Path) {
+    let _ = run_command_to_log(
+        Command::new("tart").arg("stop").arg(vm_name),
+        log_path,
+        "[pikaci] tart stop",
+    );
+    let _ = run_command_to_log(
+        Command::new("tart").arg("delete").arg(vm_name),
+        log_path,
+        "[pikaci] tart delete",
+    );
+}
+
+fn tart_vm_name(job: &JobSpec, job_dir: &Path) -> String {
+    let run_id = job_dir
+        .ancestors()
+        .nth(2)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or("run");
+    let run_stub: String = run_id.chars().take(12).collect();
+    format!(
+        "pikaci-{}-{}",
+        sanitize_vm_component(&run_stub),
+        sanitize_vm_component(job.id)
+    )
+}
+
+fn sanitize_vm_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn tart_named_share(name: &str, path: &Path, read_only: bool) -> String {
+    let mut spec = format!(
+        "{}:{}",
+        name,
+        fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+            .display()
+    );
+    if read_only {
+        spec.push_str(":ro");
+    }
+    spec
+}
+
+fn tart_tagged_share(path: &Path, read_only: bool, tag: &str) -> String {
+    let mut spec = fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string();
+    let mode = if read_only { "ro" } else { "rw" };
+    spec.push_str(&format!(":{mode},tag={tag}"));
+    spec
+}
+
+fn host_xcode_app_path() -> anyhow::Result<PathBuf> {
+    if let Ok(path) = std::env::var(TART_XCODE_APP_ENV) {
+        let path = fs::canonicalize(&path).with_context(|| format!("canonicalize `{path}`"))?;
+        return Ok(path);
+    }
+
+    let preferred = Path::new(TART_XCODE_APP_DEFAULT);
+    if preferred.exists() {
+        return fs::canonicalize(preferred)
+            .with_context(|| format!("canonicalize `{}`", preferred.display()));
+    }
+
+    if let Some(selected_dir) = command_stdout(Command::new("xcode-select").arg("-p")) {
+        let selected_dir = PathBuf::from(selected_dir);
+        if selected_dir.ends_with("Contents/Developer")
+            && let Some(app_dir) = selected_dir.parent().and_then(Path::parent)
+            && app_dir.exists()
+        {
+            return Ok(app_dir.to_path_buf());
+        }
+    }
+
+    let candidate = command_stdout(
+        Command::new("bash")
+            .arg("-lc")
+            .arg("ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1"),
+    )
+    .ok_or_else(|| anyhow!("resolve host Xcode app bundle"))?;
+    let candidate = fs::canonicalize(candidate.trim())
+        .with_context(|| format!("canonicalize `{candidate}`"))?;
+    Ok(candidate)
+}
+
+fn render_tart_guest_script(
+    guest_command: &str,
+    run_as_root: bool,
+    use_host_xcode: bool,
+) -> String {
+    let artifacts_mount = "/Volumes/My Shared Files/artifacts";
+    let workspace_mount = "/Volumes/My Shared Files/workspace";
+    let user_command = if run_as_root {
+        format!("sudo --non-interactive {guest_command}")
+    } else {
+        guest_command.to_string()
+    };
+    let xcode_setup = if use_host_xcode {
+        format!(
+            r#"sudo mkdir -p /Applications/Xcode.app
+sudo mkdir -p /Library/Developer
+if ! mount | grep -q ' on /Applications/Xcode.app '; then
+  sudo mount_virtiofs {TART_XCODE_TAG} /Applications/Xcode.app
+fi
+if ! mount | grep -q ' on /Library/Developer '; then
+  sudo mount_virtiofs {TART_LIBRARY_DEVELOPER_TAG} /Library/Developer
+fi
+killall -9 com.apple.CoreSimulator.CoreSimulatorService >/dev/null 2>&1 || true
+"#
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"set -euo pipefail
+ARTIFACTS="{artifacts_mount}"
+exec > >(tee -a "$ARTIFACTS/guest.log") 2>&1
+echo "[pikaci] tart guest booted at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+{xcode_setup}\
+export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+sudo xcodebuild -license accept >/dev/null 2>&1 || true
+export PATH="$DEVELOPER_DIR/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+cd "{workspace_mount}"
+set +e
+{user_command}
+code=$?
+set -e
+status="passed"
+message="test passed"
+if [ "$code" -ne 0 ]; then
+  status="failed"
+  message="test command exited with $code"
+fi
+cat > "{artifacts_mount}/result.json" <<EOF
+{{
+  "status": "$status",
+  "exit_code": $code,
+  "finished_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "message": "$message"
+}}
+EOF
+"#,
+    )
+}
+
+fn use_host_xcode_mounts() -> bool {
+    !matches!(
+        std::env::var(TART_USE_HOST_XCODE_ENV),
+        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false")
     )
 }
 
@@ -320,41 +735,7 @@ fn render_guest_flake(
     socket_path: &Path,
 ) -> anyhow::Result<String> {
     let (host_uid, host_gid) = ownership_ids(workspace_dir)?;
-    let (guest_command, run_as_root) = match job.guest_command {
-        GuestCommand::ExactCargoTest { package, test_name } => (
-            format!(
-                "cargo test -p {} {} -- --exact --nocapture",
-                shell_escape(package),
-                shell_escape(test_name)
-            ),
-            false,
-        ),
-        GuestCommand::PackageUnitTests { package } => (
-            format!(
-                "cargo test -p {} --lib -- --nocapture",
-                shell_escape(package)
-            ),
-            false,
-        ),
-        GuestCommand::PackageTests { package } => (
-            format!("cargo test -p {} -- --nocapture", shell_escape(package)),
-            false,
-        ),
-        GuestCommand::FilteredCargoTests { package, filter } => (
-            format!(
-                "cargo test -p {} -- {} --nocapture",
-                shell_escape(package),
-                shell_escape(filter)
-            ),
-            false,
-        ),
-        GuestCommand::ShellCommand { command } => {
-            (format!("bash -lc {}", shell_escape(command)), false)
-        }
-        GuestCommand::ShellCommandAsRoot { command } => {
-            (format!("bash -lc {}", shell_escape(command)), true)
-        }
-    };
+    let (guest_command, run_as_root) = compiled_guest_command(job);
     let workspace_dir = nix_escape(&workspace_dir.display().to_string());
     let artifacts_dir = nix_escape(&artifacts_dir.display().to_string());
     let cargo_home_dir = nix_escape(&cargo_home_dir.display().to_string());
@@ -389,6 +770,7 @@ fn render_guest_flake(
           cargoTargetDir = "{target_dir}";
           socketPath = "{socket_path}";
           rustToolchain = pika.packages.aarch64-linux.rustToolchain;
+          moqRelay = if pika.packages.aarch64-linux ? moqRelay then pika.packages.aarch64-linux.moqRelay else null;
           androidSdk = if pika.packages.aarch64-linux ? androidSdk then pika.packages.aarch64-linux.androidSdk else null;
           androidJdk = if pika.packages.aarch64-linux ? androidJdk then pika.packages.aarch64-linux.androidJdk else null;
           androidGradle = if pika.packages.aarch64-linux ? androidGradle then pika.packages.aarch64-linux.androidGradle else null;
@@ -404,6 +786,46 @@ fn render_guest_flake(
 }}
 "#
     ))
+}
+
+fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
+    match job.guest_command {
+        GuestCommand::ExactCargoTest { package, test_name } => (
+            format!(
+                "cargo test -p {} {} -- --exact --nocapture",
+                shell_escape(package),
+                shell_escape(test_name)
+            ),
+            false,
+        ),
+        GuestCommand::PackageUnitTests { package } => (
+            format!(
+                "cargo test -p {} --lib -- --nocapture",
+                shell_escape(package)
+            ),
+            false,
+        ),
+        GuestCommand::PackageTests { package } => (
+            format!("cargo test -p {} -- --nocapture", shell_escape(package)),
+            false,
+        ),
+        GuestCommand::FilteredCargoTests { package, filter } => (
+            format!(
+                "cargo test -p {} -- {} --nocapture",
+                shell_escape(package),
+                shell_escape(filter)
+            ),
+            false,
+        ),
+        GuestCommand::ShellCommand { command } => (
+            format!("bash --noprofile --norc -lc {}", shell_escape(command)),
+            false,
+        ),
+        GuestCommand::ShellCommandAsRoot { command } => (
+            format!("bash --noprofile --norc -lc {}", shell_escape(command)),
+            true,
+        ),
+    }
 }
 
 fn ownership_ids(path: &Path) -> anyhow::Result<(u32, u32)> {
@@ -610,7 +1032,7 @@ mod tests {
         .expect("render flake");
 
         assert!(flake.contains(
-            "guestCommand = \"bash -lc 'set -euo pipefail; cargo build -p rmp-cli; echo ok'\";"
+            "guestCommand = \"bash --noprofile --norc -lc 'set -euo pipefail; cargo build -p rmp-cli; echo ok'\";"
         ));
         assert!(flake.contains("runAsRoot = false;"));
     }
@@ -637,7 +1059,7 @@ mod tests {
         )
         .expect("render flake");
 
-        assert!(flake.contains("guestCommand = \"bash -lc "));
+        assert!(flake.contains("guestCommand = \"bash --noprofile --norc -lc "));
         assert!(flake.contains("nix develop .#default -c bash -lc"));
         assert!(flake.contains("command -v adb"));
         assert!(flake.contains("runAsRoot = true;"));

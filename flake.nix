@@ -611,6 +611,9 @@ EOF
             androidJdk = pkgs.jdk17_headless;
             androidGradle = pkgs.gradle;
             androidCargoNdk = pkgs.cargo-ndk;
+          }
+          // pkgs.lib.optionalAttrs hasMoqRelay {
+            moqRelay = moq.packages.${system}.moq-relay;
           };
 
         apps = {

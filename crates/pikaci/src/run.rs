@@ -1,11 +1,13 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, anyhow};
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::executor::{HostContext, run_vfkit_job};
+use crate::executor::{HostContext, run_job_on_runner};
 use crate::model::{JobRecord, JobSpec, RunRecord, RunStatus};
 use crate::snapshot::{create_snapshot, git_dirty, git_head, materialize_workspace};
 
@@ -52,6 +54,7 @@ pub fn run_jobs_with_metadata(
     metadata: RunMetadata,
 ) -> anyhow::Result<RunRecord> {
     let prepared = prepare_run(options)?;
+    run_host_setup_commands(jobs, &options.source_root, &prepared.run_dir)?;
     let snapshot_dir = prepared.run_dir.join("snapshot");
     let snapshot = create_snapshot(&options.source_root, &snapshot_dir, &prepared.created_at)?;
     let snapshot = SnapshotSource {
@@ -201,7 +204,7 @@ fn run_one_job(
         id: job.id.to_string(),
         description: job.description.to_string(),
         status: RunStatus::Running,
-        executor: "vfkit_local".to_string(),
+        executor: job.runner_kind().as_str().to_string(),
         timeout_secs: job.timeout_secs,
         host_log_path: host_log_path.display().to_string(),
         guest_log_path: guest_log_path.display().to_string(),
@@ -221,7 +224,7 @@ fn run_one_job(
         shared_cargo_home_dir: shared_cargo_home_dir.to_path_buf(),
         shared_target_dir: shared_target_dir.to_path_buf(),
     };
-    let outcome = run_vfkit_job(job, &ctx);
+    let outcome = run_job_on_runner(job, &ctx);
 
     let finished_at = Utc::now().to_rfc3339();
     match outcome {
@@ -381,4 +384,62 @@ fn prepare_run(options: &RunOptions) -> anyhow::Result<PreparedRun> {
         shared_cargo_home_dir,
         run_target_dir,
     })
+}
+
+fn run_host_setup_commands(
+    jobs: &[JobSpec],
+    source_root: &Path,
+    run_dir: &Path,
+) -> anyhow::Result<()> {
+    let mut commands = Vec::new();
+    for job in jobs {
+        let Some(command) = job.host_setup_command() else {
+            continue;
+        };
+        if !commands.contains(&command) {
+            commands.push(command);
+        }
+    }
+    if commands.is_empty() {
+        return Ok(());
+    }
+
+    let log_path = run_dir.join("host-setup.log");
+    for command in commands {
+        let output = Command::new("bash")
+            .arg("--noprofile")
+            .arg("--norc")
+            .arg("-lc")
+            .arg(command)
+            .current_dir(source_root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .with_context(|| format!("run host setup `{command}`"))?;
+
+        let mut log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("open {}", log_path.display()))?;
+        log_file
+            .write_all(format!("[pikaci] host setup: {command}\n").as_bytes())
+            .with_context(|| format!("write {}", log_path.display()))?;
+        log_file
+            .write_all(&output.stdout)
+            .with_context(|| format!("write {}", log_path.display()))?;
+        log_file
+            .write_all(&output.stderr)
+            .with_context(|| format!("write {}", log_path.display()))?;
+
+        if !output.status.success() {
+            return Err(anyhow!(
+                "host setup `{command}` failed with {:?}; see {}",
+                output.status.code(),
+                log_path.display()
+            ));
+        }
+    }
+
+    Ok(())
 }

@@ -170,6 +170,15 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 },
             }],
         }),
+        "tart-beachhead" => Ok(TargetSpec {
+            id: "tart-beachhead",
+            description: "Run one tiny iOS unit test in a Tart macOS guest",
+            filters: &[],
+            jobs: vec![tart_agent_button_job(
+                "tart-beachhead",
+                "Run one tiny iOS unit test in a Tart macOS guest",
+            )],
+        }),
         "agent-control-plane-unit" => Ok(TargetSpec {
             id: "agent-control-plane-unit",
             description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
@@ -195,6 +204,20 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 writable_workspace: false,
                 guest_command: GuestCommand::PackageTests {
                     package: "pika-agent-microvm",
+                },
+            }],
+        }),
+        "agent-http-ensure-local" => Ok(TargetSpec {
+            id: "agent-http-ensure-local",
+            description: "Run the pikahut agent_http_ensure_local deterministic test in a vfkit guest",
+            filters: &[],
+            jobs: vec![JobSpec {
+                id: "agent-http-ensure-local",
+                description: "Run the pikahut agent_http_ensure_local deterministic test in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture",
                 },
             }],
         }),
@@ -450,6 +473,35 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 },
             }],
         }),
+        "tart-env-probe" => Ok(TargetSpec {
+            id: "tart-env-probe",
+            description: "Probe the local Tart macOS guest environment",
+            filters: &[],
+            jobs: vec![JobSpec {
+                id: "tart-env-probe",
+                description: "Verify that a Tart macOS guest has the tools needed for iOS/macOS tests",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: concat!(
+                        "set -euo pipefail; ",
+                        "sw_vers; ",
+                        "xcodebuild -version; ",
+                        "python3 --version; ",
+                        "./tools/ios-sim-ensure",
+                    ),
+                },
+            }],
+        }),
+        "tart-ios-agent-button-state-test" => Ok(TargetSpec {
+            id: "tart-ios-agent-button-state-test",
+            description: "Run one iOS unit test in a Tart macOS guest",
+            filters: &[],
+            jobs: vec![tart_agent_button_job(
+                "tart-ios-agent-button-state-test",
+                "Run AgentTests.testAgentButtonStateReflectsBusyFlag in a Tart macOS guest",
+            )],
+        }),
         "pre-merge-rmp" => Ok(TargetSpec {
             id: "pre-merge-rmp",
             description: "Run the VM-backed pre-merge RMP lane",
@@ -687,6 +739,44 @@ fn rmp_jobs() -> Vec<JobSpec> {
             ),
         },
     }]
+}
+
+fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec {
+    JobSpec {
+        id,
+        description,
+        timeout_secs: 7200,
+        writable_workspace: true,
+        guest_command: GuestCommand::ShellCommand {
+            command: concat!(
+                "set -euo pipefail; ",
+                "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
+                "runtime_id=\"com.apple.CoreSimulator.SimRuntime.iOS-18-6\"; ",
+                "device_type_id=\"$($simctl list devicetypes | awk -F '[()]' '/iPhone 16/ {print $2; exit}')\"; ",
+                "if [ -z \"$device_type_id\" ]; then echo 'error: could not determine iPhone 16 device type'; exit 1; fi; ",
+                "udid=\"$($simctl list devices | awk -F '[()]' '/Pikaci iPhone 16/ && /18\\.6/ {print $2; exit}')\"; ",
+                "if [ -z \"$udid\" ]; then udid=\"$($simctl create 'Pikaci iPhone 16' \"$device_type_id\" \"$runtime_id\")\"; fi; ",
+                "$simctl boot \"$udid\" >/dev/null 2>&1 || true; ",
+                "if $simctl help 2>/dev/null | grep -q bootstatus; then $simctl bootstatus \"$udid\" -b >/dev/null 2>&1 || true; fi; ",
+                "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; exit 1; fi; ",
+                "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
+                "./tools/xcode-run xcodebuild ",
+                "-project ios/Pika.xcodeproj ",
+                "-scheme Pika ",
+                "-derivedDataPath ios/build ",
+                "-destination \"id=$udid\" ",
+                "test ",
+                "-skipMacroValidation ",
+                "ARCHS=arm64 ",
+                "ONLY_ACTIVE_ARCH=YES ",
+                "CODE_SIGNING_ALLOWED=NO ",
+                "PIKA_APP_BUNDLE_ID=\"${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}\" ",
+                "PIKA_IOS_URL_SCHEME=\"${PIKA_IOS_URL_SCHEME:-pika}\" ",
+                "-only-testing:PikaTests/AgentTests/testAgentButtonStateReflectsBusyFlag ",
+                "-skip-testing:PikaUITests",
+            ),
+        },
+    }
 }
 
 fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci::RunRecord> {

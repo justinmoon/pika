@@ -100,6 +100,10 @@ For Android specifically, this likely means:
 - Some workloads need a writable checkout copy even after snapshotting. `pikaci` now keeps the
   default read-only snapshot model for normal Rust jobs, but can materialize a writable per-job
   workspace when Gradle/generated-source flows need to write into the repo tree.
+- `.pikaci/runs` grows quickly because each run carries a full snapshot plus per-job artifacts.
+  On this machine, 80+ retained runs consumed roughly 58 GB and eventually filled the volume.
+  `pikaci` needs an explicit prune/GC command soon, likely "keep last N runs" plus "drop failed
+  run snapshots older than X days".
 
 ## Temporary exclusions / failures
 
@@ -134,3 +138,55 @@ For Android specifically, this likely means:
   The next Android move should be one of:
   1. expose first-class Android tool packages for `aarch64-linux` from the root flake, or
   2. run Android instrumentation on a different runner/guest architecture that already has the SDK.
+- The smallest Android instrumentation helper (`tools/android-ui-test-ci`) is structurally ready
+  for `pikaci`, but the current blocker is still toolchain availability, not test orchestration.
+  The microVM guest can now carry more repo-specific helpers like `moq-relay`, but Android still
+  needs a supported SDK/emulator story on the chosen guest architecture.
+
+## Tart notes
+
+- `pikaci` now has a real runner abstraction with `vfkit_local` and `tart_local`, and the Tart
+  path can boot a macOS guest, persist logs/artifacts, and run a simulator provisioning probe.
+- The current proven Tart target is `tart-env-probe`.
+  It boots a guest, wires in Apple tooling, and proves that `xcodebuild -version` plus simulator
+  creation/boot succeed under `pikaci`.
+- The first real iOS beachhead target, `tart-beachhead`, is not green yet.
+  The current runner can get to `xcodebuild test`, but with host-Xcode grafting onto
+  `sequoia-base`, `xcodebuild` still rejects the created simulator destination as if the iOS
+  platform were not installed, even after `simctl` reports the runtime and device as available.
+- The strongest current signal is that mounting host Xcode + `/Library/Developer` into
+  `sequoia-base` is good enough for `simctl`, but not good enough for `xcodebuild`'s destination
+  validation. This looks like an Apple-toolchain/platform-install boundary, not a `pikaci`
+  orchestration bug.
+- The next Tart experiment in flight is a real Xcode-enabled Cirrus base image
+  (`ghcr.io/cirruslabs/macos-sequoia-xcode:16.4`) so the guest has a native Xcode installation
+  instead of a host-mounted one. If that works, the runner should prefer "base VM already has
+  Xcode" over the host-mount fallback for iOS/macOS lanes.
+- The current Tart probe remains green after the runner abstraction refactor.
+  `tart-env-probe` still proves: boot guest, see Xcode, accept the license, and create/boot an
+  iOS simulator under `pikaci`.
+
+## Host issues seen tonight
+
+- The local `nix.linux-builder` VM on this Mac became unhealthy partway through the session.
+  Symptoms:
+  - `qemu-system-aarch64` continues running and port `31022` stays open
+  - vfkit guest realization fails with `Nix daemon disconnected unexpectedly`
+  - launchd restart would likely recover it, but `launchctl kickstart -k system/org.nixos.linux-builder`
+    is not permitted from the current unprivileged shell
+- There is also a macOS diagnostic report for the builder's QEMU process showing heavy disk-write
+  pressure over several hours. That may be related to the builder instability, especially combined
+  with the local volume filling up from retained `pikaci` snapshots.
+
+## Remaining Linux Rust inventory
+
+- Still-host-side deterministic Rust slices that look worth migrating after the current work:
+  `agent_http_*` deterministic `pikahut` tests from `pre-merge-agent-contracts`.
+- Still-host-side nightly Rust slices:
+  `call_over_local_moq_relay_boundary`,
+  `call_with_pikachat_daemon_boundary`,
+  `cli_smoke_media_local`,
+  `primal_nostrconnect_smoke`.
+- The desktop crate itself is now Linux-guest friendly for package tests, but the ignored
+  `ui_e2e_local_desktop` scenario still hangs and should remain classified as broken/unproven
+  until the nested-child/AppManager stall is understood.
