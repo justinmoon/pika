@@ -4,7 +4,6 @@ use anyhow::Context;
 use axum::extract::Extension;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::{response::IntoResponse, Json};
-use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::PgConnection;
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
@@ -29,7 +28,6 @@ use pika_agent_microvm::{
 };
 use pika_relay_profiles::default_message_relays;
 
-const AGENT_OWNER_ACTIVE_INDEX: &str = "agent_instances_owner_active_idx";
 const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
 
 #[derive(Debug)]
@@ -251,18 +249,6 @@ fn load_visible_agent_row(
     Ok(select_visible_agent_row(active, latest))
 }
 
-fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
-    if let Some(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, info)) =
-        err.downcast_ref::<DieselError>()
-    {
-        return info
-            .constraint_name()
-            .map(|name| name == AGENT_OWNER_ACTIVE_INDEX)
-            .unwrap_or(false);
-    }
-    err.to_string().contains(AGENT_OWNER_ACTIVE_INDEX)
-}
-
 fn is_vm_not_found_error(err: &anyhow::Error) -> bool {
     let message = err.to_string().to_ascii_lowercase();
     (message.contains("vm not found") || (message.contains("404") && message.contains("not found")))
@@ -355,11 +341,13 @@ async fn provision_agent_for_owner(
             AGENT_PHASE_CREATING,
         )
         .map_err(|err| {
-            if is_owner_active_unique_violation(&err) {
-                AgentApiError::from_code(AgentApiErrorCode::AgentExists).with_request_id(request_id)
-            } else {
-                AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-            }
+            tracing::error!(
+                request_id,
+                owner_npub = %owner_npub,
+                error = %err,
+                "failed to create agent instance row"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
         })?
     };
 
@@ -428,15 +416,27 @@ pub async fn ensure_agent(
             state.trust_forwarded_host,
         )
         .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
-        if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
+
+        // Check per-user agent limit from allowlist (default 1, NULL = unlimited).
+        let max_agents = AgentAllowlistEntry::get(&mut conn, &requester.owner_npub)
             .map_err(|_| {
                 AgentApiError::from_code(AgentApiErrorCode::Internal)
                     .with_request_id(request_context.request_id.clone())
             })?
-            .is_some()
-        {
-            return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists)
-                .with_request_id(request_context.request_id.clone()));
+            .and_then(|entry| entry.max_agents);
+
+        if let Some(limit) = max_agents {
+            let active_count =
+                AgentInstance::count_active_by_owner(&mut conn, &requester.owner_npub).map_err(
+                    |_| {
+                        AgentApiError::from_code(AgentApiErrorCode::Internal)
+                            .with_request_id(request_context.request_id.clone())
+                    },
+                )?;
+            if active_count >= limit as i64 {
+                return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists)
+                    .with_request_id(request_context.request_id.clone()));
+            }
         }
         requester
     };

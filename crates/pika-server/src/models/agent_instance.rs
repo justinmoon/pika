@@ -85,6 +85,15 @@ impl AgentInstance {
         Ok(found)
     }
 
+    pub fn count_active_by_owner(conn: &mut PgConnection, owner_npub: &str) -> anyhow::Result<i64> {
+        let count = agent_instances::table
+            .filter(agent_instances::owner_npub.eq(owner_npub))
+            .filter(agent_instances::phase.eq_any([AGENT_PHASE_CREATING, AGENT_PHASE_READY]))
+            .count()
+            .get_result(conn)?;
+        Ok(count)
+    }
+
     pub fn find_latest_by_owner(
         conn: &mut PgConnection,
         owner_npub: &str,

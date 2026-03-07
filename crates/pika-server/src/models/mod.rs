@@ -145,7 +145,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_agent_instance_active_owner_constraint() {
+    async fn test_agent_instance_multiple_active_and_count() {
         let _guard = test_guard();
         let db_pool = init_db_pool();
         clear_database(&db_pool);
@@ -162,20 +162,19 @@ mod test {
         .expect("insert initial creating row");
         assert_eq!(created.owner_npub, owner_npub);
 
-        let duplicate_active = AgentInstance::create(
+        // Second active agent is now allowed (no unique index).
+        AgentInstance::create(
             &mut conn,
             owner_npub,
             "agent-2",
             Some("vm-2"),
             AGENT_PHASE_READY,
         )
-        .expect_err("second active row should violate unique partial index");
-        assert!(
-            duplicate_active
-                .to_string()
-                .contains("agent_instances_owner_active_idx"),
-            "unexpected error: {duplicate_active:?}"
-        );
+        .expect("second active row should succeed");
+
+        let count = AgentInstance::count_active_by_owner(&mut conn, owner_npub)
+            .expect("count active agents");
+        assert_eq!(count, 2);
 
         let errored = AgentInstance::create(
             &mut conn,
@@ -187,10 +186,16 @@ mod test {
         .expect("error-phase rows are not active and should be allowed");
         assert_eq!(errored.phase, AGENT_PHASE_ERROR);
 
+        // Error-phase agents are not counted.
+        let count = AgentInstance::count_active_by_owner(&mut conn, owner_npub)
+            .expect("count active agents");
+        assert_eq!(count, 2);
+
+        // find_active_by_owner returns the latest active one.
         let active = AgentInstance::find_active_by_owner(&mut conn, owner_npub)
             .expect("query active row")
             .expect("active row should exist");
-        assert_eq!(active.agent_id, "agent-1");
+        assert_eq!(active.agent_id, "agent-2");
 
         let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
             .expect("query latest row")
@@ -239,7 +244,7 @@ mod test {
         let mut conn = db_pool.get().unwrap();
         let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
 
-        let row = AgentAllowlistEntry::upsert(&mut conn, npub, true, Some("agent"), npub)
+        let row = AgentAllowlistEntry::upsert(&mut conn, npub, true, Some("agent"), npub, None)
             .expect("upsert allowlist");
         assert_eq!(row.npub, npub);
         assert!(row.active);
@@ -265,7 +270,7 @@ mod test {
         let npub = "npub1rollbacktestuser";
 
         let result = conn.transaction::<_, anyhow::Error, _>(|conn| {
-            AgentAllowlistEntry::upsert(conn, npub, true, Some("agent"), npub)?;
+            AgentAllowlistEntry::upsert(conn, npub, true, Some("agent"), npub, None)?;
             AgentAllowlistEntry::record_audit(conn, npub, npub, "enabled\0invalid", None)?;
             Ok(())
         });
