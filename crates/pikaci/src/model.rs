@@ -62,6 +62,8 @@ pub struct RunRecord {
     pub run_id: String,
     pub status: RunStatus,
     #[serde(default)]
+    pub rerun_of: Option<String>,
+    #[serde(default)]
     pub target_id: Option<String>,
     #[serde(default)]
     pub target_description: Option<String>,

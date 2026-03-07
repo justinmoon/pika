@@ -2,7 +2,8 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use pikaci::{
     GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunStatus, git_changed_files,
-    list_runs, load_logs, load_run_record, record_skipped_run, run_jobs_with_metadata,
+    list_runs, load_logs, load_run_record, record_skipped_run, rerun_jobs_with_metadata,
+    run_jobs_with_metadata,
 };
 
 struct TargetSpec {
@@ -35,6 +36,9 @@ enum Command {
         kind: LogKindArg,
     },
     Status {
+        run_id: String,
+    },
+    Rerun {
         run_id: String,
     },
 }
@@ -121,6 +125,27 @@ fn main() -> anyhow::Result<()> {
             }
             for job in &run.jobs {
                 println!("{} {}", job.id, status_text(job.status));
+            }
+        }
+        Command::Rerun { run_id } => {
+            let previous = load_run_record(&options.state_root, &run_id)?;
+            let run = rerun_target(&options, &previous)?;
+            if run.jobs.is_empty() {
+                let target_id = run.target_id.as_deref().unwrap_or("-");
+                println!("{} {} {}", run.run_id, target_id, status_text(run.status));
+                if let Some(message) = &run.message {
+                    eprintln!("{message}");
+                }
+            } else {
+                for job in &run.jobs {
+                    println!("{} {} {}", run.run_id, job.id, status_text(job.status));
+                    if let Some(message) = &job.message {
+                        eprintln!("{message}");
+                    }
+                }
+            }
+            if matches!(run.status, RunStatus::Failed) {
+                std::process::exit(1);
             }
         }
     }
@@ -282,6 +307,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
 fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci::RunRecord> {
     let changed_files = git_changed_files(&options.source_root);
     let metadata = RunMetadata {
+        rerun_of: None,
         target_id: Some(target.id.to_string()),
         target_description: Some(target.description.to_string()),
         changed_files: changed_files.clone().unwrap_or_default(),
@@ -319,6 +345,48 @@ fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci
     record_skipped_run(options, metadata)
 }
 
+fn rerun_target(
+    options: &RunOptions,
+    previous: &pikaci::RunRecord,
+) -> anyhow::Result<pikaci::RunRecord> {
+    let target = target_spec_for_rerun(previous)?;
+    let metadata = RunMetadata {
+        rerun_of: Some(previous.run_id.clone()),
+        target_id: previous
+            .target_id
+            .clone()
+            .or_else(|| Some(target.id.to_string())),
+        target_description: previous
+            .target_description
+            .clone()
+            .or_else(|| Some(target.description.to_string())),
+        changed_files: previous.changed_files.clone(),
+        filters: previous.filters.clone(),
+        message: Some(format!("rerun of {}", previous.run_id)),
+    };
+
+    if previous.status == RunStatus::Skipped {
+        return record_skipped_run(options, metadata);
+    }
+
+    rerun_jobs_with_metadata(target.jobs.as_slice(), previous, options, metadata)
+}
+
+fn target_spec_for_rerun(previous: &pikaci::RunRecord) -> anyhow::Result<TargetSpec> {
+    if let Some(target_id) = previous.target_id.as_deref() {
+        return target_spec(target_id);
+    }
+
+    if previous.jobs.len() == 1 {
+        return target_spec(&previous.jobs[0].id);
+    }
+
+    bail!(
+        "run `{}` cannot be rerun because it does not record a target id",
+        previous.run_id
+    )
+}
+
 fn status_text(status: RunStatus) -> &'static str {
     match status {
         RunStatus::Running => "running",
@@ -342,7 +410,8 @@ fn matches_filter(path: &str, pattern: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{matches_any_filter, matches_filter};
+    use super::{matches_any_filter, matches_filter, target_spec_for_rerun};
+    use pikaci::{JobRecord, RunRecord, RunStatus};
 
     #[test]
     fn path_filters_match_exact_and_prefix_patterns() {
@@ -366,5 +435,58 @@ mod tests {
             "android/app/build.gradle.kts",
             &["docs/**", "crates/pika-server/**"]
         ));
+    }
+
+    #[test]
+    fn rerun_uses_recorded_target_id_when_available() {
+        let run = sample_run_record();
+        let target = target_spec_for_rerun(&run).expect("target");
+        assert_eq!(target.id, "pre-merge-agent-contracts");
+    }
+
+    #[test]
+    fn rerun_falls_back_to_single_job_id() {
+        let mut run = sample_run_record();
+        run.target_id = None;
+        run.jobs = vec![sample_job_record("beachhead")];
+
+        let target = target_spec_for_rerun(&run).expect("target");
+        assert_eq!(target.id, "beachhead");
+    }
+
+    fn sample_run_record() -> RunRecord {
+        RunRecord {
+            run_id: "run-1".to_string(),
+            status: RunStatus::Passed,
+            rerun_of: None,
+            target_id: Some("pre-merge-agent-contracts".to_string()),
+            target_description: Some("test".to_string()),
+            source_root: "/tmp/source".to_string(),
+            snapshot_dir: "/tmp/snapshot".to_string(),
+            git_head: Some("deadbeef".to_string()),
+            git_dirty: Some(true),
+            created_at: "2026-03-07T00:00:00Z".to_string(),
+            finished_at: Some("2026-03-07T00:00:01Z".to_string()),
+            changed_files: vec![],
+            filters: vec![],
+            message: None,
+            jobs: vec![],
+        }
+    }
+
+    fn sample_job_record(id: &str) -> JobRecord {
+        JobRecord {
+            id: id.to_string(),
+            description: "job".to_string(),
+            status: RunStatus::Passed,
+            executor: "vfkit_local".to_string(),
+            timeout_secs: 1,
+            host_log_path: "/tmp/host.log".to_string(),
+            guest_log_path: "/tmp/guest.log".to_string(),
+            started_at: "2026-03-07T00:00:00Z".to_string(),
+            finished_at: Some("2026-03-07T00:00:01Z".to_string()),
+            exit_code: Some(0),
+            message: Some("ok".to_string()),
+        }
     }
 }

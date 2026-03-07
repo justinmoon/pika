@@ -30,6 +30,7 @@ pub struct RunOptions {
 
 #[derive(Clone, Debug, Default)]
 pub struct RunMetadata {
+    pub rerun_of: Option<String>,
     pub target_id: Option<String>,
     pub target_description: Option<String>,
     pub changed_files: Vec<String>,
@@ -50,47 +51,84 @@ pub fn run_jobs_with_metadata(
     options: &RunOptions,
     metadata: RunMetadata,
 ) -> anyhow::Result<RunRecord> {
-    let run_id = new_run_id();
-    let created_at = Utc::now().to_rfc3339();
-    let run_dir = options.state_root.join("runs").join(&run_id);
-    let snapshot_dir = run_dir.join("snapshot");
-    let jobs_dir = run_dir.join("jobs");
-    let cache_dir = options.state_root.join("cache");
-    let shared_cargo_home_dir = cache_dir.join("cargo-home");
-    let shared_target_dir = cache_dir.join("target");
-    fs::create_dir_all(&jobs_dir).with_context(|| format!("create {}", jobs_dir.display()))?;
-    fs::create_dir_all(&shared_cargo_home_dir)
-        .with_context(|| format!("create {}", shared_cargo_home_dir.display()))?;
-    fs::create_dir_all(&shared_target_dir)
-        .with_context(|| format!("create {}", shared_target_dir.display()))?;
+    let prepared = prepare_run(options)?;
+    let snapshot_dir = prepared.run_dir.join("snapshot");
+    let snapshot = create_snapshot(&options.source_root, &snapshot_dir, &prepared.created_at)?;
+    let snapshot = SnapshotSource {
+        source_root: snapshot.source_root,
+        snapshot_dir: PathBuf::from(&snapshot.snapshot_dir),
+        snapshot_dir_string: snapshot.snapshot_dir,
+        git_head: snapshot.git_head,
+        git_dirty: snapshot.git_dirty,
+    };
+    run_jobs_against_snapshot(jobs, &prepared, &snapshot, metadata)
+}
 
-    let snapshot = create_snapshot(&options.source_root, &snapshot_dir, &created_at)?;
+pub fn rerun_jobs_with_metadata(
+    jobs: &[JobSpec],
+    previous: &RunRecord,
+    options: &RunOptions,
+    metadata: RunMetadata,
+) -> anyhow::Result<RunRecord> {
+    if previous.snapshot_dir.is_empty() {
+        return Err(anyhow!(
+            "run `{}` has no snapshot to rerun",
+            previous.run_id
+        ));
+    }
+
+    let snapshot = SnapshotSource {
+        source_root: previous.source_root.clone(),
+        snapshot_dir: PathBuf::from(&previous.snapshot_dir),
+        snapshot_dir_string: previous.snapshot_dir.clone(),
+        git_head: previous.git_head.clone(),
+        git_dirty: previous.git_dirty,
+    };
+    if !snapshot.snapshot_dir.exists() {
+        return Err(anyhow!(
+            "snapshot for run `{}` no longer exists at {}",
+            previous.run_id,
+            previous.snapshot_dir
+        ));
+    }
+
+    let prepared = prepare_run(options)?;
+    run_jobs_against_snapshot(jobs, &prepared, &snapshot, metadata)
+}
+
+fn run_jobs_against_snapshot(
+    jobs: &[JobSpec],
+    prepared: &PreparedRun,
+    snapshot: &SnapshotSource,
+    metadata: RunMetadata,
+) -> anyhow::Result<RunRecord> {
     let mut run_record = RunRecord {
-        run_id: run_id.clone(),
+        run_id: prepared.run_id.clone(),
         status: RunStatus::Running,
+        rerun_of: metadata.rerun_of,
         target_id: metadata.target_id,
         target_description: metadata.target_description,
         source_root: snapshot.source_root.clone(),
-        snapshot_dir: snapshot.snapshot_dir.clone(),
+        snapshot_dir: snapshot.snapshot_dir_string.clone(),
         git_head: snapshot.git_head.clone(),
         git_dirty: snapshot.git_dirty,
-        created_at: created_at.clone(),
+        created_at: prepared.created_at.clone(),
         finished_at: None,
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
         jobs: Vec::new(),
     };
-    write_run_record(&run_dir, &run_record)?;
+    write_run_record(&prepared.run_dir, &run_record)?;
 
     let mut run_failed = false;
     for job in jobs {
         let job_record = run_one_job(
             job,
-            &snapshot_dir,
-            &jobs_dir,
-            &shared_cargo_home_dir,
-            &shared_target_dir,
+            &snapshot.snapshot_dir,
+            &prepared.jobs_dir,
+            &prepared.shared_cargo_home_dir,
+            &prepared.shared_target_dir,
         )?;
         if job_record.status == RunStatus::Failed {
             run_failed = true;
@@ -101,7 +139,7 @@ pub fn run_jobs_with_metadata(
         } else {
             RunStatus::Running
         };
-        write_run_record(&run_dir, &run_record)?;
+        write_run_record(&prepared.run_dir, &run_record)?;
         if run_failed {
             break;
         }
@@ -112,7 +150,7 @@ pub fn run_jobs_with_metadata(
         RunStatus::Passed
     };
     run_record.finished_at = Some(Utc::now().to_rfc3339());
-    write_run_record(&run_dir, &run_record)?;
+    write_run_record(&prepared.run_dir, &run_record)?;
     Ok(run_record)
 }
 
@@ -128,6 +166,7 @@ pub fn record_skipped_run(
     let run_record = RunRecord {
         run_id,
         status: RunStatus::Skipped,
+        rerun_of: metadata.rerun_of,
         target_id: metadata.target_id,
         target_description: metadata.target_description,
         source_root: options.source_root.display().to_string(),
@@ -287,4 +326,44 @@ fn new_run_id() -> String {
         Utc::now().format("%Y%m%dT%H%M%SZ"),
         &Uuid::new_v4().simple().to_string()[..8]
     )
+}
+
+struct PreparedRun {
+    run_id: String,
+    created_at: String,
+    run_dir: PathBuf,
+    jobs_dir: PathBuf,
+    shared_cargo_home_dir: PathBuf,
+    shared_target_dir: PathBuf,
+}
+
+struct SnapshotSource {
+    source_root: String,
+    snapshot_dir: PathBuf,
+    snapshot_dir_string: String,
+    git_head: Option<String>,
+    git_dirty: Option<bool>,
+}
+
+fn prepare_run(options: &RunOptions) -> anyhow::Result<PreparedRun> {
+    let run_id = new_run_id();
+    let created_at = Utc::now().to_rfc3339();
+    let run_dir = options.state_root.join("runs").join(&run_id);
+    let jobs_dir = run_dir.join("jobs");
+    let cache_dir = options.state_root.join("cache");
+    let shared_cargo_home_dir = cache_dir.join("cargo-home");
+    let shared_target_dir = cache_dir.join("target");
+    fs::create_dir_all(&jobs_dir).with_context(|| format!("create {}", jobs_dir.display()))?;
+    fs::create_dir_all(&shared_cargo_home_dir)
+        .with_context(|| format!("create {}", shared_cargo_home_dir.display()))?;
+    fs::create_dir_all(&shared_target_dir)
+        .with_context(|| format!("create {}", shared_target_dir.display()))?;
+    Ok(PreparedRun {
+        run_id,
+        created_at,
+        run_dir,
+        jobs_dir,
+        shared_cargo_home_dir,
+        shared_target_dir,
+    })
 }
