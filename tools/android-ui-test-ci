@@ -9,6 +9,11 @@ ABI="${PIKA_ANDROID_ABI:-arm64-v8a}"
 TEST_CLASS="${PIKA_ANDROID_TEST_CLASS:-com.pika.app.NostrConnectIntentTest}"
 TEST_SUFFIX="${PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX:-.test}"
 
+if [ -z "${CARGO_TARGET_DIR:-}" ]; then
+  CARGO_TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+  export CARGO_TARGET_DIR
+fi
+
 if [ -z "${ANDROID_HOME:-}" ] || [ -z "${JAVA_HOME:-}" ]; then
   echo "error: ANDROID_HOME and JAVA_HOME must be set" >&2
   echo "note: the current pikaci microVM guest is aarch64-linux, and this repo does not currently export the Android SDK toolchain bundle for that system." >&2
@@ -37,12 +42,26 @@ case "$PROFILE" in
     ;;
 esac
 
-host_lib_core="$CARGO_TARGET_DIR/$profile_dir/libpika_core.so"
-host_lib_share="$CARGO_TARGET_DIR/$profile_dir/libpika_share.so"
+resolve_host_lib() {
+  local crate="$1"
+  local profile_root="$2"
+  local cand=""
+  for ext in dylib so dll; do
+    cand="$profile_root/lib${crate}.${ext}"
+    if [ -f "$cand" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
 
 cargo build -p pika_core -p pika-share "${build_profile_flag[@]}"
 
-if [ ! -f "$host_lib_core" ] || [ ! -f "$host_lib_share" ]; then
+host_lib_core="$(resolve_host_lib pika_core "$CARGO_TARGET_DIR/$profile_dir" || true)"
+host_lib_share="$(resolve_host_lib pika_share "$CARGO_TARGET_DIR/$profile_dir" || true)"
+
+if [ -z "$host_lib_core" ] || [ -z "$host_lib_share" ]; then
   echo "error: expected host UniFFI libraries missing under $CARGO_TARGET_DIR/$profile_dir" >&2
   exit 1
 fi
