@@ -72,7 +72,7 @@ targets:
           if [ -f "${PROJECT_DIR}/.build-number" ]; then
             BUILD_NUMBER=$(cat "${PROJECT_DIR}/.build-number")
           else
-            BUILD_NUMBER=$(date +"%Y%m%d%H%M")
+            BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
         basedOnDependencyAnalysis: false
@@ -106,7 +106,7 @@ targets:
           if [ -f "${PROJECT_DIR}/.build-number" ]; then
             BUILD_NUMBER=$(cat "${PROJECT_DIR}/.build-number")
           else
-            BUILD_NUMBER=$(date +"%Y%m%d%H%M")
+            BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
         basedOnDependencyAnalysis: false
@@ -140,7 +140,7 @@ targets:
           if [ -f "${PROJECT_DIR}/.build-number" ]; then
             BUILD_NUMBER=$(cat "${PROJECT_DIR}/.build-number")
           else
-            BUILD_NUMBER=$(date +"%Y%m%d%H%M")
+            BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
         basedOnDependencyAnalysis: false
@@ -214,7 +214,7 @@ schemes:
   Pika:
     build:
       preActions:
-        - script: 'date +"%Y%m%d%H%M" > "${PROJECT_DIR}/.build-number"'
+        - script: 'date -u +"%Y%m%d%H%M%S" > "${PROJECT_DIR}/.build-number"'
           settingsTarget: Pika
       targets:
         Pika: all

@@ -8,18 +8,18 @@ read_when:
 
 # Release
 
-This repo has two independent release tag families:
+This repo has two release tag families:
 
 | Target | Tag pattern | CI workflow | Artifacts |
 |--------|------------|-------------|-----------|
 | Pika app release | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` | Signed Android APK + macOS universal DMG + SHA256SUMS on GitHub Releases |
-| iOS TestFlight | `master` push or manual dispatch | `ios-testflight.yml` | Signed IPA uploaded to TestFlight |
+| iOS TestFlight | `pika/v*` or manual dispatch | `ios-testflight.yml` | Signed IPA uploaded to TestFlight |
 | Zapstore publish | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` (`publish-zapstore` job) | NIP-82 app/release/asset events on Zapstore relays |
 | Nostr announcement | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` (`announce-release` job) | Kind-1 release announcement note |
 | pikachat (OpenClaw extension) | `pikachat-v*` (e.g. `pikachat-v0.5.2`) | `pikachat-release.yml` | Linux + macOS binaries on GitHub Releases, npm package |
 
 There is not currently a single cross-repo version file for both release
-families. `VERSION` is the source of truth for Pika app artifacts (Android,
+families. `VERSION` is the source of truth for the Pika app family (Android,
 macOS, and the iOS marketing version). pikachat uses concrete versions in
 `cli/Cargo.toml` and the OpenClaw extension `package.json`, but those can be
 synced from `VERSION` with `./scripts/sync-pikachat-version`.
@@ -62,7 +62,7 @@ git pull origin master
 just release-commit 0.3.0
 git push origin master
 
-# 3. Tag and push (this triggers the CI release)
+# 3. Tag and push (this triggers the app release workflow and iOS TestFlight)
 just release 0.3.0
 
 # 4. Monitor the release workflow
@@ -151,20 +151,21 @@ cleanup), and passes it to `zsp` only for the publish command.
 
 ## iOS TestFlight
 
-iOS does not use a release tag. The workflow in `/.github/workflows/ios-testflight.yml`
-runs on every push to `master` and on manual dispatch.
+iOS now uses the same `pika/v*` tag family as the rest of the Pika app release.
+The workflow in `/.github/workflows/ios-testflight.yml` runs on `push.tags:
+["pika/v*"]` and on manual dispatch.
 
 ### Version source of truth
 
 - Marketing version: `VERSION` at the repo root
-- Build number in CI: `github.run_number`, written to `ios/.build-number`
-- Build number outside CI: timestamp fallback from `ios/project.yml`
-  (`date +"%Y%m%d%H%M"`) when `ios/.build-number` is absent
+- Build number in CI: UTC timestamp (`YYYYMMDDHHMMSS`), written to
+  `ios/.build-number`
+- Build number outside CI: the same UTC timestamp fallback from `ios/project.yml`
+  when `ios/.build-number` is absent
 
-For CI builds on `master`, build-number conflicts should not happen because
-`github.run_number` increases monotonically for each workflow run. The timestamp
-fallback only matters for local/manual archives and can collide if you archive
-twice within the same minute for the same marketing version.
+Release-tag uploads now build from the exact same immutable ref as the Android
+and macOS release artifacts. Manual dispatch is still available for dev or
+recovery builds that should not create a release tag.
 
 See `docs/ios-testflight-ci.md` for App Store Connect setup and troubleshooting.
 

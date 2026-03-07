@@ -8,8 +8,11 @@ read_when:
 
 # iOS TestFlight CI
 
-Merging to `master` automatically builds and uploads Pika to TestFlight.
-You can also trigger a build manually from the Actions tab.
+Pushing a `pika/vX.Y.Z` release tag automatically builds and uploads Pika to
+TestFlight.
+
+Manual dispatch is still available for non-release or recovery builds from the
+Actions tab.
 
 ## Setup
 
@@ -53,23 +56,33 @@ These come from an App Store Connect API key.
 
 ## How it works
 
-The workflow (`.github/workflows/ios-testflight.yml`) runs on every push to `master` and on manual dispatch:
+The workflow (`.github/workflows/ios-testflight.yml`) runs on:
 
-1. Checks out code on a `macos-15` runner
-2. Installs Nix and enters the dev shell
-3. Runs `just ios-xcframework ios-xcodeproj` to build the Rust core for device (`aarch64-apple-ios` only — no simulator slice needed) and generate the Xcode project
-4. Stamps `github.run_number` as the build number
-5. Archives with `xcodebuild archive` using automatic signing
-6. Exports the IPA using `app-store-connect` method
-7. Saves the IPA as a GitHub Actions artifact
-8. Uploads to TestFlight via `xcrun altool`
+- `push.tags: ["pika/v*"]` for release uploads
+- `workflow_dispatch` for manual builds from the selected ref
+
+1. Checks out code on a `macos-26` runner
+2. On release-tag builds, verifies the pushed tag equals `pika/v$(./scripts/version-read --name)`
+3. Installs Nix and enters the dev shell
+4. Runs `just ios-xcframework ios-xcodeproj` to build the Rust core for device (`aarch64-apple-ios` only — no simulator slice needed) and generate the Xcode project
+5. Stamps a UTC timestamp (`YYYYMMDDHHMMSS`) as the build number
+6. Archives with `xcodebuild archive` using automatic signing
+7. Exports the IPA using `app-store-connect` method
+8. Saves the IPA as a GitHub Actions artifact
+9. Uploads to TestFlight via `xcrun altool`
 
 ## Manual trigger
 
 1. Go to **Actions** > **iOS TestFlight** in your GitHub repo
 2. Click **Run workflow**
-3. Select the branch (usually `master`)
+3. Select the ref you want to build from
 4. Click the green **Run workflow** button
+
+Use manual dispatch for:
+
+- a one-off dev/TestFlight build that should not create a release tag
+- rerunning a release upload after Apple-side cleanup
+- validating a branch before you cut a real tagged release
 
 ## Troubleshooting
 
@@ -89,8 +102,22 @@ The archive step needs `-destination "generic/platform=iOS"`. This is already se
 
 ### Build number conflicts
 
-Each CI run uses `github.run_number` as the build number, which auto-increments. If you also upload manually, make sure your manual build number is higher than the latest CI build number, or TestFlight will reject it as a duplicate.
+CI writes a fresh UTC timestamp (`YYYYMMDDHHMMSS`) to `ios/.build-number` for
+every workflow run. That avoids duplicate build numbers on reruns and keeps
+release-tag builds aligned with the exact tagged code.
+
+Outside CI, `ios/project.yml` falls back to the same UTC timestamp format when
+`ios/.build-number` is missing. That makes local archives much less likely to
+collide than the old minute-level fallback.
+
+If you trigger multiple archives in the same second for the same marketing
+version, TestFlight can still reject a duplicate. In that case, rerun the
+workflow or set a higher `ios/.build-number` before archiving manually.
 
 ### "ERROR ITMS-90189: Redundant Binary Upload"
 
-You uploaded an IPA with a build number that already exists for this version. Bump the version in `ios/project.yml` (`MARKETING_VERSION`) or wait for the next CI run (which will have a higher `run_number`).
+You uploaded an IPA with a build number that already exists for this version.
+
+- For CI uploads: rerun the workflow, which will stamp a fresh UTC timestamp
+- For local/manual uploads: set a higher `ios/.build-number` before archiving
+- If the marketing version itself needs to change, bump the repo-root `VERSION` file

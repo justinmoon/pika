@@ -2,7 +2,8 @@ name: iOS TestFlight
 
 on:
   push:
-    branches: [master]
+    tags:
+      - "pika/v*"
   workflow_dispatch:
 
 jobs:
@@ -10,6 +11,17 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate release tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/pika/v')
+        run: |
+          set -euo pipefail
+          expected_tag="pika/v$(./scripts/version-read --name)"
+          tag="${{ github.ref_name }}"
+          if [ "$tag" != "$expected_tag" ]; then
+            echo "error: tag/version mismatch: tag=${tag}, expected=${expected_tag}"
+            exit 1
+          fi
       - uses: nixbuild/nix-quick-install-action@v30
 
       - name: Build xcframework and Xcode project
@@ -18,7 +30,7 @@ jobs:
         run: nix develop .#default -c just ios-xcframework ios-xcodeproj
 
       - name: Stamp build number
-        run: echo "${{ github.run_number }}" > ios/.build-number
+        run: date -u +"%Y%m%d%H%M%S" > ios/.build-number
 
       - name: Install distribution certificate
         env:
@@ -110,7 +122,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Pika-${{ github.run_number }}.ipa
+          name: Pika-${{ github.run_id }}.ipa
           path: ${{ runner.temp }}/export/*.ipa
 
       - name: Upload to TestFlight
