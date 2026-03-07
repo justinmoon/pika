@@ -47,9 +47,9 @@ recipe enforces this with a branch check.
 
 CI enforces that the pushed tag equals `pika/v$(cat VERSION)`.
 
-For a coordinated cross-channel release, use `just release-bump <version>` to
-sync `VERSION`, iOS `MARKETING_VERSION`, `cli/Cargo.toml`, and the OpenClaw
-extension `package.json` before you commit and tag.
+For a coordinated cross-channel release, use `just release-commit <version>` to
+create one version-only commit that syncs `VERSION`, iOS `MARKETING_VERSION`,
+`cli/Cargo.toml`, and the OpenClaw extension `package.json`.
 
 ### Runbook
 
@@ -58,10 +58,8 @@ extension `package.json` before you commit and tag.
 git checkout master
 git pull origin master
 
-# 2. Bump the version
-echo "0.3.0" > VERSION
-git add VERSION
-git commit -m "release: bump to 0.3.0"
+# 2. Create the coordinated release version commit
+just release-commit 0.3.0
 git push origin master
 
 # 3. Tag and push (this triggers the CI release)
@@ -187,10 +185,14 @@ Both must match.
 
 Helpers:
 
-- `just release-bump <version>` syncs the app + pikachat/OpenClaw version files
+- `just release-commit <version>` makes a coordinated version-only commit for
+  app + pikachat/OpenClaw releases
+- `just release-bump <version>` syncs the version files without committing
 - `./scripts/sync-pikachat-version` syncs both files from repo-root `VERSION`
   without committing or tagging
-- `./scripts/bump-pikachat.sh` keeps them in sync, commits, and tags
+- `./scripts/bump-pikachat.sh` is the pikachat-only release helper: it requires
+  a clean `master` checkout and refuses version drift unless
+  `PIKACHAT_ALLOW_VERSION_DRIFT=1` is set
 - `./scripts/bump-pikachat.sh` with no argument uses repo-root `VERSION`
 
 ### Runbook
@@ -200,20 +202,24 @@ Helpers:
 git checkout master
 git pull origin master
 
-# 2. If you want the same version as the app release, bump everything once
-just release-bump 0.5.2
+# 2. If you want a coordinated cross-channel release, use:
+# just release-commit 0.5.2
+# git push origin master
+# then run the pikachat workflow_dispatch with version 0.5.2
+#
+# For a pikachat-only release instead, either:
+# - omit the argument to reuse repo-root VERSION
+# - or set PIKACHAT_ALLOW_VERSION_DRIFT=1 for an intentional version split
+PIKACHAT_ALLOW_VERSION_DRIFT=1 ./scripts/bump-pikachat.sh 0.5.2
 
-# 3. Bump pikachat to match VERSION, commit, and tag (all done by the script)
-./scripts/bump-pikachat.sh
-
-# 4. Push commit and tag (this triggers the CI release)
+# 3. Push commit and tag (this triggers the CI release)
 git push origin master pikachat-v0.5.2
 
-# 5. Monitor the release workflow
+# 4. Monitor the release workflow
 gh run list --limit 1
 gh run watch <run-id>
 
-# 6. Verify
+# 5. Verify
 gh release view pikachat-v0.5.2
 npm view pikachat-openclaw version
 ```

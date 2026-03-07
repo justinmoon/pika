@@ -33,8 +33,36 @@ fi
 
 printf '%s\n' "$VERSION" > "$VERSION_FILE"
 
-sed "s/^    MARKETING_VERSION: .*/    MARKETING_VERSION: ${VERSION}/" "$IOS_PROJECT_YML" > "$IOS_PROJECT_YML.tmp"
+awk -v version="$VERSION" '
+  BEGIN {
+    updated = 0
+  }
+  !updated && /^[[:space:]]*MARKETING_VERSION:/ {
+    match($0, /^[[:space:]]*/)
+    indent = substr($0, RSTART, RLENGTH)
+    print indent "MARKETING_VERSION: " version
+    updated = 1
+    next
+  }
+  {
+    print
+  }
+  END {
+    if (!updated) {
+      exit 1
+    }
+  }
+' "$IOS_PROJECT_YML" > "$IOS_PROJECT_YML.tmp" || {
+  rm -f "$IOS_PROJECT_YML.tmp"
+  echo "error: failed to update MARKETING_VERSION in $IOS_PROJECT_YML" >&2
+  exit 1
+}
 mv "$IOS_PROJECT_YML.tmp" "$IOS_PROJECT_YML"
+
+if ! grep -q "MARKETING_VERSION: ${VERSION}" "$IOS_PROJECT_YML"; then
+  echo "error: MARKETING_VERSION verification failed for $IOS_PROJECT_YML" >&2
+  exit 1
+fi
 
 "$ROOT/scripts/sync-pikachat-version" "$VERSION"
 
