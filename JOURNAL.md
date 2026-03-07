@@ -157,6 +157,7 @@ For Android specifically, this likely means:
   - `tart-ios-unit-tests`
   - `tart-ios-ui-note-to-self`
   - `tart-ios-ui-test`
+  - `tart-desktop-package-tests`
 - The Tart runner now prefers a native-Xcode Cirrus base image
   (`ghcr.io/cirruslabs/macos-sequoia-xcode:16.4`, cloned locally as `pikaci-xcode16-base`)
   over the earlier host-Xcode grafting fallback. That resolved the earlier destination validation
@@ -165,6 +166,16 @@ For Android specifically, this likely means:
   Android-on-Tart was explored as a prototype and then intentionally dropped. It adds a second
   Android runner stack, emulator-in-guest complexity, and nested-virtualization/HVF risk without
   giving useful coverage beyond what the Linux runner should own.
+- Tart now also carries macOS desktop package tests for `pika-desktop`. That is useful Apple-only
+  coverage because `iced`/macOS linking and runtime-adjacent behavior differ from Linux, even
+  though Linux still owns the desktop E2E scenario and the broader desktop Rust migration.
+- The Tart runner now has a generic host-Nix bootstrap for Rust-backed macOS jobs:
+  - mount the host `/nix/store` into the guest
+  - bootstrap a synthetic `/nix` mountpoint on first boot
+  - restart the guest once so the mountpoint exists
+  - expose the host Rust toolchain path inside the guest
+  This was necessary for macOS desktop cargo jobs because the Cirrus base image has Xcode but not
+  the repo's Rust toolchain.
 - The deterministic Tart UI lane is now meaningfully split from public-relay/media E2E coverage.
   The `testCreateAccount_noteToSelf_sendMessage_and_logout`,
   `testSessionPersistsAcrossRelaunch`,
@@ -179,12 +190,17 @@ For Android specifically, this likely means:
   environment, unlike the local/offline UI smoke tests, so `pikaci` now treats them as a separate
   future Tart lane rather than part of the deterministic bundle.
 - The current Tart probe remains green after the runner abstraction refactor.
-  `tart-env-probe` still proves: boot guest, see Xcode, accept the license, and create/boot an
-  iOS simulator under `pikaci`.
-- The next Tart step is packaging, not more runner R&D:
-  1. define one first-class deterministic Apple lane name
-  2. wire that lane through `just`
-  3. keep public-relay/media/E2E iOS cases out of that deterministic lane
+  `tart-env-probe` now proves: boot guest, make `/nix` available when needed, see Xcode, see
+  `cargo`/`rustc`, and create/boot an iOS simulator under `pikaci`.
+- `pre-merge-apple-deterministic` now exists in Rust and is wired through `just`.
+  The remaining work is to keep re-validating the composed Apple lane as the Tart helpers evolve,
+  not to invent another runner type.
+- As of tonight, the proven Tart/macOS pieces are:
+  - `tart-env-probe`
+  - `tart-desktop-package-tests`
+  - the previously proven iOS targets from earlier in the session history
+  The combined Apple lane is still under revalidation while `tools/ios-sim-ensure` is being made
+  robust against stale simulator entries across runtimes.
 
 ## Refactoring opportunities
 
@@ -216,9 +232,8 @@ For Android specifically, this likely means:
 
 - Finish the remaining deterministic Linux Rust slices that are still host-side:
   `agent_http_*` tests from `pre-merge-agent-contracts`.
-- Package the proven Tart iOS targets into one deterministic Apple lane and wire it into `just`.
-- Keep desktop Linux coverage on the Linux runner side. Do not try to make Tart carry desktop or
-  Android responsibilities.
+- Keep desktop Linux scenario/E2E coverage on the Linux runner side while Tart carries the macOS
+  desktop package-test slice. Do not try to make Tart carry Android responsibilities.
 - Revisit the broken `ui_e2e_local_desktop` case separately as a test/runtime bug, not as a runner
   migration problem.
 

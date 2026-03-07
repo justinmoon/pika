@@ -39,6 +39,14 @@ const TART_XCODE_APP_ENV: &str = "PIKACI_TART_XCODE_APP";
 const TART_XCODE_APP_DEFAULT: &str = "/Applications/Xcode-16.4.0.app";
 const TART_XCODE_TAG: &str = "pikaci-xcode";
 const TART_LIBRARY_DEVELOPER_TAG: &str = "pikaci-library-developer";
+const TART_RUST_TOOLCHAIN_NAME: &str = "rust-toolchain";
+const TART_NIX_STORE_TAG: &str = "pikaci-nix-store";
+
+struct TartRunProcess {
+    child: std::process::Child,
+    stdout_handle: thread::JoinHandle<()>,
+    stderr_handle: thread::JoinHandle<()>,
+}
 
 pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
     match job.runner_kind() {
@@ -210,6 +218,7 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
     let base_vm =
         std::env::var(TART_BASE_VM_ENV).unwrap_or_else(|_| TART_BASE_VM_DEFAULT.to_string());
     let use_host_xcode = use_host_xcode_mounts();
+    let use_host_rust_toolchain = tart_job_uses_host_rust_toolchain(job);
     let vm_name = tart_vm_name(job, &ctx.job_dir);
     let _ = Command::new("tart").arg("delete").arg(&vm_name).output();
 
@@ -252,7 +261,32 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
     } else {
         None
     };
+    let rust_toolchain_share = if use_host_rust_toolchain {
+        Some(tart_named_share(
+            TART_RUST_TOOLCHAIN_NAME,
+            &host_rust_toolchain_root()?,
+            true,
+        ))
+    } else {
+        None
+    };
+    let nix_store_share = if use_host_rust_toolchain {
+        Some(tart_tagged_share(
+            Path::new("/nix/store"),
+            true,
+            TART_NIX_STORE_TAG,
+        ))
+    } else {
+        None
+    };
 
+    let log_file = Arc::new(Mutex::new(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&ctx.host_log_path)
+            .with_context(|| format!("open {}", ctx.host_log_path.display()))?,
+    ));
     append_line(
         &ctx.host_log_path,
         &format!(
@@ -263,51 +297,31 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
         ),
     )?;
 
-    let mut command = Command::new("tart");
-    command
-        .arg("run")
-        .arg("--no-graphics")
-        .arg("--no-audio")
-        .arg("--dir")
-        .arg(&workspace_share)
-        .arg("--dir")
-        .arg(&artifacts_share);
-    if let Some(xcode_share) = &xcode_share {
-        command.arg("--dir").arg(xcode_share);
-    }
-    if let Some(library_developer_share) = &library_developer_share {
-        command.arg("--dir").arg(library_developer_share);
-    }
-    let mut child = command
-        .arg(&vm_name)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawn `tart run`")?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("tart stdout unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("tart stderr unavailable"))?;
-
-    let log_file = Arc::new(Mutex::new(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&ctx.host_log_path)
-            .with_context(|| format!("open {}", ctx.host_log_path.display()))?,
-    ));
-    let stdout_handle = spawn_log_pump(stdout, Arc::clone(&log_file), "[tart:stdout]");
-    let stderr_handle = spawn_log_pump(stderr, Arc::clone(&log_file), "[tart:stderr]");
-
+    let shares = tart_run_shares(
+        &workspace_share,
+        &artifacts_share,
+        xcode_share.as_deref(),
+        library_developer_share.as_deref(),
+        rust_toolchain_share.as_deref(),
+        nix_store_share.as_deref(),
+    );
+    let mut tart_process =
+        start_tart_run_process(&vm_name, &shares, use_host_rust_toolchain, &log_file)?;
     wait_for_tart_guest(&vm_name, &ctx.host_log_path, Duration::from_secs(180))?;
+    if use_host_rust_toolchain && ensure_tart_nix_mountpoint(&vm_name, &ctx.host_log_path)? {
+        stop_tart_run_process(&vm_name, &ctx.host_log_path, tart_process);
+        tart_process = start_tart_run_process(&vm_name, &shares, true, &log_file)?;
+        wait_for_tart_guest(&vm_name, &ctx.host_log_path, Duration::from_secs(180))?;
+        ensure_tart_guest_has_nix_mountpoint(&vm_name)?;
+    }
 
     let (guest_command, run_as_root) = compiled_guest_command(job);
-    let guest_script = render_tart_guest_script(&guest_command, run_as_root, use_host_xcode);
+    let guest_script = render_tart_guest_script(
+        &guest_command,
+        run_as_root,
+        use_host_xcode,
+        use_host_rust_toolchain,
+    );
 
     let mut exec_child = Command::new("tart")
         .arg("exec")
@@ -349,9 +363,9 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
             let _ = exec_stdout_handle.join();
             let _ = exec_stderr_handle.join();
             cleanup_tart_vm(&vm_name, &ctx.host_log_path);
-            let _ = child.wait();
-            let _ = stdout_handle.join();
-            let _ = stderr_handle.join();
+            let _ = tart_process.child.wait();
+            let _ = tart_process.stdout_handle.join();
+            let _ = tart_process.stderr_handle.join();
             return Ok(JobOutcome {
                 status: RunStatus::Failed,
                 exit_code: None,
@@ -373,9 +387,9 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
     )?;
 
     cleanup_tart_vm(&vm_name, &ctx.host_log_path);
-    let _ = child.wait();
-    let _ = stdout_handle.join();
-    let _ = stderr_handle.join();
+    let _ = tart_process.child.wait();
+    let _ = tart_process.stdout_handle.join();
+    let _ = tart_process.stderr_handle.join();
 
     let result_path = artifacts_dir.join("result.json");
     let guest_result = load_guest_result(&result_path)?;
@@ -470,6 +484,55 @@ fn wait_for_tart_guest(vm_name: &str, log_path: &Path, timeout: Duration) -> any
     }
 }
 
+fn tart_guest_has_nix_mountpoint(vm_name: &str) -> bool {
+    Command::new("tart")
+        .arg("exec")
+        .arg(vm_name)
+        .arg("bash")
+        .arg("-lc")
+        .arg("test -L /nix -o -d /nix")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn ensure_tart_guest_has_nix_mountpoint(vm_name: &str) -> anyhow::Result<()> {
+    if tart_guest_has_nix_mountpoint(vm_name) {
+        return Ok(());
+    }
+    bail!("synthetic /nix mountpoint is still unavailable after Tart guest restart");
+}
+
+fn ensure_tart_nix_mountpoint(vm_name: &str, log_path: &Path) -> anyhow::Result<bool> {
+    if tart_guest_has_nix_mountpoint(vm_name) {
+        return Ok(false);
+    }
+
+    append_line(
+        log_path,
+        "[pikaci] bootstrapping synthetic /nix mountpoint inside Tart guest",
+    )?;
+    let bootstrap = r#"set -euo pipefail
+sudo mkdir -p /System/Volumes/Data/nix/store
+if ! grep -q '^nix[[:space:]]' /etc/synthetic.conf 2>/dev/null; then
+  printf 'nix\tSystem/Volumes/Data/nix\n' | sudo tee -a /etc/synthetic.conf >/dev/null
+fi
+sync
+"#;
+    let status = Command::new("tart")
+        .arg("exec")
+        .arg(vm_name)
+        .arg("bash")
+        .arg("-lc")
+        .arg(bootstrap)
+        .status()
+        .context("bootstrap synthetic /nix mountpoint in Tart guest")?;
+    if !status.success() {
+        bail!("failed to prepare synthetic /nix mountpoint inside Tart guest");
+    }
+    Ok(true)
+}
+
 fn cleanup_tart_vm(vm_name: &str, log_path: &Path) {
     let _ = run_command_to_log(
         Command::new("tart").arg("stop").arg(vm_name),
@@ -481,6 +544,78 @@ fn cleanup_tart_vm(vm_name: &str, log_path: &Path) {
         log_path,
         "[pikaci] tart delete",
     );
+}
+
+fn tart_run_shares(
+    workspace_share: &str,
+    artifacts_share: &str,
+    xcode_share: Option<&str>,
+    library_developer_share: Option<&str>,
+    rust_toolchain_share: Option<&str>,
+    nix_store_share: Option<&str>,
+) -> Vec<String> {
+    let mut shares = vec![workspace_share.to_string(), artifacts_share.to_string()];
+    if let Some(xcode_share) = xcode_share {
+        shares.push(xcode_share.to_string());
+    }
+    if let Some(library_developer_share) = library_developer_share {
+        shares.push(library_developer_share.to_string());
+    }
+    if let Some(rust_toolchain_share) = rust_toolchain_share {
+        shares.push(rust_toolchain_share.to_string());
+    }
+    if let Some(nix_store_share) = nix_store_share {
+        shares.push(nix_store_share.to_string());
+    }
+    shares
+}
+
+fn start_tart_run_process(
+    vm_name: &str,
+    shares: &[String],
+    sync_full_root_disk: bool,
+    log_file: &Arc<Mutex<File>>,
+) -> anyhow::Result<TartRunProcess> {
+    let mut command = Command::new("tart");
+    command.arg("run").arg("--no-graphics").arg("--no-audio");
+    if sync_full_root_disk {
+        command.arg("--root-disk-opts=sync=full");
+    }
+    for share in shares {
+        command.arg("--dir").arg(share);
+    }
+    let mut child = command
+        .arg(vm_name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn `tart run`")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("tart stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("tart stderr unavailable"))?;
+
+    Ok(TartRunProcess {
+        child,
+        stdout_handle: spawn_log_pump(stdout, Arc::clone(log_file), "[tart:stdout]"),
+        stderr_handle: spawn_log_pump(stderr, Arc::clone(log_file), "[tart:stderr]"),
+    })
+}
+
+fn stop_tart_run_process(vm_name: &str, log_path: &Path, process: TartRunProcess) {
+    let _ = run_command_to_log(
+        Command::new("tart").arg("stop").arg(vm_name),
+        log_path,
+        "[pikaci] tart stop",
+    );
+    let _ = process.child.wait_with_output();
+    let _ = process.stdout_handle.join();
+    let _ = process.stderr_handle.join();
 }
 
 fn tart_vm_name(job: &JobSpec, job_dir: &Path) -> String {
@@ -535,6 +670,22 @@ fn tart_tagged_share(path: &Path, read_only: bool, tag: &str) -> String {
     spec
 }
 
+fn tart_job_uses_host_rust_toolchain(job: &JobSpec) -> bool {
+    job.id == "tart-env-probe" || job.id.starts_with("tart-desktop")
+}
+
+fn host_rust_toolchain_root() -> anyhow::Result<PathBuf> {
+    let cargo = command_stdout(Command::new("which").arg("cargo"))
+        .ok_or_else(|| anyhow!("resolve host cargo path for Tart Rust toolchain mount"))?;
+    let cargo = fs::canonicalize(cargo.trim())
+        .with_context(|| format!("canonicalize host cargo path `{cargo}`"))?;
+    cargo
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("derive host Rust toolchain root from `{}`", cargo.display()))
+}
+
 fn host_xcode_app_path() -> anyhow::Result<PathBuf> {
     if let Ok(path) = std::env::var(TART_XCODE_APP_ENV) {
         let path = fs::canonicalize(&path).with_context(|| format!("canonicalize `{path}`"))?;
@@ -572,9 +723,11 @@ fn render_tart_guest_script(
     guest_command: &str,
     run_as_root: bool,
     use_host_xcode: bool,
+    use_host_rust_toolchain: bool,
 ) -> String {
     let artifacts_mount = "/Volumes/My Shared Files/artifacts";
     let workspace_mount = "/Volumes/My Shared Files/workspace";
+    let rust_toolchain_mount = format!("/Volumes/My Shared Files/{TART_RUST_TOOLCHAIN_NAME}");
     let user_command = if run_as_root {
         format!("sudo --non-interactive {guest_command}")
     } else {
@@ -619,6 +772,30 @@ fi
 "#
         .to_string()
     };
+    let nix_store_setup = if use_host_rust_toolchain {
+        format!(
+            r#"sudo mkdir -p /nix/store
+if ! mount | grep -q ' on /nix/store '; then
+  sudo mount_virtiofs {TART_NIX_STORE_TAG} /nix/store
+fi
+"#
+        )
+    } else {
+        String::new()
+    };
+    let ca_bundle_setup = if use_host_rust_toolchain {
+        "export SSL_CERT_FILE='/etc/ssl/cert.pem'\nexport CURL_CA_BUNDLE='/etc/ssl/cert.pem'\nexport CARGO_HTTP_CAINFO='/etc/ssl/cert.pem'\nexport NIX_SSL_CERT_FILE='/etc/ssl/cert.pem'\n".to_string()
+    } else {
+        String::new()
+    };
+    let cargo_bin_prefix = if use_host_rust_toolchain {
+        format!("{rust_toolchain_mount}/bin:")
+    } else {
+        String::new()
+    };
+    let path_setup = format!(
+        "export PATH=\"$DEVELOPER_DIR/usr/bin:{cargo_bin_prefix}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${{PATH:-}}\"\n"
+    );
     format!(
         r#"set -euo pipefail
 ARTIFACTS="{artifacts_mount}"
@@ -626,8 +803,10 @@ exec > >(tee -a "$ARTIFACTS/guest.log") 2>&1
 echo "[pikaci] tart guest booted at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 {xcode_setup}\
 {developer_dir_setup}\
+{nix_store_setup}\
 sudo xcodebuild -license accept >/dev/null 2>&1 || true
-export PATH="$DEVELOPER_DIR/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+{ca_bundle_setup}\
+{path_setup}\
 cd "{workspace_mount}"
 set +e
 {user_command}

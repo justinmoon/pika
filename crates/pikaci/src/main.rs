@@ -498,6 +498,8 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "set -euo pipefail; ",
                         "sw_vers; ",
                         "xcodebuild -version; ",
+                        "cargo --version; ",
+                        "rustc --version; ",
                         "python3 --version; ",
                         "./tools/ios-sim-ensure",
                     ),
@@ -539,6 +541,51 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "tart-ios-ui-note-to-self",
                 "Run the note-to-self UI test in a Tart macOS guest",
             )],
+        }),
+        "tart-desktop-package-tests" => Ok(TargetSpec {
+            id: "tart-desktop-package-tests",
+            description: "Run pika-desktop package tests in a Tart macOS guest",
+            filters: &[],
+            jobs: vec![tart_desktop_package_tests_job(
+                "tart-desktop-package-tests",
+                "Run pika-desktop package tests in a Tart macOS guest",
+            )],
+        }),
+        "pre-merge-apple-deterministic" => Ok(TargetSpec {
+            id: "pre-merge-apple-deterministic",
+            description: "Run deterministic Apple-platform tests in a Tart macOS guest",
+            filters: &[
+                "Cargo.toml",
+                "Cargo.lock",
+                "flake.nix",
+                "flake.lock",
+                "nix/**",
+                "justfile",
+                ".github/workflows/pre-merge.yml",
+                "crates/pikaci/**",
+                "crates/pika-desktop/**",
+                "ios/**",
+                "rust/**",
+                "tools/cargo-with-xcode",
+                "tools/ios-sim-ensure",
+                "tools/xcode-dev-dir",
+                "tools/xcode-run",
+                "tools/xcodebuild-compact",
+            ],
+            jobs: vec![
+                tart_ios_unit_tests_job(
+                    "tart-ios-unit-tests",
+                    "Run the full PikaTests unit-test bundle in a Tart macOS guest",
+                ),
+                tart_ios_ui_test_job(
+                    "tart-ios-ui-test",
+                    "Run the deterministic ios-ui-test lane in a Tart macOS guest",
+                ),
+                tart_desktop_package_tests_job(
+                    "tart-desktop-package-tests",
+                    "Run pika-desktop package tests in a Tart macOS guest",
+                ),
+            ],
         }),
         "pre-merge-rmp" => Ok(TargetSpec {
             id: "pre-merge-rmp",
@@ -788,10 +835,9 @@ fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec
         guest_command: GuestCommand::ShellCommand {
             command: concat!(
                 "set -euo pipefail; ",
-                "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
                 "rm -rf ios/build ios/build-logs; ",
-                "./tools/ios-sim-ensure >/tmp/pikaci-ios-sim-ensure.log; ",
-                "udid=\"$($simctl list devices | awk -F '[()]' '/Pika iPhone 15/ {print $2; exit}')\"; ",
+                "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
+                "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
                 "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
                 "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
                 "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
@@ -822,10 +868,9 @@ fn tart_ios_unit_tests_job(id: &'static str, description: &'static str) -> JobSp
         guest_command: GuestCommand::ShellCommand {
             command: concat!(
                 "set -euo pipefail; ",
-                "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
                 "rm -rf ios/build ios/build-logs; ",
-                "./tools/ios-sim-ensure >/tmp/pikaci-ios-sim-ensure.log; ",
-                "udid=\"$($simctl list devices | awk -F '[()]' '/Pika iPhone 15/ {print $2; exit}')\"; ",
+                "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
+                "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
                 "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
                 "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
                 "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
@@ -856,10 +901,9 @@ fn tart_ios_ui_test_job(id: &'static str, description: &'static str) -> JobSpec 
         guest_command: GuestCommand::ShellCommand {
             command: concat!(
                 "set -euo pipefail; ",
-                "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
                 "rm -rf ios/build ios/build-logs; ",
-                "./tools/ios-sim-ensure >/tmp/pikaci-ios-sim-ensure.log; ",
-                "udid=\"$($simctl list devices | awk -F '[()]' '/Pika iPhone 15/ {print $2; exit}')\"; ",
+                "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
+                "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
                 "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
                 "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
                 "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
@@ -891,10 +935,9 @@ fn tart_ios_ui_note_to_self_job(id: &'static str, description: &'static str) -> 
         guest_command: GuestCommand::ShellCommand {
             command: concat!(
                 "set -euo pipefail; ",
-                "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
                 "rm -rf ios/build ios/build-logs; ",
-                "./tools/ios-sim-ensure >/tmp/pikaci-ios-sim-ensure.log; ",
-                "udid=\"$($simctl list devices | awk -F '[()]' '/Pika iPhone 15/ {print $2; exit}')\"; ",
+                "./tools/ios-sim-ensure | tee /tmp/pikaci-ios-sim-ensure.log >/dev/null; ",
+                "udid=\"$(sed -n 's/^ok: ios simulator ready (udid=\\(.*\\))$/\\1/p' /tmp/pikaci-ios-sim-ensure.log)\"; ",
                 "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
                 "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
                 "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
@@ -911,6 +954,26 @@ fn tart_ios_ui_note_to_self_job(id: &'static str, description: &'static str) -> 
                 "PIKA_IOS_URL_SCHEME=\"${PIKA_IOS_URL_SCHEME:-pika}\" ",
                 "-only-testing:PikaUITests/PikaUITests/testCreateAccount_noteToSelf_sendMessage_and_logout ",
                 "-skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong",
+            ),
+        },
+    }
+}
+
+fn tart_desktop_package_tests_job(id: &'static str, description: &'static str) -> JobSpec {
+    JobSpec {
+        id,
+        description,
+        timeout_secs: 7200,
+        writable_workspace: false,
+        guest_command: GuestCommand::ShellCommand {
+            command: concat!(
+                "set -euo pipefail; ",
+                "sdkroot=\"$(xcrun --sdk macosx --show-sdk-path)\"; ",
+                "export LIBRARY_PATH=\"$sdkroot/usr/lib\"; ",
+                "export LDFLAGS=\"-isysroot $sdkroot -L$sdkroot/usr/lib\"; ",
+                "export CARGO_TARGET_DIR=\"$HOME/pikaci-target/pika-desktop\"; ",
+                "mkdir -p \"$CARGO_TARGET_DIR\"; ",
+                "./tools/cargo-with-xcode test -p pika-desktop -- --nocapture",
             ),
         },
     }
