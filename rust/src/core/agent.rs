@@ -364,6 +364,33 @@ async fn run_agent_flow(
     Err(AgentFlowError::Timeout)
 }
 
+pub(super) fn provisioning_status_message(
+    phase: &crate::state::AgentProvisioningPhase,
+    poll_attempt: Option<u32>,
+) -> String {
+    match phase {
+        crate::state::AgentProvisioningPhase::Ensuring => "Requesting agent...".to_string(),
+        crate::state::AgentProvisioningPhase::Provisioning => {
+            if let Some(attempt) = poll_attempt {
+                format!(
+                    "Starting microVM... (attempt {}/{})",
+                    attempt, AGENT_POLL_MAX_ATTEMPTS
+                )
+            } else {
+                "Starting microVM...".to_string()
+            }
+        }
+        crate::state::AgentProvisioningPhase::Recovering => "Recovering agent...".to_string(),
+        crate::state::AgentProvisioningPhase::PublishingKeyPackage => {
+            "Publishing key package...".to_string()
+        }
+        crate::state::AgentProvisioningPhase::CreatingChat => {
+            "Creating encrypted chat...".to_string()
+        }
+        crate::state::AgentProvisioningPhase::Error => "Error".to_string(),
+    }
+}
+
 impl AppCore {
     pub(super) fn invalidate_agent_flow(&mut self) {
         self.agent_flow_token = self.agent_flow_token.wrapping_add(1);
@@ -546,32 +573,11 @@ impl AppCore {
             return;
         }
 
-        let status_message = match &phase {
-            crate::state::AgentProvisioningPhase::Ensuring => "Requesting agent...".to_string(),
-            crate::state::AgentProvisioningPhase::Provisioning => {
-                if let Some(attempt) = poll_attempt {
-                    format!(
-                        "Starting microVM... (attempt {}/{})",
-                        attempt, AGENT_POLL_MAX_ATTEMPTS
-                    )
-                } else {
-                    "Starting microVM...".to_string()
-                }
-            }
-            crate::state::AgentProvisioningPhase::Recovering => "Recovering agent...".to_string(),
-            crate::state::AgentProvisioningPhase::PublishingKeyPackage => {
-                "Publishing key package...".to_string()
-            }
-            crate::state::AgentProvisioningPhase::CreatingChat => {
-                "Creating encrypted chat...".to_string()
-            }
-            crate::state::AgentProvisioningPhase::Error => "Error".to_string(),
-        };
-
         let elapsed_secs = self
             .agent_flow_start
             .map(|start| start.elapsed().as_secs() as u32)
             .unwrap_or(0);
+        let status_message = provisioning_status_message(&phase, poll_attempt);
 
         self.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
             phase,
@@ -621,11 +627,7 @@ impl AppCore {
 
         // Show error on the provisioning screen instead of a toast.
         let error_message = error.unwrap_or_else(|| "Agent flow failed".to_string());
-        if let Some(ref mut prov) = self.state.agent_provisioning {
-            prov.phase = crate::state::AgentProvisioningPhase::Error;
-            prov.status_message = error_message;
-        }
-        self.emit_state();
+        self.set_agent_provisioning_error(error_message);
     }
 
     fn open_or_create_direct_chat_for_agent(&mut self, peer_key: &str) -> Result<(), String> {

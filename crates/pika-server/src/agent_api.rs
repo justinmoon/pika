@@ -222,6 +222,15 @@ fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentAp
     })
 }
 
+fn json_response(
+    row: AgentInstance,
+    request_id: &str,
+) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    Ok(Json(map_row_to_response(row).map_err(|err| {
+        err.with_request_id(request_id.to_string())
+    })?))
+}
+
 fn phase_from_spawner_status(status: &str) -> &'static str {
     match status {
         "running" => AGENT_PHASE_READY,
@@ -416,6 +425,23 @@ async fn provision_agent_for_owner(
     Ok(updated)
 }
 
+async fn reprovision_agent_response(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    let reprovisioned = provision_agent_for_owner(state, owner_npub, request_id)
+        .await
+        .map_err(|err| match err.code {
+            AgentApiErrorCode::AgentExists => {
+                AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+                    .with_request_id(request_id.to_string())
+            }
+            _ => err,
+        })?;
+    json_response(reprovisioned, request_id)
+}
+
 pub async fn ensure_agent(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
@@ -441,10 +467,7 @@ pub async fn ensure_agent(
 
     Ok((
         StatusCode::ACCEPTED,
-        Json(
-            map_row_to_response(updated)
-                .map_err(|err| err.with_request_id(request_context.request_id.clone()))?,
-        ),
+        json_response(updated, &request_context.request_id)?,
     ))
 }
 
@@ -479,9 +502,7 @@ pub async fn get_my_agent(
         }
         None => active,
     };
-    Ok(Json(map_row_to_response(normalized).map_err(|err| {
-        err.with_request_id(request_context.request_id.clone())
-    })?))
+    json_response(normalized, &request_context.request_id)
 }
 
 pub async fn recover_my_agent(
@@ -511,19 +532,12 @@ pub async fn recover_my_agent(
         prepare_agent_for_reprovision(&mut conn, &active)
             .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
         drop(conn);
-        let reprovisioned =
-            provision_agent_for_owner(&state, &requester.owner_npub, &request_context.request_id)
-                .await
-                .map_err(|err| match err.code {
-                    AgentApiErrorCode::AgentExists => {
-                        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-                            .with_request_id(request_context.request_id.clone())
-                    }
-                    _ => err,
-                })?;
-        return Ok(Json(map_row_to_response(reprovisioned).map_err(|err| {
-            err.with_request_id(request_context.request_id.clone())
-        })?));
+        return reprovision_agent_response(
+            &state,
+            &requester.owner_npub,
+            &request_context.request_id,
+        )
+        .await;
     }
     let vm_id = active.vm_id.clone().ok_or_else(|| {
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
@@ -552,22 +566,12 @@ pub async fn recover_my_agent(
             prepare_agent_for_reprovision(&mut conn, &active)
                 .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
             drop(conn);
-            let reprovisioned = provision_agent_for_owner(
+            return reprovision_agent_response(
                 &state,
                 &requester.owner_npub,
                 &request_context.request_id,
             )
-            .await
-            .map_err(|err| match err.code {
-                AgentApiErrorCode::AgentExists => {
-                    AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-                        .with_request_id(request_context.request_id.clone())
-                }
-                _ => err,
-            })?;
-            return Ok(Json(map_row_to_response(reprovisioned).map_err(|err| {
-                err.with_request_id(request_context.request_id.clone())
-            })?));
+            .await;
         }
         Err(err) => {
             tracing::error!(
@@ -593,9 +597,7 @@ pub async fn recover_my_agent(
         AgentApiError::from_code(AgentApiErrorCode::Internal)
             .with_request_id(request_context.request_id.clone())
     })?;
-    Ok(Json(map_row_to_response(updated).map_err(|err| {
-        err.with_request_id(request_context.request_id.clone())
-    })?))
+    json_response(updated, &request_context.request_id)
 }
 
 pub fn agent_api_healthcheck() -> anyhow::Result<()> {

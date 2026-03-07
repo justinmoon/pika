@@ -2963,6 +2963,29 @@ impl AppCore {
         self.direct_chat_creation_token
     }
 
+    fn set_agent_provisioning_phase_if_visible(
+        &mut self,
+        phase: crate::state::AgentProvisioningPhase,
+    ) {
+        if let Some(ref mut prov) = self.state.agent_provisioning {
+            prov.phase = phase.clone();
+            prov.status_message = crate::core::agent::provisioning_status_message(&phase, None);
+            prov.poll_attempt = None;
+            prov.poll_max = None;
+            self.emit_state();
+        }
+    }
+
+    fn set_agent_provisioning_error(&mut self, message: String) {
+        if let Some(ref mut prov) = self.state.agent_provisioning {
+            prov.phase = crate::state::AgentProvisioningPhase::Error;
+            prov.status_message = message;
+            prov.poll_attempt = None;
+            prov.poll_max = None;
+            self.emit_state();
+        }
+    }
+
     fn clear_pending_direct_chat_creation(&mut self, clear_busy: bool) {
         self.invalidate_direct_chat_creation();
         self.pending_direct_chat_creation = None;
@@ -2979,10 +3002,8 @@ impl AppCore {
         self.invalidate_direct_chat_creation();
         self.pending_direct_chat_creation = None;
         self.set_busy(|b| b.creating_chat = false);
-        if let Some(ref mut prov) = self.state.agent_provisioning {
-            prov.phase = crate::state::AgentProvisioningPhase::Error;
-            prov.status_message = message;
-            self.emit_state();
+        if self.state.agent_provisioning.is_some() {
+            self.set_agent_provisioning_error(message);
         } else {
             self.toast(message);
         }
@@ -3747,12 +3768,9 @@ impl AppCore {
         self.local_key_package_published = ok;
         if ok {
             if let Some(pending) = self.pending_direct_chat_creation.take() {
-                // Advance provisioning phase if the agent flow is still showing.
-                if let Some(ref mut prov) = self.state.agent_provisioning {
-                    prov.phase = crate::state::AgentProvisioningPhase::CreatingChat;
-                    prov.status_message = "Creating encrypted chat...".to_string();
-                    self.emit_state();
-                }
+                self.set_agent_provisioning_phase_if_visible(
+                    crate::state::AgentProvisioningPhase::CreatingChat,
+                );
                 self.begin_direct_chat_creation(pending.peer_pubkey, pending.token);
             }
             return;
@@ -5263,11 +5281,9 @@ impl AppCore {
                 }
 
                 if !self.local_key_package_published {
-                    // Update the agent provisioning screen if it is still visible.
-                    if let Some(ref mut prov) = self.state.agent_provisioning {
-                        prov.phase = crate::state::AgentProvisioningPhase::PublishingKeyPackage;
-                        prov.status_message = "Publishing key package...".to_string();
-                    }
+                    self.set_agent_provisioning_phase_if_visible(
+                        crate::state::AgentProvisioningPhase::PublishingKeyPackage,
+                    );
                     let token = self.next_direct_chat_creation_token();
                     self.pending_direct_chat_creation =
                         Some(PendingDirectChatCreation { token, peer_pubkey });
@@ -5276,12 +5292,9 @@ impl AppCore {
                     return;
                 }
 
-                // Update the agent provisioning screen if it is still visible.
-                if let Some(ref mut prov) = self.state.agent_provisioning {
-                    prov.phase = crate::state::AgentProvisioningPhase::CreatingChat;
-                    prov.status_message = "Creating encrypted chat...".to_string();
-                    self.emit_state();
-                }
+                self.set_agent_provisioning_phase_if_visible(
+                    crate::state::AgentProvisioningPhase::CreatingChat,
+                );
                 let token = self.next_direct_chat_creation_token();
                 self.begin_direct_chat_creation(peer_pubkey, token);
             }
@@ -7763,6 +7776,8 @@ mod tests {
                 .expect("provisioning should remain visible");
             assert_eq!(prov.phase, crate::state::AgentProvisioningPhase::Error);
             assert_eq!(prov.status_message, "Key package publish failed: boom");
+            assert_eq!(prov.poll_attempt, None);
+            assert_eq!(prov.poll_max, None);
             assert!(core.state.toast.is_none());
         }
 
@@ -7819,6 +7834,8 @@ mod tests {
                 .expect("provisioning should remain visible");
             assert_eq!(prov.phase, crate::state::AgentProvisioningPhase::Error);
             assert_eq!(prov.status_message, "Fetch peer key package failed: boom");
+            assert_eq!(prov.poll_attempt, None);
+            assert_eq!(prov.poll_max, None);
             assert!(core.state.toast.is_none());
         }
 
