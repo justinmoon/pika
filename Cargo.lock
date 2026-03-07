@@ -6328,6 +6328,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pikaci"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "pikahut"
 version = "0.1.0"
 dependencies = [

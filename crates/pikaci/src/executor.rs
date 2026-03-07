@@ -1,0 +1,558 @@
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, anyhow, bail};
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+
+use crate::model::{GuestCommand, JobOutcome, JobSpec, RunStatus};
+
+#[derive(Clone, Debug)]
+pub struct HostContext {
+    pub workspace_snapshot_dir: PathBuf,
+    pub job_dir: PathBuf,
+    pub host_log_path: PathBuf,
+    pub guest_log_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct GuestResult {
+    status: String,
+    exit_code: i32,
+    finished_at: String,
+    message: Option<String>,
+}
+
+pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
+    ensure_supported_host()?;
+    ensure_linux_builder()?;
+
+    let vm_dir = ctx.job_dir.join("vm");
+    let artifacts_dir = ctx.job_dir.join("artifacts");
+    fs::create_dir_all(&vm_dir).with_context(|| format!("create {}", vm_dir.display()))?;
+    fs::create_dir_all(&artifacts_dir)
+        .with_context(|| format!("create {}", artifacts_dir.display()))?;
+    ensure_file(&ctx.host_log_path)?;
+    ensure_file(&ctx.guest_log_path)?;
+
+    let flake_dir = vm_dir.join("flake");
+    fs::create_dir_all(&flake_dir).with_context(|| format!("create {}", flake_dir.display()))?;
+    let socket_path = vfkit_socket_path(job, &artifacts_dir);
+    if socket_path.exists() {
+        fs::remove_file(&socket_path)
+            .with_context(|| format!("remove stale {}", socket_path.display()))?;
+    }
+    let flake_nix = render_guest_flake(
+        job,
+        &ctx.workspace_snapshot_dir,
+        &artifacts_dir,
+        &socket_path,
+    )?;
+    fs::write(flake_dir.join("flake.nix"), flake_nix)
+        .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
+
+    let runner_link = vm_dir.join("runner");
+    if runner_link.exists() {
+        let _ = fs::remove_file(&runner_link);
+    }
+
+    run_command_to_log(
+        Command::new("nix")
+            .arg("build")
+            .arg("--accept-flake-config")
+            .arg("-o")
+            .arg(&runner_link)
+            .arg(format!(
+                "path:{}#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner",
+                flake_dir.display()
+            )),
+        &ctx.host_log_path,
+        "[pikaci] build runner",
+    )?;
+
+    let runner_dir = fs::read_link(&runner_link)
+        .with_context(|| format!("resolve {}", runner_link.display()))?;
+    let runner_bin = runner_dir.join("bin/microvm-run");
+    if !runner_bin.exists() {
+        bail!("missing runner binary: {}", runner_bin.display());
+    }
+
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] starting vm for job `{}` at {}",
+            job.id,
+            Utc::now().to_rfc3339()
+        ),
+    )?;
+
+    let mut child = Command::new("/usr/bin/script")
+        .arg("-q")
+        .arg("/dev/null")
+        .arg(&runner_bin)
+        .current_dir(&vm_dir)
+        .env("NIX_CONFIG", "experimental-features = nix-command flakes")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawn {} via /usr/bin/script", runner_bin.display()))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("runner stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("runner stderr unavailable"))?;
+
+    let log_file = Arc::new(Mutex::new(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&ctx.host_log_path)
+            .with_context(|| format!("open {}", ctx.host_log_path.display()))?,
+    ));
+    let stdout_handle = spawn_log_pump(stdout, Arc::clone(&log_file), "[runner:stdout]");
+    let stderr_handle = spawn_log_pump(stderr, Arc::clone(&log_file), "[runner:stderr]");
+
+    let deadline = Instant::now() + Duration::from_secs(job.timeout_secs);
+    let status = loop {
+        if let Some(status) = child.try_wait().context("poll microvm-run")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            append_line(
+                &ctx.host_log_path,
+                &format!(
+                    "[pikaci] timeout after {}s, killing runner",
+                    job.timeout_secs
+                ),
+            )?;
+            child.kill().context("kill timed out microvm-run")?;
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            return Ok(JobOutcome {
+                status: RunStatus::Failed,
+                exit_code: None,
+                message: format!("timed out after {}s", job.timeout_secs),
+            });
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] vm exited with {:?} at {}",
+            status.code(),
+            Utc::now().to_rfc3339()
+        ),
+    )?;
+
+    let result_path = artifacts_dir.join("result.json");
+    let guest_result = load_guest_result(&result_path)?;
+    let status = match guest_result.status.as_str() {
+        "passed" => RunStatus::Passed,
+        _ => RunStatus::Failed,
+    };
+    Ok(JobOutcome {
+        status,
+        exit_code: Some(guest_result.exit_code),
+        message: guest_result
+            .message
+            .unwrap_or_else(|| format!("guest finished with {}", guest_result.status)),
+    })
+}
+
+fn ensure_supported_host() -> anyhow::Result<()> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    if os != "macos" {
+        bail!("pikaci Wave 1 only supports macOS hosts; found {os}");
+    }
+    if arch != "aarch64" {
+        bail!("pikaci Wave 1 only supports Apple Silicon; found {arch}");
+    }
+    Ok(())
+}
+
+fn ensure_linux_builder() -> anyhow::Result<()> {
+    let builders = command_stdout(
+        Command::new("nix")
+            .arg("config")
+            .arg("show")
+            .arg("builders"),
+    )
+    .unwrap_or_default();
+    let extra_platforms = command_stdout(
+        Command::new("nix")
+            .arg("config")
+            .arg("show")
+            .arg("extra-platforms"),
+    )
+    .unwrap_or_default();
+    if builders_supports_aarch64_linux(&builders)
+        || setting_contains(&extra_platforms, "aarch64-linux")
+    {
+        return Ok(());
+    }
+
+    bail!(
+        "no aarch64-linux builder available for this Apple Silicon host; configure a local linux-builder or remote aarch64-linux builder before running pikaci. builders=`{}` extra-platforms=`{}`",
+        builders.trim(),
+        extra_platforms.trim()
+    )
+}
+
+fn ensure_file(path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let _ = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    Ok(())
+}
+
+fn append_line(path: &Path, line: &str) -> anyhow::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    writeln!(file, "{line}").with_context(|| format!("write {}", path.display()))
+}
+
+fn spawn_log_pump<R>(
+    reader: R,
+    file: Arc<Mutex<File>>,
+    prefix: &'static str,
+) -> thread::JoinHandle<()>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                continue;
+            };
+            if let Ok(mut file) = file.lock() {
+                let _ = writeln!(file, "{prefix} {line}");
+            }
+        }
+    })
+}
+
+fn run_command_to_log(command: &mut Command, log_path: &Path, label: &str) -> anyhow::Result<()> {
+    append_line(log_path, &format!("{label}: {:?}", command))?;
+    let output = command.output().with_context(|| format!("run {label}"))?;
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .with_context(|| format!("open {}", log_path.display()))?;
+        file.write_all(&output.stdout)
+            .with_context(|| format!("write stdout to {}", log_path.display()))?;
+        file.write_all(&output.stderr)
+            .with_context(|| format!("write stderr to {}", log_path.display()))?;
+    }
+    if !output.status.success() {
+        bail!("{label} failed with {:?}", output.status.code());
+    }
+    Ok(())
+}
+
+fn load_guest_result(path: &Path) -> anyhow::Result<GuestResult> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))
+}
+
+fn command_stdout(command: &mut Command) -> Option<String> {
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|stdout| stdout.trim().to_string())
+}
+
+fn builders_supports_aarch64_linux(raw: &str) -> bool {
+    if let Some(path) = raw.strip_prefix('@')
+        && let Ok(contents) = fs::read_to_string(path.trim())
+    {
+        return builders_supports_aarch64_linux(&contents);
+    }
+    setting_contains(raw, "aarch64-linux")
+}
+
+fn setting_contains(raw: &str, needle: &str) -> bool {
+    raw.split_whitespace().any(|token| token == needle)
+}
+
+fn render_guest_flake(
+    job: &JobSpec,
+    snapshot_dir: &Path,
+    artifacts_dir: &Path,
+    socket_path: &Path,
+) -> anyhow::Result<String> {
+    let (package, test_name) = match job.guest_command {
+        GuestCommand::ExactCargoTest { package, test_name } => (package, test_name),
+    };
+    let snapshot_dir = nix_escape(&snapshot_dir.display().to_string());
+    let artifacts_dir = nix_escape(&artifacts_dir.display().to_string());
+    let socket_path = nix_escape(&socket_path.display().to_string());
+    let cargo_package = nix_escape(package);
+    let cargo_test_name = nix_escape(test_name);
+    let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
+    let timeout_secs = job.timeout_secs;
+
+    Ok(format!(
+        r#"{{
+  description = "pikaci wave1 guest";
+
+  inputs.pika.url = "path:{snapshot_dir}";
+  inputs.nixpkgs.follows = "pika/nixpkgs";
+  inputs.microvm.follows = "pika/microvm";
+
+  outputs = {{ self, nixpkgs, microvm, pika }}: {{
+    nixosConfigurations.pikaci-wave1 = nixpkgs.lib.nixosSystem {{
+      system = "aarch64-linux";
+      modules = [
+        microvm.nixosModules.microvm
+        ({{
+          lib,
+          pkgs,
+          ...
+        }}:
+        let
+          hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;
+        in {{
+          system.stateVersion = "24.11";
+          boot.initrd.systemd.enable = lib.mkForce false;
+
+          services.getty.autologinUser = "root";
+          nix.settings.experimental-features = [ "nix-command" "flakes" ];
+          environment.systemPackages = with pkgs; [
+            bash
+            cargo
+            cacert
+            coreutils
+            findutils
+            gcc
+            gnugrep
+            gnused
+            git
+            nix
+            pkg-config
+            rustc
+          ];
+
+          systemd.services.pikaci-job = {{
+            description = "Run pikaci wave1 guest job";
+            wantedBy = [ "multi-user.target" ];
+            after = [ "network-online.target" ];
+            wants = [ "network-online.target" ];
+            path = with pkgs; [
+              bash
+              cargo
+              cacert
+              coreutils
+              findutils
+              gcc
+              gnugrep
+              gnused
+              git
+              nix
+              pkg-config
+              rustc
+            ];
+            serviceConfig = {{
+              Type = "oneshot";
+            }};
+            script = ''
+              set -euo pipefail
+              mkdir -p /artifacts
+              exec > >(tee -a /artifacts/guest.log) 2>&1
+
+              echo "[pikaci] guest booted at $(date -Iseconds)"
+              cd /workspace/snapshot
+              export HOME=/root
+              export CARGO_TERM_COLOR=never
+              export CARGO_HOME=/artifacts/cargo-home
+              export CARGO_TARGET_DIR=/artifacts/target
+              export SSL_CERT_FILE="{cacert_bundle}"
+              export NIX_SSL_CERT_FILE="{cacert_bundle}"
+              mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
+
+              set +e
+              timeout {timeout_secs}s cargo test -p "{cargo_package}" "{cargo_test_name}" -- --exact --nocapture
+              code=$?
+              set -e
+
+              status="passed"
+              message="test passed"
+              if [ "$code" -ne 0 ]; then
+                status="failed"
+                message="test command exited with $code"
+              fi
+
+              cat > /artifacts/result.json <<EOF
+              {{
+                "status": "$status",
+                "exit_code": $code,
+                "finished_at": "$(date -Iseconds)",
+                "message": "$message"
+              }}
+EOF
+
+              sync || true
+              systemctl poweroff --force --force || poweroff -f || true
+            '';
+          }};
+
+          microvm = {{
+            hypervisor = "vfkit";
+            vcpu = 2;
+            mem = 4096;
+            vmHostPackages = hostPkgs;
+            virtiofsd.package = hostPkgs.writeShellScriptBin "virtiofsd-unused" ''
+              echo "vfkit uses built-in virtiofs on macOS" >&2
+              exit 1
+            '';
+            socket = "{socket_path}";
+            interfaces = [ {{
+              type = "user";
+              id = "pikaci";
+              mac = "02:00:00:01:02:03";
+            }} ];
+            shares = [
+              {{
+                proto = "virtiofs";
+                tag = "ro-store";
+                source = "/nix/store";
+                mountPoint = "/nix/.ro-store";
+                readOnly = true;
+              }}
+              {{
+                proto = "virtiofs";
+                tag = "snapshot";
+                source = "{snapshot_dir}";
+                mountPoint = "/workspace/snapshot";
+                readOnly = true;
+              }}
+              {{
+                proto = "virtiofs";
+                tag = "artifacts";
+                source = "{artifacts_dir}";
+                mountPoint = "/artifacts";
+                readOnly = false;
+              }}
+            ];
+          }};
+        }})
+      ];
+    }};
+  }};
+}}
+"#
+    ))
+}
+
+fn vfkit_socket_path(job: &JobSpec, artifacts_dir: &Path) -> PathBuf {
+    let run_id = artifacts_dir
+        .ancestors()
+        .nth(3)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or("run");
+    let run_stub: String = run_id.chars().take(12).collect();
+    PathBuf::from(format!("/tmp/pikaci-{run_stub}-{}.sock", job.id))
+}
+
+fn nix_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace("${", "\\${")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{builders_supports_aarch64_linux, render_guest_flake, vfkit_socket_path};
+    use crate::model::{GuestCommand, JobSpec};
+
+    #[test]
+    fn guest_flake_targets_vfkit_exact_test_beachhead() {
+        let spec = JobSpec {
+            id: "beachhead",
+            description: "test",
+            timeout_secs: 120,
+            guest_command: GuestCommand::ExactCargoTest {
+                package: "pika-agent-control-plane",
+                test_name: "tests::command_envelope_round_trips",
+            },
+        };
+        let flake = render_guest_flake(
+            &spec,
+            Path::new("/tmp/pikaci/snapshot"),
+            Path::new("/tmp/pikaci/jobs/beachhead/artifacts"),
+            Path::new("/tmp/pikaci-beachhead.sock"),
+        )
+        .expect("render flake");
+
+        assert!(flake.contains("hypervisor = \"vfkit\";"));
+        assert!(flake.contains("system = \"aarch64-linux\";"));
+        assert!(flake.contains("hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;"));
+        assert!(flake.contains("vmHostPackages = hostPkgs;"));
+        assert!(flake.contains("cargo test -p \"pika-agent-control-plane\" \"tests::command_envelope_round_trips\" -- --exact --nocapture"));
+        assert!(flake.contains("source = \"/tmp/pikaci/snapshot\";"));
+        assert!(flake.contains("source = \"/tmp/pikaci/jobs/beachhead/artifacts\";"));
+        assert!(flake.contains("socket = \"/tmp/pikaci-beachhead.sock\";"));
+    }
+
+    #[test]
+    fn builder_parser_detects_supported_builder_lines() {
+        assert!(builders_supports_aarch64_linux(
+            "ssh://builder aarch64-linux /tmp/key 8 1 benchmark - -"
+        ));
+        assert!(!builders_supports_aarch64_linux(
+            "ssh://builder x86_64-linux /tmp/key 8 1 benchmark - -"
+        ));
+    }
+
+    #[test]
+    fn socket_path_uses_short_tmp_location() {
+        let spec = JobSpec {
+            id: "beachhead",
+            description: "test",
+            timeout_secs: 120,
+            guest_command: GuestCommand::ExactCargoTest {
+                package: "pika-agent-control-plane",
+                test_name: "tests::command_envelope_round_trips",
+            },
+        };
+
+        let path = vfkit_socket_path(
+            &spec,
+            Path::new("/tmp/.pikaci/runs/20260307T024254Z-5d11d4e8/jobs/beachhead/artifacts"),
+        );
+
+        assert_eq!(path, Path::new("/tmp/pikaci-20260307T024-beachhead.sock"));
+    }
+}

@@ -84,3 +84,4 @@ cmd/pika-relay/pika-relay
 .pikahut/
 .local-backend/
 .pika-fixture/
+.pikaci/
