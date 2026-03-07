@@ -29,12 +29,23 @@ pub struct RunOptions {
 }
 
 pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord> {
+    run_jobs(std::slice::from_ref(job), options)
+}
+
+pub fn run_jobs(jobs: &[JobSpec], options: &RunOptions) -> anyhow::Result<RunRecord> {
     let run_id = new_run_id();
     let created_at = Utc::now().to_rfc3339();
     let run_dir = options.state_root.join("runs").join(&run_id);
     let snapshot_dir = run_dir.join("snapshot");
     let jobs_dir = run_dir.join("jobs");
+    let cache_dir = options.state_root.join("cache");
+    let shared_cargo_home_dir = cache_dir.join("cargo-home");
+    let shared_target_dir = cache_dir.join("target");
     fs::create_dir_all(&jobs_dir).with_context(|| format!("create {}", jobs_dir.display()))?;
+    fs::create_dir_all(&shared_cargo_home_dir)
+        .with_context(|| format!("create {}", shared_cargo_home_dir.display()))?;
+    fs::create_dir_all(&shared_target_dir)
+        .with_context(|| format!("create {}", shared_target_dir.display()))?;
 
     let snapshot = create_snapshot(&options.source_root, &snapshot_dir, &created_at)?;
     let mut run_record = RunRecord {
@@ -50,6 +61,46 @@ pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord>
     };
     write_run_record(&run_dir, &run_record)?;
 
+    let mut run_failed = false;
+    for job in jobs {
+        let job_record = run_one_job(
+            job,
+            &snapshot_dir,
+            &jobs_dir,
+            &shared_cargo_home_dir,
+            &shared_target_dir,
+        )?;
+        if job_record.status == RunStatus::Failed {
+            run_failed = true;
+        }
+        run_record.jobs.push(job_record);
+        run_record.status = if run_failed {
+            RunStatus::Failed
+        } else {
+            RunStatus::Running
+        };
+        write_run_record(&run_dir, &run_record)?;
+        if run_failed {
+            break;
+        }
+    }
+    run_record.status = if run_failed {
+        RunStatus::Failed
+    } else {
+        RunStatus::Passed
+    };
+    run_record.finished_at = Some(Utc::now().to_rfc3339());
+    write_run_record(&run_dir, &run_record)?;
+    Ok(run_record)
+}
+
+fn run_one_job(
+    job: &JobSpec,
+    snapshot_dir: &Path,
+    jobs_dir: &Path,
+    shared_cargo_home_dir: &Path,
+    shared_target_dir: &Path,
+) -> anyhow::Result<JobRecord> {
     let job_dir = jobs_dir.join(job.id);
     let host_log_path = job_dir.join("host.log");
     let guest_log_path = job_dir.join("artifacts/guest.log");
@@ -72,10 +123,12 @@ pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord>
     write_job_record(&job_dir, &job_record)?;
 
     let ctx = HostContext {
-        workspace_snapshot_dir: snapshot_dir,
+        workspace_snapshot_dir: snapshot_dir.to_path_buf(),
         job_dir: job_dir.clone(),
         host_log_path,
         guest_log_path,
+        shared_cargo_home_dir: shared_cargo_home_dir.to_path_buf(),
+        shared_target_dir: shared_target_dir.to_path_buf(),
     };
     let outcome = run_vfkit_job(job, &ctx);
 
@@ -83,23 +136,18 @@ pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord>
     match outcome {
         Ok(outcome) => {
             job_record.status = outcome.status;
-            job_record.finished_at = Some(finished_at.clone());
+            job_record.finished_at = Some(finished_at);
             job_record.exit_code = outcome.exit_code;
             job_record.message = Some(outcome.message);
         }
         Err(err) => {
             job_record.status = RunStatus::Failed;
-            job_record.finished_at = Some(finished_at.clone());
+            job_record.finished_at = Some(finished_at);
             job_record.message = Some(format!("{err:#}"));
         }
     }
     write_job_record(&job_dir, &job_record)?;
-
-    run_record.status = job_record.status;
-    run_record.finished_at = Some(finished_at);
-    run_record.jobs.push(job_record);
-    write_run_record(&run_dir, &run_record)?;
-    Ok(run_record)
+    Ok(job_record)
 }
 
 pub fn list_runs(state_root: &Path) -> anyhow::Result<Vec<RunRecord>> {

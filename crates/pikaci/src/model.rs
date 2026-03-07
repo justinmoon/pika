@@ -9,6 +9,13 @@ pub enum GuestCommand {
     PackageUnitTests {
         package: &'static str,
     },
+    PackageTests {
+        package: &'static str,
+    },
+    FilteredCargoTests {
+        package: &'static str,
+        filter: &'static str,
+    },
 }
 
 #[derive(Clone, Debug)]

@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use pikaci::{GuestCommand, JobSpec, LogKind, RunOptions, list_runs, load_logs, run_job};
+use pikaci::{GuestCommand, JobSpec, LogKind, RunOptions, list_runs, load_logs, run_jobs};
 
 #[derive(Parser, Debug)]
 #[command(name = "pikaci")]
@@ -43,26 +43,24 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Run { job } => {
-            let spec = job_spec(&job)?;
-            let run = run_job(&spec, &options)?;
-            let job = run
-                .jobs
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("run did not record any jobs"))?;
-            println!(
-                "{} {} {}",
-                run.run_id,
-                job.id,
-                match job.status {
-                    pikaci::RunStatus::Passed => "passed",
-                    pikaci::RunStatus::Failed => "failed",
-                    pikaci::RunStatus::Running => "running",
+            let specs = run_spec(&job)?;
+            let run = run_jobs(specs.as_slice(), &options)?;
+            for job in &run.jobs {
+                println!(
+                    "{} {} {}",
+                    run.run_id,
+                    job.id,
+                    match job.status {
+                        pikaci::RunStatus::Passed => "passed",
+                        pikaci::RunStatus::Failed => "failed",
+                        pikaci::RunStatus::Running => "running",
+                    }
+                );
+                if let Some(message) = &job.message {
+                    eprintln!("{message}");
                 }
-            );
-            if let Some(message) = &job.message {
-                eprintln!("{message}");
             }
-            if matches!(job.status, pikaci::RunStatus::Failed) {
+            if matches!(run.status, pikaci::RunStatus::Failed) {
                 std::process::exit(1);
             }
         }
@@ -97,9 +95,9 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn job_spec(name: &str) -> anyhow::Result<JobSpec> {
+fn run_spec(name: &str) -> anyhow::Result<Vec<JobSpec>> {
     match name {
-        "beachhead" => Ok(JobSpec {
+        "beachhead" => Ok(vec![JobSpec {
             id: "beachhead",
             description: "Run one tiny exact unit test in a vfkit guest",
             timeout_secs: 1800,
@@ -107,15 +105,77 @@ fn job_spec(name: &str) -> anyhow::Result<JobSpec> {
                 package: "pika-agent-control-plane",
                 test_name: "tests::command_envelope_round_trips",
             },
-        }),
-        "agent-control-plane-unit" => Ok(JobSpec {
+        }]),
+        "agent-control-plane-unit" => Ok(vec![JobSpec {
             id: "agent-control-plane-unit",
             description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
             timeout_secs: 1800,
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
-        }),
+        }]),
+        "agent-microvm-tests" => Ok(vec![JobSpec {
+            id: "agent-microvm-tests",
+            description: "Run pika-agent-microvm tests in a vfkit guest",
+            timeout_secs: 1800,
+            guest_command: GuestCommand::PackageTests {
+                package: "pika-agent-microvm",
+            },
+        }]),
+        "server-agent-api-tests" => Ok(vec![JobSpec {
+            id: "server-agent-api-tests",
+            description: "Run pika-server agent_api tests in a vfkit guest",
+            timeout_secs: 1800,
+            guest_command: GuestCommand::FilteredCargoTests {
+                package: "pika-server",
+                filter: "agent_api::tests",
+            },
+        }]),
+        "core-agent-nip98-test" => Ok(vec![JobSpec {
+            id: "core-agent-nip98-test",
+            description: "Run pika_core NIP-98 signing contract test in a vfkit guest",
+            timeout_secs: 1800,
+            guest_command: GuestCommand::ExactCargoTest {
+                package: "pika_core",
+                test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
+            },
+        }]),
+        "agent-contracts-smoke" => Ok(vec![
+            JobSpec {
+                id: "agent-control-plane-unit",
+                description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+                timeout_secs: 1800,
+                guest_command: GuestCommand::PackageUnitTests {
+                    package: "pika-agent-control-plane",
+                },
+            },
+            JobSpec {
+                id: "agent-microvm-tests",
+                description: "Run pika-agent-microvm tests in a vfkit guest",
+                timeout_secs: 1800,
+                guest_command: GuestCommand::PackageTests {
+                    package: "pika-agent-microvm",
+                },
+            },
+            JobSpec {
+                id: "server-agent-api-tests",
+                description: "Run pika-server agent_api tests in a vfkit guest",
+                timeout_secs: 1800,
+                guest_command: GuestCommand::FilteredCargoTests {
+                    package: "pika-server",
+                    filter: "agent_api::tests",
+                },
+            },
+            JobSpec {
+                id: "core-agent-nip98-test",
+                description: "Run pika_core NIP-98 signing contract test in a vfkit guest",
+                timeout_secs: 1800,
+                guest_command: GuestCommand::ExactCargoTest {
+                    package: "pika_core",
+                    test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
+                },
+            },
+        ]),
         other => bail!("unknown job `{other}`"),
     }
 }

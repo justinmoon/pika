@@ -18,6 +18,8 @@ pub struct HostContext {
     pub job_dir: PathBuf,
     pub host_log_path: PathBuf,
     pub guest_log_path: PathBuf,
+    pub shared_cargo_home_dir: PathBuf,
+    pub shared_target_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -51,6 +53,8 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
         job,
         &ctx.workspace_snapshot_dir,
         &artifacts_dir,
+        &ctx.shared_cargo_home_dir,
+        &ctx.shared_target_dir,
         &socket_path,
     )?;
     fs::write(flake_dir.join("flake.nix"), flake_nix)
@@ -307,6 +311,8 @@ fn render_guest_flake(
     job: &JobSpec,
     snapshot_dir: &Path,
     artifacts_dir: &Path,
+    cargo_home_dir: &Path,
+    target_dir: &Path,
     socket_path: &Path,
 ) -> anyhow::Result<String> {
     let cargo_test_args = match job.guest_command {
@@ -321,9 +327,19 @@ fn render_guest_flake(
                 shell_escape(package)
             )
         }
+        GuestCommand::PackageTests { package } => {
+            format!("cargo test -p {} -- --nocapture", shell_escape(package))
+        }
+        GuestCommand::FilteredCargoTests { package, filter } => format!(
+            "cargo test -p {} -- {} --nocapture",
+            shell_escape(package),
+            shell_escape(filter)
+        ),
     };
     let snapshot_dir = nix_escape(&snapshot_dir.display().to_string());
     let artifacts_dir = nix_escape(&artifacts_dir.display().to_string());
+    let cargo_home_dir = nix_escape(&cargo_home_dir.display().to_string());
+    let target_dir = nix_escape(&target_dir.display().to_string());
     let socket_path = nix_escape(&socket_path.display().to_string());
     let cargo_test_args = nix_escape(&cargo_test_args);
     let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
@@ -349,6 +365,12 @@ fn render_guest_flake(
         }}:
         let
           hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;
+          alsaDev = lib.getDev pkgs.alsa-lib;
+          alsaLib = lib.getLib pkgs.alsa-lib;
+          opensslDev = lib.getDev pkgs.openssl;
+          opensslLib = lib.getLib pkgs.openssl;
+          postgresqlDev = lib.getDev pkgs.postgresql;
+          postgresqlLib = lib.getLib pkgs.postgresql;
         in {{
           system.stateVersion = "24.11";
           boot.initrd.systemd.enable = lib.mkForce false;
@@ -356,6 +378,7 @@ fn render_guest_flake(
           services.getty.autologinUser = "root";
           nix.settings.experimental-features = [ "nix-command" "flakes" ];
           environment.systemPackages = with pkgs; [
+            alsa-lib
             bash
             cargo
             cacert
@@ -366,7 +389,9 @@ fn render_guest_flake(
             gnused
             git
             nix
+            openssl
             pkg-config
+            postgresql
             rustc
           ];
 
@@ -376,6 +401,7 @@ fn render_guest_flake(
             after = [ "network-online.target" ];
             wants = [ "network-online.target" ];
             path = with pkgs; [
+              alsa-lib
               bash
               cargo
               cacert
@@ -401,8 +427,15 @@ fn render_guest_flake(
               cd /workspace/snapshot
               export HOME=/root
               export CARGO_TERM_COLOR=never
-              export CARGO_HOME=/artifacts/cargo-home
-              export CARGO_TARGET_DIR=/artifacts/target
+              export CARGO_HOME=/cargo-home
+              export CARGO_TARGET_DIR=/cargo-target
+              export CARGO_INCREMENTAL=0
+              export OPENSSL_DIR="${{opensslDev}}"
+              export OPENSSL_LIB_DIR="${{opensslLib}}/lib"
+              export OPENSSL_INCLUDE_DIR="${{opensslDev}}/include"
+              export PKG_CONFIG_PATH="${{alsaDev}}/lib/pkgconfig:${{opensslDev}}/lib/pkgconfig:${{postgresqlDev}}/lib/pkgconfig"
+              export LIBRARY_PATH="${{alsaLib}}/lib:${{opensslLib}}/lib:${{postgresqlLib}}/lib"
+              export RUSTFLAGS="''${{RUSTFLAGS-}} -C debuginfo=0 -L native=${{alsaLib}}/lib -L native=${{postgresqlLib}}/lib"
               export SSL_CERT_FILE="{cacert_bundle}"
               export NIX_SSL_CERT_FILE="{cacert_bundle}"
               mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
@@ -470,6 +503,20 @@ EOF
                 mountPoint = "/artifacts";
                 readOnly = false;
               }}
+              {{
+                proto = "virtiofs";
+                tag = "cargo-home";
+                source = "{cargo_home_dir}";
+                mountPoint = "/cargo-home";
+                readOnly = false;
+              }}
+              {{
+                proto = "virtiofs";
+                tag = "cargo-target";
+                source = "{target_dir}";
+                mountPoint = "/cargo-target";
+                readOnly = false;
+              }}
             ];
           }};
         }})
@@ -525,6 +572,8 @@ mod tests {
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             Path::new("/tmp/pikaci/jobs/beachhead/artifacts"),
+            Path::new("/tmp/pikaci/cache/cargo-home"),
+            Path::new("/tmp/pikaci/cache/target"),
             Path::new("/tmp/pikaci-beachhead.sock"),
         )
         .expect("render flake");
@@ -536,6 +585,8 @@ mod tests {
         assert!(flake.contains("cargo test -p 'pika-agent-control-plane' 'tests::command_envelope_round_trips' -- --exact --nocapture"));
         assert!(flake.contains("source = \"/tmp/pikaci/snapshot\";"));
         assert!(flake.contains("source = \"/tmp/pikaci/jobs/beachhead/artifacts\";"));
+        assert!(flake.contains("source = \"/tmp/pikaci/cache/cargo-home\";"));
+        assert!(flake.contains("source = \"/tmp/pikaci/cache/target\";"));
         assert!(flake.contains("socket = \"/tmp/pikaci-beachhead.sock\";"));
     }
 
@@ -583,10 +634,57 @@ mod tests {
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             Path::new("/tmp/pikaci/jobs/agent-control-plane-unit/artifacts"),
+            Path::new("/tmp/pikaci/cache/cargo-home"),
+            Path::new("/tmp/pikaci/cache/target"),
             Path::new("/tmp/pikaci-agent-control-plane-unit.sock"),
         )
         .expect("render flake");
 
         assert!(flake.contains("cargo test -p 'pika-agent-control-plane' --lib -- --nocapture"));
+    }
+
+    #[test]
+    fn guest_flake_can_run_filtered_and_full_package_tests() {
+        let package_spec = JobSpec {
+            id: "agent-microvm-tests",
+            description: "test",
+            timeout_secs: 120,
+            guest_command: GuestCommand::PackageTests {
+                package: "pika-agent-microvm",
+            },
+        };
+        let package_flake = render_guest_flake(
+            &package_spec,
+            Path::new("/tmp/pikaci/snapshot"),
+            Path::new("/tmp/pikaci/jobs/agent-microvm-tests/artifacts"),
+            Path::new("/tmp/pikaci/cache/cargo-home"),
+            Path::new("/tmp/pikaci/cache/target"),
+            Path::new("/tmp/pikaci-agent-microvm-tests.sock"),
+        )
+        .expect("render flake");
+        assert!(package_flake.contains("cargo test -p 'pika-agent-microvm' -- --nocapture"));
+
+        let filtered_spec = JobSpec {
+            id: "server-agent-api-tests",
+            description: "test",
+            timeout_secs: 120,
+            guest_command: GuestCommand::FilteredCargoTests {
+                package: "pika-server",
+                filter: "agent_api::tests",
+            },
+        };
+        let filtered_flake = render_guest_flake(
+            &filtered_spec,
+            Path::new("/tmp/pikaci/snapshot"),
+            Path::new("/tmp/pikaci/jobs/server-agent-api-tests/artifacts"),
+            Path::new("/tmp/pikaci/cache/cargo-home"),
+            Path::new("/tmp/pikaci/cache/target"),
+            Path::new("/tmp/pikaci-server-agent-api-tests.sock"),
+        )
+        .expect("render flake");
+        assert!(
+            filtered_flake
+                .contains("cargo test -p 'pika-server' -- 'agent_api::tests' --nocapture")
+        );
     }
 }
