@@ -1,0 +1,12 @@
+[package]
+name = "pikaci"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
