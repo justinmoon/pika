@@ -316,10 +316,16 @@ impl<'a> CallWorkflowRuntime<'a> {
         session: &CallSessionParams,
         peer_pubkey_hex: &str,
     ) -> Result<CallMediaCryptoContext, String> {
+        let group_epoch = self
+            .mdk
+            .get_group(group.mls_group_id)
+            .map_err(|e| format!("load mls group failed: {e}"))?
+            .ok_or_else(|| "mls group not found".to_string())?
+            .epoch;
         let derive_ctx = CallCryptoDeriveContext {
             mdk: self.mdk,
             mls_group_id: group.mls_group_id,
-            group_epoch: 0,
+            group_epoch,
             call_id,
             session,
             local_pubkey_hex: group.local_pubkey_hex,
@@ -338,6 +344,7 @@ fn has_video_track(session: &CallSessionParams) -> bool {
 mod tests {
     use super::*;
     use crate::call::{CallTrackSpec, derive_relay_auth_token};
+    use crate::membership::MembershipRuntime;
     use crate::open_mdk;
     use mdk_core::prelude::NostrGroupConfigData;
     use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, RelayUrl};
@@ -354,14 +361,16 @@ mod tests {
     }
 
     fn make_group() -> (
+        &'static PikaMdk,
+        &'static PikaMdk,
         GroupId,
         Keys,
         Keys,
         CallSessionParams,
         CallWorkflowRuntime<'static>,
     ) {
-        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
-        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_dir = Box::leak(Box::new(tempfile::tempdir().expect("inviter tempdir")));
+        let invitee_dir = Box::leak(Box::new(tempfile::tempdir().expect("invitee tempdir")));
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
@@ -380,6 +389,9 @@ mod tests {
         let created = inviter_mdk
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
         let welcome_rumor = created
             .welcome_rumors
             .into_iter()
@@ -436,8 +448,11 @@ mod tests {
         .expect("derive relay auth");
         session.relay_auth = relay_auth;
 
+        let leaked_inviter_mdk = Box::leak(Box::new(inviter_mdk));
         let leaked_mdk = Box::leak(Box::new(invitee_mdk));
         (
+            leaked_inviter_mdk,
+            leaked_mdk,
             created.group.mls_group_id,
             inviter_keys,
             invitee_keys,
@@ -448,7 +463,38 @@ mod tests {
 
     #[test]
     fn prepare_accept_incoming_validates_and_derives_media_crypto() {
-        let (group_id, inviter_keys, invitee_keys, session, runtime) = make_group();
+        let (inviter_mdk, invitee_mdk, group_id, inviter_keys, invitee_keys, mut session, runtime) =
+            make_group();
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let peer_keys = Keys::generate();
+        let peer_mdk = open_mdk(peer_dir.path()).expect("open peer mdk");
+        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let prepared_evolution = MembershipRuntime::new(inviter_mdk)
+            .prepare_add_members(&group_id, &[peer_kp])
+            .expect("prepare add member");
+        inviter_mdk
+            .merge_pending_commit(&group_id)
+            .expect("merge pending commit");
+        invitee_mdk
+            .process_message(&prepared_evolution.evolution_event)
+            .expect("process evolution");
+        let group_epoch = invitee_mdk
+            .get_group(&group_id)
+            .expect("load group")
+            .expect("group should exist")
+            .epoch;
+        assert!(group_epoch > 0, "test should exercise non-zero group epoch");
+        session.relay_auth = derive_relay_auth_token(&CallCryptoDeriveContext {
+            mdk: invitee_mdk,
+            mls_group_id: &group_id,
+            group_epoch: 0,
+            call_id: "call-runtime-test",
+            session: &session,
+            local_pubkey_hex: &invitee_keys.public_key().to_hex(),
+            peer_pubkey_hex: &inviter_keys.public_key().to_hex(),
+        })
+        .expect("derive relay auth after evolution");
+
         let incoming = PendingIncomingCall {
             call_id: "call-runtime-test".to_string(),
             target_id: "chat1".to_string(),
@@ -469,12 +515,15 @@ mod tests {
 
         assert_eq!(prepared.incoming.call_id, "call-runtime-test");
         assert!(!prepared.signal.payload_json.is_empty());
+        assert_eq!(prepared.media_crypto.tx_keys.epoch, group_epoch);
+        assert_eq!(prepared.media_crypto.rx_keys.epoch, group_epoch);
         assert!(prepared.media_crypto.video_tx_keys.is_none());
     }
 
     #[test]
     fn handle_inbound_signal_rejects_video_when_policy_disabled() {
-        let (group_id, inviter_keys, invitee_keys, mut session, runtime) = make_group();
+        let (_inviter_mdk, _mdk, group_id, inviter_keys, invitee_keys, mut session, runtime) =
+            make_group();
         session.tracks.push(CallTrackSpec::video0_h264_default());
         let outcome = runtime.handle_inbound_signal(
             InboundSignalContext {
@@ -507,7 +556,8 @@ mod tests {
 
     #[test]
     fn handle_inbound_signal_accepts_matching_pending_outgoing() {
-        let (group_id, inviter_keys, invitee_keys, session, runtime) = make_group();
+        let (_inviter_mdk, _mdk, group_id, inviter_keys, invitee_keys, session, runtime) =
+            make_group();
         let pending = PendingOutgoingCall {
             call_id: "call-runtime-test".to_string(),
             target_id: "chat1".to_string(),
