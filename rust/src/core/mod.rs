@@ -16,7 +16,7 @@ mod relay_publish;
 mod session;
 mod storage;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -56,6 +56,7 @@ use pika_marmot_runtime::call_runtime::{
 use pika_marmot_runtime::conversation::{
     ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate, RuntimeGroupUpdateKind,
 };
+use pika_marmot_runtime::group::{create_group_and_plan_welcome_delivery, PlannedGroupCreation};
 use pika_marmot_runtime::membership::{
     EvolutionPublishStatus, MembershipUpdateResult, PreparedMembershipEvolution,
 };
@@ -3848,36 +3849,42 @@ impl AppCore {
                 admins,
             };
 
-            let group_result =
-                match sess
-                    .mdk
-                    .create_group(&sess.pubkey, vec![kp_event.clone()], config)
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        self.fail_direct_chat_creation(format!("Create group failed: {e}"));
-                        return;
-                    }
-                };
-
-            group_result
+            match create_group_and_plan_welcome_delivery(
+                &sess.pubkey,
+                &sess.mdk,
+                vec![kp_event.clone()],
+                config,
+                &[peer_pubkey],
+            ) {
+                Ok(planned) => planned,
+                Err(e) => {
+                    self.fail_direct_chat_creation(format!("Create group failed: {e}"));
+                    return;
+                }
+            }
         };
+        let PlannedGroupCreation {
+            group,
+            welcome_delivery,
+        } = group_result;
 
         // App create is intentionally eager/local here: the group is refreshed
         // into local state immediately, while welcome delivery continues in the
         // background as a best-effort side effect.
         if network_enabled {
-            self.publish_welcomes_to_peers(
-                vec![peer_pubkey],
-                group_result.welcome_rumors,
-                group_relays.clone(),
-            );
+            if let Some(plan) = welcome_delivery {
+                self.publish_welcomes_to_peers(
+                    plan.recipients,
+                    plan.welcome_rumors,
+                    group_relays.clone(),
+                );
+            }
         }
 
         // Refresh state + subscriptions + navigate.
         self.refresh_all_from_storage();
 
-        let chat_id = hex::encode(group_result.group.nostr_group_id);
+        let chat_id = hex::encode(group.nostr_group_id);
         self.open_chat_screen(&chat_id);
         self.refresh_current_chat(&chat_id);
         self.emit_router();
@@ -4135,10 +4142,13 @@ impl AppCore {
                 admins,
             };
 
-            let group_result = match sess
-                .mdk
-                .create_group(&sess.pubkey, kp_events.clone(), config)
-            {
+            let group_result = match create_group_and_plan_welcome_delivery(
+                &sess.pubkey,
+                &sess.mdk,
+                kp_events.clone(),
+                config,
+                &peer_pubkeys,
+            ) {
                 Ok(r) => r,
                 Err(e) => {
                     self.set_busy(|b| b.creating_chat = false);
@@ -4146,6 +4156,10 @@ impl AppCore {
                     return;
                 }
             };
+            let PlannedGroupCreation {
+                group,
+                welcome_delivery,
+            } = group_result;
 
             // Deliver welcomes to all peers.
             if network_enabled {
@@ -4160,15 +4174,17 @@ impl AppCore {
                         welcome_relays.push(r);
                     }
                 }
-                self.publish_welcomes_to_peers(
-                    peer_pubkeys.clone(),
-                    group_result.welcome_rumors.clone(),
-                    welcome_relays.clone(),
-                );
+                if let Some(plan) = welcome_delivery {
+                    self.publish_welcomes_to_peers(
+                        plan.recipients,
+                        plan.welcome_rumors,
+                        welcome_relays.clone(),
+                    );
+                }
             }
 
             self.refresh_all_from_storage();
-            let chat_id = hex::encode(group_result.group.nostr_group_id);
+            let chat_id = hex::encode(group.nostr_group_id);
             self.open_chat_screen(&chat_id);
             self.refresh_current_chat(&chat_id);
             self.emit_router();
@@ -4431,10 +4447,11 @@ impl AppCore {
                 tracing::warn!("group_message but no session");
                 return;
             };
-            match sess.host_context().process_event(&event) {
-                Ok(outcome) => outcome,
+            let event_id = event.id;
+            match sess.host_context().process_group_message_event(event) {
+                Ok(processed) => processed.into_conversation_event(),
                 Err(e) => {
-                    tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
+                    tracing::error!(event_id = %event_id.to_hex(), %e, "process_message failed");
                     self.toast(format!("Message decrypt failed: {e}"));
                     return;
                 }
@@ -5213,7 +5230,13 @@ impl AppCore {
                         admins: vec![my_pubkey],
                     };
 
-                    let group_result = match sess.mdk.create_group(&sess.pubkey, vec![], config) {
+                    let planned = match create_group_and_plan_welcome_delivery(
+                        &sess.pubkey,
+                        &sess.mdk,
+                        vec![],
+                        config,
+                        &[],
+                    ) {
                         Ok(r) => r,
                         Err(e) => {
                             self.set_busy(|b| b.creating_chat = false);
@@ -5223,7 +5246,7 @@ impl AppCore {
                     };
 
                     self.refresh_all_from_storage();
-                    let chat_id = hex::encode(group_result.group.nostr_group_id);
+                    let chat_id = hex::encode(planned.group.nostr_group_id);
                     self.open_chat_screen(&chat_id);
                     self.refresh_current_chat(&chat_id);
                     self.emit_router();
@@ -6612,6 +6635,23 @@ mod tests {
             }
         }
 
+        fn make_group_message_event(
+            core: &AppCore,
+            mls_group_id: &GroupId,
+            kind: Kind,
+            content: &str,
+            tags: Tags,
+        ) -> Event {
+            let session = core.session.as_ref().expect("session");
+            let rumor = EventBuilder::new(kind, content)
+                .tags(tags)
+                .build(session.pubkey);
+            session
+                .mdk
+                .create_message(mls_group_id, rumor)
+                .expect("create group message event")
+        }
+
         #[test]
         fn no_session_returns_early() {
             let tempdir = tempfile::tempdir().expect("tempdir");
@@ -6742,6 +6782,28 @@ mod tests {
                 core.unread_counts.get(&chat_id).copied().unwrap_or(0),
                 1,
                 "shared conversation runtime should still drive unread updates"
+            );
+        }
+
+        #[test]
+        fn app_group_message_ingress_uses_shared_runtime_group_message_helper() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let event = make_group_message_event(
+                &core,
+                &group_id,
+                Kind::ChatMessage,
+                "hello through shared inbound helper",
+                Tags::new(),
+            );
+
+            assert_eq!(core.unread_counts.get(&chat_id).copied().unwrap_or(0), 0);
+
+            core.handle_group_message(event);
+
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                1,
+                "real group-message ingress should still flow through the shared runtime helper"
             );
         }
 
@@ -7255,7 +7317,6 @@ mod tests {
         fn make_peer_key_package(peer_keys: &Keys) -> Event {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let peer_dir = tempdir.path().to_string_lossy().into_owned();
-            std::mem::forget(tempdir);
 
             let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
             let relay = RelayUrl::parse("wss://test.relay").unwrap();
@@ -7319,6 +7380,42 @@ mod tests {
                     .any(|s| matches!(s, Screen::Chat { .. })),
                 "expected Chat screen on stack after group creation"
             );
+        }
+
+        #[test]
+        fn create_group_with_peer_key_package_keeps_local_group_without_network_publish() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.config.disable_network = Some(true);
+            core.state.busy.creating_chat = true;
+            let before_group_count = core.session.as_ref().expect("session").groups.len();
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: "Offline Local Group".into(),
+                existing_chat_id: None,
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            assert!(!core.state.busy.creating_chat);
+            assert_eq!(
+                core.session.as_ref().expect("session").groups.len(),
+                before_group_count + 1,
+                "app create-group should still materialize the local group immediately"
+            );
+            assert!(
+                core.state
+                    .router
+                    .screen_stack
+                    .iter()
+                    .any(|s| matches!(s, Screen::Chat { .. })),
+                "app create-group should still navigate immediately without waiting for welcome delivery"
+            );
+            assert!(core.state.toast.is_none());
         }
 
         #[test]

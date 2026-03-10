@@ -240,14 +240,29 @@ Candidate PR 5: welcome/group lifecycle investigation and convergence
   - one shared implementation where possible
 
 Candidate PR 6: shared welcome/group workflow service
+- status:
+  - first slice landed: shared `accept_welcome_and_catch_up(...)`
+  - second slice landed: shared local `create_group_and_plan_welcome_delivery(...)`
+  - existing `create_group_and_publish_welcomes(...)` now layers over the shared plan primitive
+  - daemon uses the shared accept + post-accept catch-up path
+  - app also reuses the shared accept and create-group planning primitives for its narrow eager flows
+  - CLI manual accept remains host-local for now to avoid broadening behavior
 - extract:
+  - shared accept known pending welcome + post-accept backlog catch-up
   - publish welcomes
-  - accept welcome
+  - local group creation + welcome-delivery planning
   - create group
   - join/merge lifecycle
 - acceptance:
-  - app uses shared service first
-  - daemon follows onto the same service
+  - accept + catch-up lives in `pika-marmot-runtime`
+  - create-group planning lives in `pika-marmot-runtime`
+  - host-specific policy stays local:
+    - app eager-vs-manual accept policy
+    - app immediate refresh/navigate after local group creation
+    - daemon `OutMsg` mapping and subscription bookkeeping
+    - daemon/CLI success timing around synchronous welcome delivery
+    - CLI command UX/output
+  - future slices can widen the shared welcome/group workflow service from this primitive
 
 Candidate PR 7: shared media helpers / workflow primitives
 - extract:
@@ -259,6 +274,23 @@ Candidate PR 7: shared media helpers / workflow primitives
 - acceptance:
   - shared media mechanics
   - host-specific orchestration remains local when needed
+
+Candidate PR 8: shared inbound session / notification-ingress shell
+- status:
+  - first slice landed: shared relay-event ingress classification + seen-ID cache
+  - app session loop and daemon notification loop both consume the same ingress helper
+  - second slice landed: classified inbound group-message processing now returns a shared neutral processed/ignored runtime outcome
+  - app and daemon both consume that shared group-message helper while keeping projection/protocol policy local
+  - host-specific projection/protocol mapping remains local
+- extract:
+  - duplicate suppression for inbound relay events
+  - gift-wrap welcome vs group-message classification
+  - neutral ingress envelope types
+- acceptance:
+  - shared ingress mechanics live in `pika-marmot-runtime`
+  - app still owns state/router/toast projection
+  - daemon still owns `OutMsg` mapping, subscription management, and child/protocol glue
+  - this stops short of any EngineHandle or shared event-bus design
 
 Phase 2 rule:
 when app and daemon differ, stop and decide the correct behavior before extracting. Do not hide
