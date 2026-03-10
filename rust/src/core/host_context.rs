@@ -108,6 +108,21 @@ impl<'a> AppHostContext<'a> {
         self.runtime().process_group_message_event(event)
     }
 
+    pub(super) fn interpret_runtime_application_message(
+        &self,
+        runtime_msg: RuntimeApplicationMessage,
+    ) -> pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation {
+        self.runtime()
+            .interpret_runtime_application_message(runtime_msg)
+    }
+
+    pub(super) fn interpret_conversation_event(
+        &self,
+        event: ConversationEvent,
+    ) -> pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation {
+        self.runtime().interpret_conversation_event(event)
+    }
+
     pub(super) fn interpret_processing_result(
         &self,
         result: MessageProcessingResult,

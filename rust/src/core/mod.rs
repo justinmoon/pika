@@ -54,7 +54,7 @@ use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
 };
 use pika_marmot_runtime::conversation::{
-    ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate, RuntimeGroupUpdateKind,
+    ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
 };
 use pika_marmot_runtime::group::{create_group_and_plan_welcome_delivery, PlannedGroupCreation};
 use pika_marmot_runtime::membership::{
@@ -69,6 +69,9 @@ pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
+use pika_marmot_runtime::runtime::{
+    RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
+};
 use pika_marmot_runtime::welcome::{accept_welcome_and_catch_up, find_pending_welcome};
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
@@ -4472,24 +4475,30 @@ impl AppCore {
     }
 
     fn handle_conversation_event(&mut self, event: Option<ConversationEvent>) {
-        match event {
-            Some(ConversationEvent::Application(message)) => {
+        let Some(event) = event else {
+            return;
+        };
+        let interpreted = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            sess.host_context().interpret_conversation_event(event)
+        };
+        match interpreted {
+            RuntimeConversationEventInterpretation::Application { message } => {
                 self.handle_runtime_application_message(*message);
             }
-            Some(ConversationEvent::GroupUpdate(update)) => {
-                self.handle_runtime_group_update(update);
+            RuntimeConversationEventInterpretation::GroupUpdate { update, is_commit } => {
+                self.handle_runtime_group_update(update, is_commit);
             }
-            Some(
-                ConversationEvent::UnresolvedGroup { .. } | ConversationEvent::PreviouslyFailed,
-            ) => {
+            RuntimeConversationEventInterpretation::NeedsFullRefresh { .. } => {
                 self.refresh_all_from_storage();
             }
-            None => {}
         }
     }
 
-    fn handle_runtime_group_update(&mut self, update: RuntimeGroupUpdate) {
-        if matches!(update.kind, RuntimeGroupUpdateKind::Commit) {
+    fn handle_runtime_group_update(&mut self, update: RuntimeGroupUpdate, is_commit: bool) {
+        if is_commit {
             self.maybe_rebroadcast_my_group_profile(
                 &update.nostr_group_id_hex,
                 &update.mls_group_id,
@@ -4500,11 +4509,17 @@ impl AppCore {
     }
 
     fn handle_runtime_application_message(&mut self, runtime_msg: RuntimeApplicationMessage) {
-        let chat_id = runtime_msg.nostr_group_id_hex;
-        let kind = runtime_msg.classification;
-        let msg = runtime_msg.message;
-        match kind {
-            AppMessageKind::TypingIndicator => {
+        let interpreted = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            sess.host_context()
+                .interpret_runtime_application_message(runtime_msg)
+        };
+        match interpreted {
+            RuntimeApplicationMessageInterpretation::TypingIndicator { message } => {
+                let chat_id = message.nostr_group_id_hex;
+                let msg = message.message;
                 let sender_hex = msg.pubkey.to_hex();
                 let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
                 if my_hex.as_deref() != Some(sender_hex.as_str()) {
@@ -4512,17 +4527,22 @@ impl AppCore {
                     self.refresh_typing_if_open(&chat_id);
                 }
             }
-            AppMessageKind::CallSignal => {
-                if let Some(signal) = self.maybe_parse_call_signal(&msg.pubkey, &msg.content) {
+            RuntimeApplicationMessageInterpretation::CallSignal {
+                message,
+                parsed_signal,
+            } => {
+                let chat_id = message.nostr_group_id_hex;
+                let msg = message.message;
+                if let Some(signal) = self.filter_incoming_call_signal(&msg.pubkey, parsed_signal) {
                     self.handle_incoming_call_signal(&chat_id, &msg.pubkey, signal);
                 }
                 self.refresh_chat_list_from_storage();
                 self.refresh_current_chat_if_open(&chat_id);
             }
-            kind @ (AppMessageKind::Chat
-            | AppMessageKind::Reaction
-            | AppMessageKind::Hypernote
-            | AppMessageKind::HypernoteResponse) => {
+            RuntimeApplicationMessageInterpretation::Content { message } => {
+                let chat_id = message.nostr_group_id_hex;
+                let kind = message.classification;
+                let msg = message.message;
                 if matches!(kind, AppMessageKind::Chat) {
                     self.update_typing(&chat_id, &msg.pubkey.to_hex(), 0);
                 }
@@ -4540,7 +4560,9 @@ impl AppCore {
                 self.refresh_chat_list_from_storage();
                 self.refresh_current_chat_if_open(&chat_id);
             }
-            AppMessageKind::GroupProfile => {
+            RuntimeApplicationMessageInterpretation::GroupProfile { message } => {
+                let chat_id = message.nostr_group_id_hex;
+                let msg = message.message;
                 // Determine profile owner: if the rumor has a `p` tag, this is
                 // a rebroadcast and the `p` value is the real owner; otherwise
                 // msg.pubkey (MLS-authenticated sender) is the owner.
@@ -6549,8 +6571,20 @@ mod tests {
             message_types, GroupId, MessageProcessingResult, NostrGroupConfigData,
         };
         use nostr_sdk::prelude::*;
+        use pika_marmot_runtime::call::{
+            build_call_signal_json, CallSessionParams, CallTrackSpec, OutgoingCallSignal,
+            ParsedCallSignal,
+        };
+        use pika_marmot_runtime::conversation::{
+            ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
+            RuntimeGroupUpdateKind,
+        };
         use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
         use pika_marmot_runtime::outbound::OutboundConversationAction;
+        use pika_marmot_runtime::runtime::{
+            RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
+            RuntimeConversationRefreshReason,
+        };
 
         /// Creates a core with a real MDK session and a group in storage.
         /// Returns (core, chat_id_hex, creator_keys, group_id).
@@ -6783,6 +6817,85 @@ mod tests {
                 1,
                 "shared conversation runtime should still drive unread updates"
             );
+        }
+
+        #[test]
+        fn app_runtime_application_message_uses_shared_interpreter_for_call_signals() {
+            let (core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let call_id = "550e8400-e29b-41d4-a716-446655440000";
+            let session = CallSessionParams {
+                moq_url: "https://moq.example.com/anon".to_string(),
+                broadcast_base: format!("pika/calls/{call_id}"),
+                relay_auth: "capv1_test_token".to_string(),
+                tracks: vec![CallTrackSpec::audio0_opus_default()],
+            };
+            let content = build_call_signal_json(call_id, OutgoingCallSignal::Invite(&session))
+                .expect("build call signal");
+            let msg = make_test_message(
+                &other.public_key(),
+                pika_marmot_runtime::message::CALL_SIGNAL_KIND,
+                &content,
+                &group_id,
+                Tags::new(),
+            );
+            let runtime_msg = RuntimeApplicationMessage {
+                mls_group_id: msg.mls_group_id.clone(),
+                nostr_group_id_hex: chat_id,
+                classification: crate::core::AppMessageKind::CallSignal,
+                message: msg,
+            };
+
+            let interpreted = core
+                .host_context()
+                .expect("host context")
+                .interpret_runtime_application_message(runtime_msg);
+
+            match interpreted {
+                RuntimeApplicationMessageInterpretation::CallSignal {
+                    parsed_signal: Some(ParsedCallSignal::Invite { call_id, .. }),
+                    ..
+                } => assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440000"),
+                other => panic!("expected shared call-signal interpretation, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn app_conversation_event_uses_shared_interpreter_for_group_update_and_refresh() {
+            let (core, _chat_id, _keys, group_id) = make_core_with_group();
+            let commit = ConversationEvent::GroupUpdate(RuntimeGroupUpdate {
+                mls_group_id: group_id.clone(),
+                nostr_group_id_hex: "deadbeef".to_string(),
+                kind: RuntimeGroupUpdateKind::Commit,
+            });
+            let unresolved = ConversationEvent::UnresolvedGroup {
+                mls_group_id: group_id.clone(),
+            };
+            let failed = ConversationEvent::PreviouslyFailed;
+            let host = core.host_context().expect("host context");
+
+            let interpreted_commit = host.interpret_conversation_event(commit);
+            let interpreted_unresolved = host.interpret_conversation_event(unresolved);
+            let interpreted_failed = host.interpret_conversation_event(failed);
+
+            match interpreted_commit {
+                RuntimeConversationEventInterpretation::GroupUpdate { is_commit, .. } => {
+                    assert!(is_commit)
+                }
+                other => panic!("expected group-update interpretation, got {other:?}"),
+            }
+            match interpreted_unresolved {
+                RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                    reason: RuntimeConversationRefreshReason::UnresolvedGroup { mls_group_id },
+                } => assert_eq!(mls_group_id, group_id),
+                other => panic!("expected unresolved-group refresh reason, got {other:?}"),
+            }
+            assert!(matches!(
+                interpreted_failed,
+                RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                    reason: RuntimeConversationRefreshReason::PreviouslyFailed
+                }
+            ));
         }
 
         #[test]
@@ -7041,7 +7154,7 @@ mod tests {
         fn call_signal_from_self_does_not_trigger_incoming() {
             let (mut core, _chat_id, keys, group_id) = make_core_with_group();
             // A call signal from ourselves should not set active_call (because
-            // maybe_parse_call_signal filters out self-sends).
+            // filter_incoming_call_signal filters out self-sends).
             let msg = make_test_message(
                 &keys.public_key(),
                 Kind::Custom(10),
