@@ -16,6 +16,7 @@ use crate::call_runtime::{
 };
 use crate::conversation::{
     ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupSummary,
+    RuntimeJoinedGroupSnapshot,
 };
 use crate::media::{
     MediaRuntime, ParsedMediaAttachment, PreparedMediaUpload, RuntimeDownloadedMedia,
@@ -222,6 +223,28 @@ pub struct RuntimeGroupSubscriptionPlan {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RuntimeRelayRolePlan {
+    pub long_lived_session_relays: Vec<RelayUrl>,
+    pub active_group_relays: Vec<RelayUrl>,
+    pub temporary_key_package_relays: Vec<RelayUrl>,
+    pub session_connect_relays: Vec<RelayUrl>,
+    pub key_package_operation_relays: Vec<RelayUrl>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RuntimeWelcomeInboxSubscriptionIntent {
+    pub lookback: Option<Duration>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RuntimeSessionSyncPlan {
+    pub relay_roles: RuntimeRelayRolePlan,
+    pub welcome_inbox: RuntimeWelcomeInboxSubscriptionIntent,
+    pub group_subscriptions: RuntimeGroupSubscriptionPlan,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeStartupState {
     pub group_subscriptions: RuntimeGroupSubscriptionState,
     pub seen_welcomes: HashSet<EventId>,
@@ -290,6 +313,27 @@ impl RuntimeSession {
         I: IntoIterator<Item = String>,
     {
         plan_group_subscriptions_from_mdk(&self.mdk, subscribed_group_ids)
+    }
+
+    pub fn plan_session_sync<I, J, K>(
+        &self,
+        subscribed_group_ids: I,
+        long_lived_session_relays: J,
+        temporary_key_package_relays: K,
+        welcome_inbox: RuntimeWelcomeInboxSubscriptionIntent,
+    ) -> Result<RuntimeSessionSyncPlan>
+    where
+        I: IntoIterator<Item = String>,
+        J: IntoIterator<Item = RelayUrl>,
+        K: IntoIterator<Item = RelayUrl>,
+    {
+        plan_runtime_session_sync_from_mdk(
+            &self.mdk,
+            subscribed_group_ids,
+            long_lived_session_relays,
+            temporary_key_package_relays,
+            welcome_inbox,
+        )
     }
 }
 
@@ -445,6 +489,27 @@ impl<'a> MarmotRuntime<'a> {
         plan_group_subscriptions_from_mdk(self.mdk, subscribed_group_ids)
     }
 
+    pub fn plan_session_sync<I, J, K>(
+        &self,
+        subscribed_group_ids: I,
+        long_lived_session_relays: J,
+        temporary_key_package_relays: K,
+        welcome_inbox: RuntimeWelcomeInboxSubscriptionIntent,
+    ) -> Result<RuntimeSessionSyncPlan>
+    where
+        I: IntoIterator<Item = String>,
+        J: IntoIterator<Item = RelayUrl>,
+        K: IntoIterator<Item = RelayUrl>,
+    {
+        plan_runtime_session_sync_from_mdk(
+            self.mdk,
+            subscribed_group_ids,
+            long_lived_session_relays,
+            temporary_key_package_relays,
+            welcome_inbox,
+        )
+    }
+
     pub fn interpret_processing_result(
         &self,
         result: MessageProcessingResult,
@@ -463,6 +528,10 @@ impl<'a> MarmotRuntime<'a> {
 
     pub fn list_groups(&self) -> Result<Vec<RuntimeGroupSummary>> {
         self.conversation().list_groups()
+    }
+
+    pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
+        self.conversation().list_joined_group_snapshots()
     }
 
     pub fn get_messages(
@@ -705,6 +774,17 @@ pub async fn connect_runtime_relays(
     }
 }
 
+pub async fn temporary_client_from_session_signer(
+    session_client: &Client,
+    purpose: &str,
+) -> Result<Client> {
+    let signer = session_client
+        .signer()
+        .await
+        .with_context(|| format!("{purpose} signer unavailable"))?;
+    Ok(Client::new(signer))
+}
+
 pub async fn subscribe_welcome_inbox(
     client: &Client,
     pubkey: PublicKey,
@@ -806,6 +886,62 @@ where
             .cloned()
             .collect(),
         current,
+    })
+}
+
+pub fn plan_runtime_relay_roles<I, J, K>(
+    long_lived_session_relays: I,
+    active_group_relays: J,
+    temporary_key_package_relays: K,
+) -> RuntimeRelayRolePlan
+where
+    I: IntoIterator<Item = RelayUrl>,
+    J: IntoIterator<Item = RelayUrl>,
+    K: IntoIterator<Item = RelayUrl>,
+{
+    let long_lived_session_relays: BTreeSet<RelayUrl> =
+        long_lived_session_relays.into_iter().collect();
+    let active_group_relays: BTreeSet<RelayUrl> = active_group_relays.into_iter().collect();
+    let temporary_key_package_relays: BTreeSet<RelayUrl> =
+        temporary_key_package_relays.into_iter().collect();
+
+    let mut session_connect_relays = long_lived_session_relays.clone();
+    session_connect_relays.extend(active_group_relays.iter().cloned());
+
+    let mut key_package_operation_relays = long_lived_session_relays.clone();
+    key_package_operation_relays.extend(temporary_key_package_relays.iter().cloned());
+
+    RuntimeRelayRolePlan {
+        long_lived_session_relays: long_lived_session_relays.into_iter().collect(),
+        active_group_relays: active_group_relays.into_iter().collect(),
+        temporary_key_package_relays: temporary_key_package_relays.into_iter().collect(),
+        session_connect_relays: session_connect_relays.into_iter().collect(),
+        key_package_operation_relays: key_package_operation_relays.into_iter().collect(),
+    }
+}
+
+pub fn plan_runtime_session_sync_from_mdk<I, J, K>(
+    mdk: &PikaMdk,
+    subscribed_group_ids: I,
+    long_lived_session_relays: J,
+    temporary_key_package_relays: K,
+    welcome_inbox: RuntimeWelcomeInboxSubscriptionIntent,
+) -> Result<RuntimeSessionSyncPlan>
+where
+    I: IntoIterator<Item = String>,
+    J: IntoIterator<Item = RelayUrl>,
+    K: IntoIterator<Item = RelayUrl>,
+{
+    let group_subscriptions = plan_group_subscriptions_from_mdk(mdk, subscribed_group_ids)?;
+    let relay_roles = plan_runtime_relay_roles(
+        long_lived_session_relays,
+        group_subscriptions.current.relay_urls.clone(),
+        temporary_key_package_relays,
+    );
+    Ok(RuntimeSessionSyncPlan {
+        relay_roles,
+        welcome_inbox,
+        group_subscriptions,
     })
 }
 
@@ -1208,6 +1344,132 @@ mod tests {
         assert_eq!(plan.current.relay_urls, vec![relay_url]);
         assert_eq!(plan.added_group_ids, vec![expected_group_id]);
         assert_eq!(plan.removed_group_ids, vec!["stale-group".to_string()]);
+    }
+
+    #[test]
+    fn plan_runtime_relay_roles_separates_session_group_and_temporary_relays() {
+        let plan = plan_runtime_relay_roles(
+            vec![
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ],
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ],
+            vec![
+                RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ],
+        );
+
+        assert_eq!(
+            plan.long_lived_session_relays,
+            vec![
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.active_group_relays,
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.temporary_key_package_relays,
+            vec![
+                RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.key_package_operation_relays,
+            vec![
+                RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_runtime_session_sync_composes_relay_roles_group_diffs_and_welcome_intent() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let group_relay = RelayUrl::parse("wss://group-1.example").expect("group relay");
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime session sync plan".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![group_relay.clone()],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let expected_group_id = hex::encode(created.group.nostr_group_id);
+        let runtime = MarmotRuntime::new(&inviter_mdk);
+        let welcome_inbox = RuntimeWelcomeInboxSubscriptionIntent {
+            lookback: Some(Duration::from_secs(30)),
+            limit: Some(25),
+        };
+
+        let plan = runtime
+            .plan_session_sync(
+                vec!["stale-group".to_string()],
+                vec![RelayUrl::parse("wss://message-1.example").expect("message relay")],
+                vec![RelayUrl::parse("wss://kp-1.example").expect("kp relay")],
+                welcome_inbox.clone(),
+            )
+            .expect("plan runtime session sync");
+
+        assert_eq!(
+            plan.group_subscriptions.current.target_group_ids,
+            vec![expected_group_id.clone()]
+        );
+        assert_eq!(
+            plan.group_subscriptions.added_group_ids,
+            vec![expected_group_id]
+        );
+        assert_eq!(
+            plan.group_subscriptions.removed_group_ids,
+            vec!["stale-group".to_string()]
+        );
+        assert_eq!(plan.welcome_inbox, welcome_inbox);
+        assert_eq!(
+            plan.relay_roles.session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.relay_roles.key_package_operation_relays,
+            vec![
+                RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ]
+        );
     }
 
     #[test]

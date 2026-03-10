@@ -3,10 +3,13 @@
 use std::future::Future;
 
 use super::*;
+#[cfg(test)]
+use pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan;
 use pika_marmot_runtime::runtime::{
     bootstrap_runtime_session, classify_inbound_relay_event, connect_runtime_relays,
-    subscribe_group_messages_combined, subscribe_welcome_inbox, BootstrappedRuntimeSession,
-    InboundRelayEvent, InboundRelaySeenCache, RuntimeGroupSubscriptionPlan,
+    subscribe_group_messages_combined, subscribe_welcome_inbox,
+    temporary_client_from_session_signer, BootstrappedRuntimeSession, InboundRelayEvent,
+    InboundRelaySeenCache, RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent,
 };
 use pika_marmot_runtime::welcome::publish_welcome_rumors;
 
@@ -37,9 +40,23 @@ async fn classify_app_notification_event(
     }
 }
 
+#[cfg(test)]
 fn plan_app_group_subscriptions(sess: &Session) -> anyhow::Result<RuntimeGroupSubscriptionPlan> {
     sess.host_context()
         .plan_group_subscriptions(sess.groups.keys().cloned().collect())
+}
+
+fn app_welcome_inbox_intent() -> RuntimeWelcomeInboxSubscriptionIntent {
+    RuntimeWelcomeInboxSubscriptionIntent::default()
+}
+
+fn plan_app_session_sync(core: &AppCore, sess: &Session) -> anyhow::Result<RuntimeSessionSyncPlan> {
+    sess.host_context().plan_session_sync(
+        sess.groups.keys().cloned().collect(),
+        core.long_lived_session_relays(),
+        core.temporary_key_package_relays(),
+        app_welcome_inbox_intent(),
+    )
 }
 
 impl AppCore {
@@ -76,7 +93,13 @@ impl AppCore {
         tracing::info!("mdk opened");
 
         if self.network_enabled() {
-            let relays = self.all_session_relays();
+            let sync_plan = bootstrapped.session.plan_session_sync(
+                Vec::<String>::new(),
+                self.long_lived_session_relays(),
+                self.temporary_key_package_relays(),
+                app_welcome_inbox_intent(),
+            )?;
+            let relays = sync_plan.relay_roles.session_connect_relays;
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let client = bootstrapped.session.client.clone();
             self.runtime.spawn(async move {
@@ -213,18 +236,15 @@ impl AppCore {
     }
 
     pub(super) fn ensure_key_package_published_best_effort(&mut self) {
-        let key_package_relays = self.key_package_relays();
-        let mut publish_relay_set: BTreeSet<RelayUrl> =
-            key_package_relays.iter().cloned().collect();
-        publish_relay_set.extend(self.default_relays());
-        let publish_relays: Vec<RelayUrl> = publish_relay_set.into_iter().collect();
+        let relay_roles = self.relay_role_plan(Vec::new());
+        let publish_relays = relay_roles.key_package_operation_relays;
         if publish_relays.is_empty() {
             return;
         }
-        let relays_for_tags = if key_package_relays.is_empty() {
+        let relays_for_tags = if relay_roles.temporary_key_package_relays.is_empty() {
             publish_relays.clone()
         } else {
-            key_package_relays
+            relay_roles.temporary_key_package_relays
         };
         let Some(sess) = self.session.as_mut() else {
             return;
@@ -250,12 +270,29 @@ impl AppCore {
             .collect();
         let builder = EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags);
 
-        let client = sess.client.clone();
+        let session_client = sess.client.clone();
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
+            let client =
+                match temporary_client_from_session_signer(&session_client, "key package publish")
+                    .await
+                {
+                    Ok(client) => client,
+                    Err(e) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::KeyPackagePublished {
+                                token,
+                                ok: false,
+                                error: Some(format!("key package publish client failed: {e:#}")),
+                            },
+                        )));
+                        return;
+                    }
+                };
             let event = match client.sign_event_builder(builder).await {
                 Ok(e) => e,
                 Err(e) => {
+                    client.shutdown().await;
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::KeyPackagePublished {
                             token,
@@ -280,6 +317,7 @@ impl AppCore {
                 true,
             )
             .await;
+            client.shutdown().await;
             match outcome {
                 super::relay_publish::PublishOutcome::Ok => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(
@@ -304,8 +342,8 @@ impl AppCore {
     }
 
     pub(super) fn publish_key_package_relays_best_effort(&mut self) {
-        let general_relays = self.default_relays();
-        let kp_relays = self.key_package_relays();
+        let general_relays = self.long_lived_session_relays();
+        let kp_relays = self.temporary_key_package_relays();
         let Some(sess) = self.session.as_ref() else {
             return;
         };
@@ -346,22 +384,20 @@ impl AppCore {
             self.subs_recompute_dirty = true;
             return;
         }
-        let mut needed_relays: BTreeSet<RelayUrl> = self.all_session_relays().into_iter().collect();
-        let Some(sess) = self.session.as_mut() else {
+        let Some(sess) = self.session.as_ref() else {
             return;
         };
-        let subscription_plan = match plan_app_group_subscriptions(sess) {
+        let sync_plan = match plan_app_session_sync(self, sess) {
             Ok(plan) => plan,
             Err(err) => {
-                tracing::warn!(%err, "failed to plan app group subscriptions");
+                tracing::warn!(%err, "failed to plan app session sync");
                 return;
             }
         };
-
-        // Ensure the client is connected to all relays referenced by joined groups.
-        // Without this, we may subscribe to #h filters but never actually see events because
-        // the relay URLs were never added to the client pool.
-        needed_relays.extend(subscription_plan.current.relay_urls.iter().cloned());
+        let needed_relays = sync_plan.relay_roles.session_connect_relays;
+        let Some(sess) = self.session.as_mut() else {
+            return;
+        };
 
         self.subs_recompute_in_flight = true;
         self.subs_recompute_dirty = false;
@@ -374,7 +410,8 @@ impl AppCore {
         let pubkey = sess.pubkey;
         let prev_giftwrap_sub = sess.giftwrap_sub.clone();
         let prev_group_sub = sess.group_sub.clone();
-        let h_values = subscription_plan.current.target_group_ids;
+        let h_values = sync_plan.group_subscriptions.current.target_group_ids;
+        let welcome_inbox = sync_plan.welcome_inbox;
         let alive = sess.alive.clone();
 
         self.runtime.spawn(async move {
@@ -383,7 +420,6 @@ impl AppCore {
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
-            let needed_relays: Vec<RelayUrl> = needed_relays.into_iter().collect();
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
@@ -415,9 +451,14 @@ impl AppCore {
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
-            let giftwrap_sub = subscribe_welcome_inbox(&client, pubkey, None, None)
-                .await
-                .ok();
+            let giftwrap_sub = subscribe_welcome_inbox(
+                &client,
+                pubkey,
+                welcome_inbox.lookback,
+                welcome_inbox.limit,
+            )
+            .await
+            .ok();
 
             // Group subscription: kind 445 filtered by #h for all joined groups.
             if !alive.load(Ordering::SeqCst) {
@@ -963,6 +1004,7 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::make_core_with_config_for_tests as make_core_with_config;
 
     fn open_test_mdk(dir: &tempfile::TempDir, keys: &Keys) -> PikaMdk {
         crate::mdk_support::open_mdk(
@@ -1082,6 +1124,135 @@ mod tests {
         );
         assert_eq!(plan.added_group_ids, vec![expected_group_id]);
         assert_eq!(plan.removed_group_ids, vec!["stale-group".to_string()]);
+    }
+
+    #[test]
+    fn app_session_sync_planning_uses_shared_runtime_sync_plan() {
+        let (core, inviter_dir) = make_core_with_config(crate::core::config::AppConfig {
+            relay_urls: Some(vec!["wss://message-1.example".to_string()]),
+            key_package_relay_urls: Some(vec!["wss://kp-1.example".to_string()]),
+            ..crate::core::config::AppConfig::default()
+        });
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
+        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData {
+                    name: "App session sync planning".to_string(),
+                    description: String::new(),
+                    image_hash: None,
+                    image_key: None,
+                    image_nonce: None,
+                    relays: vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
+                    admins: vec![inviter_keys.public_key()],
+                },
+            )
+            .expect("create group");
+        let expected_group_id = hex::encode(created.group.nostr_group_id);
+        let mut groups = HashMap::new();
+        groups.insert(
+            "stale-group".to_string(),
+            GroupIndexEntry {
+                mls_group_id: GroupId::from_slice(&[1, 2, 3]),
+                is_group: true,
+                group_name: Some("Stale Group".into()),
+                members: vec![],
+                admin_pubkeys: vec![],
+            },
+        );
+        let session = Session {
+            pubkey: inviter_keys.public_key(),
+            local_keys: Some(inviter_keys.clone()),
+            mdk: inviter_mdk,
+            client: Client::default(),
+            alive: Arc::new(AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups,
+        };
+
+        let sync_plan = plan_app_session_sync(&core, &session).expect("plan app session sync");
+
+        assert_eq!(
+            sync_plan.group_subscriptions.current.target_group_ids,
+            vec![expected_group_id.clone()]
+        );
+        assert_eq!(
+            sync_plan.group_subscriptions.added_group_ids,
+            vec![expected_group_id]
+        );
+        assert_eq!(
+            sync_plan.group_subscriptions.removed_group_ids,
+            vec!["stale-group".to_string()]
+        );
+        assert_eq!(
+            sync_plan.relay_roles.session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(sync_plan.welcome_inbox, app_welcome_inbox_intent());
+    }
+
+    #[test]
+    fn app_relay_role_planning_keeps_key_package_relays_out_of_session_connects() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
+        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let group_relay = RelayUrl::parse("wss://group-1.example").expect("group relay");
+        inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData {
+                    name: "Relay role planning".to_string(),
+                    description: String::new(),
+                    image_hash: None,
+                    image_key: None,
+                    image_nonce: None,
+                    relays: vec![group_relay.clone()],
+                    admins: vec![inviter_keys.public_key()],
+                },
+            )
+            .expect("create group");
+        let session = Session {
+            pubkey: inviter_keys.public_key(),
+            local_keys: Some(inviter_keys.clone()),
+            mdk: inviter_mdk,
+            client: Client::default(),
+            alive: Arc::new(AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups: HashMap::new(),
+        };
+        let plan = plan_app_group_subscriptions(&session).expect("plan app group subscriptions");
+        let relay_roles = pika_marmot_runtime::runtime::plan_runtime_relay_roles(
+            vec![RelayUrl::parse("wss://message-1.example").expect("message relay")],
+            plan.current.relay_urls.clone(),
+            vec![RelayUrl::parse("wss://kp-1.example").expect("kp relay")],
+        );
+        let session_relays: BTreeSet<RelayUrl> =
+            relay_roles.session_connect_relays.into_iter().collect();
+
+        assert_eq!(
+            session_relays,
+            BTreeSet::from([
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ])
+        );
+        assert!(!session_relays.contains(&RelayUrl::parse("wss://kp-1.example").expect("kp relay")));
     }
 
     #[tokio::test]
