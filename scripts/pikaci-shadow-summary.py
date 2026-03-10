@@ -82,7 +82,6 @@ class JobSummary:
 
 def load_run_record(run_json: Path) -> dict:
     return json.loads(run_json.read_text())
-
 def find_latest_run(
     state_root: Path,
     target_id: str,
