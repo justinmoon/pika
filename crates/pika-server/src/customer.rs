@@ -1433,6 +1433,7 @@ mod tests {
             .expect("upsert allowlist");
     }
 
+<<<<<<< HEAD
     fn generate_npub() -> String {
         Keys::generate()
             .public_key()
@@ -1440,14 +1441,8 @@ mod tests {
             .expect("encode generated npub")
     }
 
-    fn recent_activity(
-        db_pool: &Pool<ConnectionManager<PgConnection>>,
-        npub: &str,
-    ) -> Vec<ManagedEnvironmentEvent> {
-        let mut conn = db_pool.get().expect("get activity connection");
-        ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, npub, 20)
-            .expect("query recent activity")
-    }
+=======
+>>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
     fn request_context() -> Extension<RequestContext> {
         Extension(RequestContext {
             request_id: "req-customer-test".to_string(),
@@ -2264,10 +2259,15 @@ mod tests {
         };
         clear_test_database(&db_pool);
         let state = test_state(db_pool.clone());
+<<<<<<< HEAD
         let npub = generate_npub();
         upsert_allowlist(&db_pool, &npub, true);
         let headers = customer_cookie_header(&state, &npub);
-        let form = customer_action_form(&state, &headers);
+=======
+        let npub = "npub1provisioncustomerflow";
+        upsert_allowlist(&db_pool, npub, true);
+        let headers = customer_cookie_header(&state, npub);
+>>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
         let (base_url, rx) =
             spawn_one_shot_server("200 OK", r#"{"id":"vm-new","status":"starting"}"#);
         let _env = MicrovmEnvGuard::set(&base_url);
@@ -2284,7 +2284,11 @@ mod tests {
         assert_eq!(captured.path, "/vms");
 
         let mut conn = db_pool.get().expect("get verify connection");
+<<<<<<< HEAD
         let active = AgentInstance::find_active_by_owner(&mut conn, &npub)
+=======
+        let active = AgentInstance::find_active_by_owner(&mut conn, npub)
+>>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-new"));
@@ -2481,6 +2485,7 @@ mod tests {
         };
         clear_test_database(&db_pool);
         let state = test_state(db_pool.clone());
+<<<<<<< HEAD
         let npub = generate_npub();
         upsert_allowlist(&db_pool, &npub, true);
         let headers = customer_cookie_header(&state, &npub);
@@ -2489,6 +2494,15 @@ mod tests {
         let existing = AgentInstance::create(
             &mut conn,
             &npub,
+=======
+        let npub = "npub1resetcustomerflow";
+        upsert_allowlist(&db_pool, npub, true);
+        let headers = customer_cookie_header(&state, npub);
+        let mut conn = db_pool.get().expect("get seed connection");
+        let existing = AgentInstance::create(
+            &mut conn,
+            npub,
+>>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             "agent-old",
             Some("vm-old"),
             AGENT_PHASE_READY,
@@ -2535,7 +2549,11 @@ mod tests {
         assert_eq!(create_request.path, "/vms");
 
         let mut conn = db_pool.get().expect("get verify connection");
+<<<<<<< HEAD
         let active = AgentInstance::find_active_by_owner(&mut conn, &npub)
+=======
+        let active = AgentInstance::find_active_by_owner(&mut conn, npub)
+>>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-fresh"));
