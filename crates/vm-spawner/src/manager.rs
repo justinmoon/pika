@@ -259,7 +259,7 @@ impl VmManager {
                 Ok(VmResponse {
                     id,
                     status: runtime_status.to_string(),
-                    guest_service_ready: false,
+                    startup_probe_satisfied: false,
                     guest_ready: false,
                 })
             }
@@ -288,7 +288,7 @@ impl VmManager {
     }
 
     pub async fn status(&self, id: &str) -> anyhow::Result<VmResponse> {
-        let vm = self.load_vm_disk_state(id)?;
+        let vm = self.load_vm_cleanup_state(id)?;
         let unit_name = self.microvm_unit_name(id);
         let status = match unit_active_state(&self.cfg.systemctl_cmd, &unit_name)
             .await
@@ -300,13 +300,16 @@ impl VmManager {
             Some(_) | None => "starting",
         };
         let guest_ready = guest_ready_marker_exists(&vm.microvm_state_dir);
-        let guest_service_ready = if guest_ready {
+        let startup_probe_satisfied = if guest_ready {
             true
         } else if status == "running" {
-            match guest_service_ready(&vm).await {
-                Ok(ready) => ready,
+            match self
+                .startup_probe_satisfied_for_status(id, &vm.microvm_state_dir)
+                .await
+            {
+                Ok(satisfied) => satisfied,
                 Err(err) => {
-                    warn!(vm_id = %id, error = %err, "failed to evaluate guest service readiness");
+                    warn!(vm_id = %id, error = %err, "failed to evaluate guest startup probe status");
                     false
                 }
             }
@@ -316,7 +319,7 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
-            guest_service_ready,
+            startup_probe_satisfied,
             guest_ready,
         })
     }
@@ -364,7 +367,7 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
-            guest_service_ready: false,
+            startup_probe_satisfied: false,
             guest_ready: false,
         })
     }
@@ -1146,6 +1149,18 @@ impl VmManager {
                 metadata_path.display()
             )
         })
+    }
+
+    async fn startup_probe_satisfied_for_status(
+        &self,
+        id: &str,
+        microvm_state_dir: &Path,
+    ) -> anyhow::Result<bool> {
+        let startup_plan = self.load_guest_startup_plan(microvm_state_dir, id)?;
+        let vm_ip = self
+            .production_ip_for_vm_id(id)
+            .ok_or_else(|| anyhow!("unsupported vm id: {id}"))?;
+        startup_probe_satisfied(microvm_state_dir, vm_ip, &startup_plan).await
     }
 
     fn parse_backup_status(
@@ -2200,17 +2215,21 @@ fn guest_ready_marker_exists(vm_state_dir: &Path) -> bool {
         && !guest_failed_marker_exists(vm_state_dir)
 }
 
-async fn guest_service_ready(vm: &VmDiskState) -> anyhow::Result<bool> {
-    if guest_failed_marker_exists(&vm.microvm_state_dir) {
+async fn startup_probe_satisfied(
+    vm_state_dir: &Path,
+    vm_ip: Ipv4Addr,
+    startup_plan: &GuestStartupPlan,
+) -> anyhow::Result<bool> {
+    if guest_failed_marker_exists(vm_state_dir) {
         return Ok(false);
     }
-    if guest_ready_marker_exists(&vm.microvm_state_dir) {
+    if guest_ready_marker_exists(vm_state_dir) {
         return Ok(true);
     }
 
-    match &vm.guest_autostart.startup_plan.readiness_check {
+    match &startup_plan.readiness_check {
         GuestServiceReadinessCheck::LogContains { path, pattern, .. } => {
-            let log_path = guest_artifact_host_path(&vm.microvm_state_dir, path);
+            let log_path = guest_artifact_host_path(vm_state_dir, path);
             match fs::read_to_string(&log_path) {
                 Ok(text) => Ok(text.contains(pattern)),
                 Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
@@ -2218,15 +2237,15 @@ async fn guest_service_ready(vm: &VmDiskState) -> anyhow::Result<bool> {
             }
         }
         GuestServiceReadinessCheck::HttpGetOk { url, .. } => {
-            let host_visible_url = host_visible_readiness_url(vm.ip, url)?;
+            let host_visible_url = host_visible_readiness_url(vm_ip, url)?;
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_millis(500))
                 .build()
-                .context("build readiness probe client")?;
+                .context("build startup probe client")?;
             match client.get(host_visible_url).send().await {
                 Ok(response) => Ok(response.status().is_success()),
                 Err(err) if err.is_connect() || err.is_timeout() => Ok(false),
-                Err(err) => Err(anyhow!("probe guest readiness over HTTP: {err}")),
+                Err(err) => Err(anyhow!("probe guest startup readiness over HTTP: {err}")),
             }
         }
     }
@@ -3152,12 +3171,12 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
-        assert!(status.guest_service_ready);
+        assert!(status.startup_probe_satisfied);
         assert!(status.guest_ready);
     }
 
     #[tokio::test]
-    async fn status_reports_guest_service_ready_from_log_probe_before_ready_marker() {
+    async fn status_reports_startup_probe_satisfied_from_log_probe_before_ready_marker() {
         let root = tempfile::tempdir().unwrap();
         let scripts_dir = root.path().join("bin");
         fs::create_dir_all(&scripts_dir).unwrap();
@@ -3180,7 +3199,33 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
-        assert!(status.guest_service_ready);
+        assert!(status.startup_probe_satisfied);
+        assert!(!status.guest_ready);
+    }
+
+    #[tokio::test]
+    async fn status_tolerates_damaged_autostart_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts_dir = root.path().join("bin");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(
+            &systemctl_script,
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::remove_dir_all(cfg.state_dir.join(vm_id).join("metadata")).unwrap();
+        let manager = VmManager::new(cfg).await.unwrap();
+
+        let status = manager.status(vm_id).await.unwrap();
+        assert_eq!(status.status, "running");
+        assert!(!status.startup_probe_satisfied);
         assert!(!status.guest_ready);
     }
 
@@ -3214,7 +3259,7 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
-        assert!(!status.guest_service_ready);
+        assert!(!status.startup_probe_satisfied);
         assert!(!status.guest_ready);
     }
 
@@ -3307,7 +3352,7 @@ mod tests {
 
         let initial_status = manager.status(vm_id).await.unwrap();
         assert_eq!(initial_status.status, "running");
-        assert!(!initial_status.guest_service_ready);
+        assert!(!initial_status.startup_probe_satisfied);
         assert!(!initial_status.guest_ready);
 
         let ready_path =
@@ -3325,7 +3370,7 @@ mod tests {
 
         let ready_status = manager.status(vm_id).await.unwrap();
         assert_eq!(ready_status.status, "running");
-        assert!(ready_status.guest_service_ready);
+        assert!(ready_status.startup_probe_satisfied);
         assert!(ready_status.guest_ready);
 
         let failed_path =
@@ -3343,7 +3388,7 @@ mod tests {
 
         let failed_status = manager.status(vm_id).await.unwrap();
         assert_eq!(failed_status.status, "running");
-        assert!(!failed_status.guest_service_ready);
+        assert!(!failed_status.startup_probe_satisfied);
         assert!(!failed_status.guest_ready);
     }
 

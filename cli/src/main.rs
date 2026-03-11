@@ -1921,13 +1921,13 @@ fn agent_startup_status_message(
             "Waiting for guest service to become ready..."
         }
         (Some(MicrovmAgentKind::Pi), AgentStartupPhase::WaitingForKeypackagePublish) => {
-            "Pi daemon is healthy. Publishing key package..."
+            "Pi daemon emitted its ready event. Publishing key package..."
         }
         (Some(MicrovmAgentKind::Openclaw), AgentStartupPhase::WaitingForKeypackagePublish) => {
-            "OpenClaw gateway is healthy. Publishing key package..."
+            "OpenClaw gateway passed health check. Publishing key package..."
         }
         (_, AgentStartupPhase::WaitingForKeypackagePublish) => {
-            "Guest service is healthy. Publishing key package..."
+            "Startup probe passed. Publishing key package..."
         }
         (_, AgentStartupPhase::Ready) => "Agent ready.",
         (_, AgentStartupPhase::Failed) => "Agent startup failed.",

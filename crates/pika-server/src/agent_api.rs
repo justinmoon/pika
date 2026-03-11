@@ -423,7 +423,7 @@ fn managed_environment_status_copy(
                 .to_string()
         }
         (Some(_), Some(AgentStartupPhase::WaitingForKeypackagePublish)) => {
-            "The managed OpenClaw service is healthy. Waiting for its key package to publish."
+            "The managed OpenClaw startup probe passed. Waiting for its key package to publish."
                 .to_string()
         }
         (Some(_), Some(AgentStartupPhase::Ready)) => {
@@ -507,7 +507,11 @@ fn phase_from_spawner_vm(vm: &SpawnerVmResponse) -> &'static str {
 }
 
 fn startup_phase_from_spawner_vm(vm: &SpawnerVmResponse) -> AgentStartupPhase {
-    match (vm.status.as_str(), vm.guest_ready, vm.guest_service_ready) {
+    match (
+        vm.status.as_str(),
+        vm.guest_ready,
+        vm.startup_probe_satisfied,
+    ) {
         ("failed", _, _) => AgentStartupPhase::Failed,
         ("running", true, _) => AgentStartupPhase::Ready,
         ("running", false, true) => AgentStartupPhase::WaitingForKeypackagePublish,
@@ -2229,7 +2233,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
-                guest_service_ready: true,
+                startup_probe_satisfied: true,
                 guest_ready: true,
             }),
             AGENT_PHASE_READY
@@ -2238,7 +2242,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
-                guest_service_ready: true,
+                startup_probe_satisfied: true,
                 guest_ready: false,
             }),
             AGENT_PHASE_CREATING
@@ -2247,7 +2251,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "failed".to_string(),
-                guest_service_ready: false,
+                startup_probe_satisfied: false,
                 guest_ready: false,
             }),
             AGENT_PHASE_ERROR
@@ -2260,7 +2264,7 @@ mod tests {
             startup_phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "starting".to_string(),
-                guest_service_ready: false,
+                startup_probe_satisfied: false,
                 guest_ready: false,
             }),
             AgentStartupPhase::BootingGuest
@@ -2269,7 +2273,7 @@ mod tests {
             startup_phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
-                guest_service_ready: false,
+                startup_probe_satisfied: false,
                 guest_ready: false,
             }),
             AgentStartupPhase::WaitingForServiceReady
@@ -2278,7 +2282,7 @@ mod tests {
             startup_phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
-                guest_service_ready: true,
+                startup_probe_satisfied: true,
                 guest_ready: false,
             }),
             AgentStartupPhase::WaitingForKeypackagePublish

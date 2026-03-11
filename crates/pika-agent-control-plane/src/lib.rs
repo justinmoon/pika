@@ -380,7 +380,8 @@ pub struct SpawnerVmResponse {
     #[serde(default = "default_spawner_vm_status")]
     pub status: String,
     #[serde(default)]
-    pub guest_service_ready: bool,
+    #[serde(alias = "guest_service_ready")]
+    pub startup_probe_satisfied: bool,
     #[serde(default)]
     pub guest_ready: bool,
 }
@@ -834,6 +835,19 @@ mod tests {
         let decoded: VmBackupStatusRecord =
             serde_json::from_str(&encoded).expect("decode backup record");
         assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn spawner_vm_response_accepts_legacy_guest_service_ready_field() {
+        let decoded: SpawnerVmResponse = serde_json::from_value(serde_json::json!({
+            "id": "vm-123",
+            "status": "running",
+            "guest_service_ready": true,
+            "guest_ready": false
+        }))
+        .expect("decode vm response");
+        assert!(decoded.startup_probe_satisfied);
+        assert!(!decoded.guest_ready);
     }
 
     #[test]

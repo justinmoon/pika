@@ -2330,7 +2330,7 @@ done
             .expect("get vm succeeds");
         assert_eq!(vm.id, "vm-123");
         assert_eq!(vm.status, "running");
-        assert!(!vm.guest_service_ready);
+        assert!(!vm.startup_probe_satisfied);
         assert!(vm.guest_ready);
 
         let captured = rx
