@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::config::{from_u32, to_u32, Config, RuntimeArtifactSpec};
 use anyhow::{anyhow, Context};
 use pika_agent_control_plane::{
-    GuestServiceKind, GuestServiceLaunch, GuestStartupPlan,
+    GuestServiceKind, GuestServiceLaunch, GuestServiceReadinessCheck, GuestStartupPlan,
     SpawnerCreateVmRequest as CreateVmRequest,
     SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmBackupStatus,
     SpawnerVmResponse as VmResponse, VmBackupFreshness, VmBackupStatusRecord,
@@ -259,6 +259,7 @@ impl VmManager {
                 Ok(VmResponse {
                     id,
                     status: runtime_status.to_string(),
+                    guest_service_ready: false,
                     guest_ready: false,
                 })
             }
@@ -287,7 +288,7 @@ impl VmManager {
     }
 
     pub async fn status(&self, id: &str) -> anyhow::Result<VmResponse> {
-        let vm = self.load_vm_cleanup_state(id)?;
+        let vm = self.load_vm_disk_state(id)?;
         let unit_name = self.microvm_unit_name(id);
         let status = match unit_active_state(&self.cfg.systemctl_cmd, &unit_name)
             .await
@@ -298,10 +299,25 @@ impl VmManager {
             Some("activating") | Some("reloading") => "starting",
             Some(_) | None => "starting",
         };
+        let guest_ready = guest_ready_marker_exists(&vm.microvm_state_dir);
+        let guest_service_ready = if guest_ready {
+            true
+        } else if status == "running" {
+            match guest_service_ready(&vm).await {
+                Ok(ready) => ready,
+                Err(err) => {
+                    warn!(vm_id = %id, error = %err, "failed to evaluate guest service readiness");
+                    false
+                }
+            }
+        } else {
+            false
+        };
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
-            guest_ready: guest_ready_marker_exists(&vm.microvm_state_dir),
+            guest_service_ready,
+            guest_ready,
         })
     }
 
@@ -348,6 +364,7 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
+            guest_service_ready: false,
             guest_ready: false,
         })
     }
@@ -2174,9 +2191,55 @@ fn guest_artifact_host_path(vm_state_dir: &Path, guest_artifact_path: &str) -> P
     }
 }
 
+fn guest_failed_marker_exists(vm_state_dir: &Path) -> bool {
+    guest_artifact_host_path(vm_state_dir, GUEST_FAILED_MARKER_PATH).is_file()
+}
+
 fn guest_ready_marker_exists(vm_state_dir: &Path) -> bool {
     guest_artifact_host_path(vm_state_dir, GUEST_READY_MARKER_PATH).is_file()
-        && !guest_artifact_host_path(vm_state_dir, GUEST_FAILED_MARKER_PATH).is_file()
+        && !guest_failed_marker_exists(vm_state_dir)
+}
+
+async fn guest_service_ready(vm: &VmDiskState) -> anyhow::Result<bool> {
+    if guest_failed_marker_exists(&vm.microvm_state_dir) {
+        return Ok(false);
+    }
+    if guest_ready_marker_exists(&vm.microvm_state_dir) {
+        return Ok(true);
+    }
+
+    match &vm.guest_autostart.startup_plan.readiness_check {
+        GuestServiceReadinessCheck::LogContains { path, pattern, .. } => {
+            let log_path = guest_artifact_host_path(&vm.microvm_state_dir, path);
+            match fs::read_to_string(&log_path) {
+                Ok(text) => Ok(text.contains(pattern)),
+                Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+                Err(err) => Err(err).with_context(|| format!("read {}", log_path.display())),
+            }
+        }
+        GuestServiceReadinessCheck::HttpGetOk { url, .. } => {
+            let host_visible_url = host_visible_readiness_url(vm.ip, url)?;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_millis(500))
+                .build()
+                .context("build readiness probe client")?;
+            match client.get(host_visible_url).send().await {
+                Ok(response) => Ok(response.status().is_success()),
+                Err(err) if err.is_connect() || err.is_timeout() => Ok(false),
+                Err(err) => Err(anyhow!("probe guest readiness over HTTP: {err}")),
+            }
+        }
+    }
+}
+
+fn host_visible_readiness_url(vm_ip: Ipv4Addr, guest_url: &str) -> anyhow::Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(guest_url)
+        .with_context(|| format!("parse readiness URL {guest_url}"))?;
+    if matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")) {
+        url.set_host(Some(&vm_ip.to_string()))
+            .map_err(|_| anyhow!("rewrite readiness URL host for vm {vm_ip}: {guest_url}"))?;
+    }
+    Ok(url)
 }
 
 async fn run_command(cmd: &mut Command, context: &str) -> anyhow::Result<()> {
@@ -3089,7 +3152,36 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
+        assert!(status.guest_service_ready);
         assert!(status.guest_ready);
+    }
+
+    #[tokio::test]
+    async fn status_reports_guest_service_ready_from_log_probe_before_ready_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts_dir = root.path().join("bin");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(
+            &systemctl_script,
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        let log_path = guest_artifact_host_path(&cfg.state_dir.join(vm_id), GUEST_LOG_PATH);
+        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        fs::write(&log_path, "{\"type\":\"ready\",\"npub\":\"npub1test\"}\n").unwrap();
+        let manager = VmManager::new(cfg).await.unwrap();
+
+        let status = manager.status(vm_id).await.unwrap();
+        assert_eq!(status.status, "running");
+        assert!(status.guest_service_ready);
+        assert!(!status.guest_ready);
     }
 
     #[tokio::test]
@@ -3122,6 +3214,7 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
+        assert!(!status.guest_service_ready);
         assert!(!status.guest_ready);
     }
 
@@ -3214,6 +3307,7 @@ mod tests {
 
         let initial_status = manager.status(vm_id).await.unwrap();
         assert_eq!(initial_status.status, "running");
+        assert!(!initial_status.guest_service_ready);
         assert!(!initial_status.guest_ready);
 
         let ready_path =
@@ -3231,6 +3325,7 @@ mod tests {
 
         let ready_status = manager.status(vm_id).await.unwrap();
         assert_eq!(ready_status.status, "running");
+        assert!(ready_status.guest_service_ready);
         assert!(ready_status.guest_ready);
 
         let failed_path =
@@ -3248,7 +3343,18 @@ mod tests {
 
         let failed_status = manager.status(vm_id).await.unwrap();
         assert_eq!(failed_status.status, "running");
+        assert!(!failed_status.guest_service_ready);
         assert!(!failed_status.guest_ready);
+    }
+
+    #[test]
+    fn host_visible_readiness_url_rewrites_loopback_to_vm_ip() {
+        let url = host_visible_readiness_url(
+            Ipv4Addr::new(192, 168, 83, 12),
+            "http://127.0.0.1:18789/health",
+        )
+        .unwrap();
+        assert_eq!(url.as_str(), "http://192.168.83.12:18789/health");
     }
 
     #[tokio::test]

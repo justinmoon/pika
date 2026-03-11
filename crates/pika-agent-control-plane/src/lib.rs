@@ -42,6 +42,7 @@ pub enum AgentStartupPhase {
     ProvisioningVm,
     BootingGuest,
     WaitingForServiceReady,
+    WaitingForKeypackagePublish,
     Ready,
     Failed,
 }
@@ -378,6 +379,8 @@ pub struct SpawnerVmResponse {
     pub id: String,
     #[serde(default = "default_spawner_vm_status")]
     pub status: String,
+    #[serde(default)]
+    pub guest_service_ready: bool,
     #[serde(default)]
     pub guest_ready: bool,
 }
