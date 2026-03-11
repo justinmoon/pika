@@ -912,63 +912,84 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       );
 
       const daemon = new PikachatDaemonClient({ cmd: daemonLaunch.cmd, args: daemonLaunch.args });
-      const ready = await daemon.waitForReady(15_000);
-      activeDaemons.set(resolved.accountId, {
-        daemon,
-        pubkey: ready.pubkey,
-        npub: ready.npub,
-      });
-      ctx.setStatus({
-        accountId: resolved.accountId,
-        publicKey: ready.pubkey,
-      });
+      const clearActiveHandle = () => {
+        const current = activeDaemons.get(resolved.accountId);
+        if (current?.daemon === daemon) {
+          activeDaemons.delete(resolved.accountId);
+        }
+      };
 
-      // Ensure the daemon has the full relay list (even if started with a single relay).
-      await daemon.setRelays(relays);
-      await daemon.publishKeypackage(relays);
-
-      // Fetch hypernote component catalog for agent prompt injection.
       try {
-        const catalog = await daemon.hypernoteCatalog();
-        const catalogText = typeof catalog === "string" ? catalog : JSON.stringify(catalog);
-        if (catalogText) hypernoteCatalogs.set(resolved.accountId, catalogText);
-      } catch {
-        ctx.log?.debug?.(`[${resolved.accountId}] hypernote catalog fetch failed (optional)`);
-      }
+        const ready = await daemon.waitForReady(15_000);
+        activeDaemons.set(resolved.accountId, {
+          daemon,
+          pubkey: ready.pubkey,
+          npub: ready.npub,
+        });
+        ctx.setStatus({
+          accountId: resolved.accountId,
+          publicKey: ready.pubkey,
+        });
 
-      // Seed member counts from existing groups (so isOneOnOneGroup works
-      // immediately) and create an owner DM if no groups exist yet.
-      // Fire-and-forget so it doesn't block startup.
-      {
-        const ownerCfg = resolved.config.owner;
-        const ownerPk: string | undefined = ownerCfg
-          ? String(Array.isArray(ownerCfg) ? ownerCfg[0] : ownerCfg).trim().toLowerCase()
-          : undefined;
-        void (async () => {
-          try {
-            const groupsResult = (await daemon.listGroups()) as any;
-            const groups: any[] = groupsResult?.groups ?? [];
-            // Seed member count cache for all groups
-            for (const g of groups) {
-              const gid = String(g.nostr_group_id ?? "").toLowerCase();
-              const mc = typeof g.member_count === "number" ? g.member_count : 0;
-              if (gid) groupMemberCounts.set(gid, mc);
-            }
-            if (ownerPk && groups.length === 0) {
-              ctx.log?.info?.(
-                `[${resolved.accountId}] no groups found, creating DM with owner ${ownerPk}`,
+        daemon.waitForExit().then(() => {
+          clearActiveHandle();
+        });
+
+        // Ensure the daemon has the full relay list (even if started with a single relay).
+        await daemon.setRelays(relays);
+        await daemon.publishKeypackage(relays);
+
+        // Fetch hypernote component catalog for agent prompt injection.
+        try {
+          const catalog = await daemon.hypernoteCatalog();
+          const catalogText = typeof catalog === "string" ? catalog : JSON.stringify(catalog);
+          if (catalogText) hypernoteCatalogs.set(resolved.accountId, catalogText);
+        } catch {
+          ctx.log?.debug?.(`[${resolved.accountId}] hypernote catalog fetch failed (optional)`);
+        }
+
+        // Seed member counts from existing groups (so isOneOnOneGroup works
+        // immediately) and create an owner DM if no groups exist yet.
+        // Fire-and-forget so it doesn't block startup.
+        {
+          const ownerCfg = resolved.config.owner;
+          const ownerPk: string | undefined = ownerCfg
+            ? String(Array.isArray(ownerCfg) ? ownerCfg[0] : ownerCfg).trim().toLowerCase()
+            : undefined;
+          void (async () => {
+            try {
+              const groupsResult = (await daemon.listGroups()) as any;
+              const groups: any[] = groupsResult?.groups ?? [];
+              // Seed member count cache for all groups
+              for (const g of groups) {
+                const gid = String(g.nostr_group_id ?? "").toLowerCase();
+                const mc = typeof g.member_count === "number" ? g.member_count : 0;
+                if (gid) groupMemberCounts.set(gid, mc);
+              }
+              if (ownerPk && groups.length === 0) {
+                ctx.log?.info?.(
+                  `[${resolved.accountId}] no groups found, creating DM with owner ${ownerPk}`,
+                );
+                const created = await daemon.initGroup(ownerPk);
+                ctx.log?.info?.(
+                  `[${resolved.accountId}] owner DM created nostr_group_id=${created.nostr_group_id}`,
+                );
+              }
+            } catch (err) {
+              ctx.log?.warn?.(
+                `[${resolved.accountId}] failed to seed groups / init owner DM: ${err}`,
               );
-              const created = await daemon.initGroup(ownerPk);
-              ctx.log?.info?.(
-                `[${resolved.accountId}] owner DM created nostr_group_id=${created.nostr_group_id}`,
-              );
             }
-          } catch (err) {
-            ctx.log?.warn?.(
-              `[${resolved.accountId}] failed to seed groups / init owner DM: ${err}`,
-            );
-          }
-        })();
+          })();
+        }
+      } catch (err) {
+        clearActiveHandle();
+        try {
+          await daemon.shutdown();
+        } catch {
+          // ignore best-effort cleanup on startup failure
+        }
+        throw err;
       }
 
       const groupPolicy = resolved.config.groupPolicy ?? "allowlist";

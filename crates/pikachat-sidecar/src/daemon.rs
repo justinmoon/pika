@@ -1797,14 +1797,6 @@ pub async fn daemon_main(
         is_open || allowlist.contains(&pubkey_hex.trim().to_lowercase())
     };
 
-    out_tx
-        .send(OutMsg::Ready {
-            protocol_version: PROTOCOL_VERSION,
-            pubkey: pubkey_hex.clone(),
-            npub,
-        })
-        .ok();
-
     let mut relay_urls: Vec<RelayUrl> = Vec::new();
     for r in relays_arg {
         relay_urls
@@ -1966,7 +1958,7 @@ pub async fn daemon_main(
     }
 
     // Unix domain socket for --remote CLI connections
-    let sock_path = state_dir.join("daemon.sock");
+    let sock_path = crate::resolve_daemon_socket_path(state_dir);
     // Clean up stale socket
     let _ = std::fs::remove_file(&sock_path);
     let unix_listener = tokio::net::UnixListener::bind(&sock_path)
@@ -2034,6 +2026,14 @@ pub async fn daemon_main(
             });
         }
     });
+
+    out_tx
+        .send(OutMsg::Ready {
+            protocol_version: PROTOCOL_VERSION,
+            pubkey: pubkey_hex.clone(),
+            npub,
+        })
+        .ok();
 
     let mut shutdown = false;
     while !shutdown {
