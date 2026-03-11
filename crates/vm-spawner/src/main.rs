@@ -203,7 +203,6 @@ async fn restore_vm(
         .map_err(|err| err.with_request_id(request_context.request_id))?;
     Ok(Json(vm))
 }
-
 async fn get_vm_backup_status(
     State(manager): State<Arc<VmManager>>,
     Extension(request_context): Extension<RequestContext>,
