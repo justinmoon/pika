@@ -23,11 +23,13 @@ ios/.build/
 ios/build/
 ios/build-fresh*/
 ios/build-device/
+ios/build-debug-device/
 ios/build-appstore/
 ios/build-logs/
 ios/Frameworks/
 ios/**/xcuserdata/
 ios/Pika.xcodeproj/project.pbxproj
+ios/Pika.xcodeproj/project.xcworkspace/xcshareddata/
 ios/Pika.xcodeproj/xcshareddata/xcschemes/Pika.xcscheme
 ios/Bindings/*.swift
 ios/Bindings/*.h
