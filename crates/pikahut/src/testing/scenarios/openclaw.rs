@@ -1,14 +1,17 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
+use nostr_sdk::prelude::{Client, PublicKey, RelayUrl};
+use pika_marmot_runtime::relay::fetch_latest_key_package;
 use serde_json::{Value, json};
 
 use crate::config::{self, ProfileName};
 use crate::testing::{
     ArtifactPolicy, CommandRunner, CommandSpec, FixtureSpec, TenantNamespace, TestContext,
-    start_fixture,
+    command::SpawnHandle, start_fixture,
 };
 
 use super::artifacts::{self, CommandOutcomeRecord};
@@ -22,6 +25,83 @@ fn build_context(state_dir: Option<std::path::PathBuf>) -> Result<TestContext> {
         builder = builder.state_dir(path);
     }
     builder.build()
+}
+
+fn read_identity_pubkey_hex(identity_path: &Path) -> Result<String> {
+    let identity: Value = serde_json::from_str(
+        &fs::read_to_string(identity_path)
+            .with_context(|| format!("read {}", identity_path.display()))?,
+    )
+    .context("parse sidecar identity.json")?;
+    identity
+        .get("public_key_hex")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow!("identity.json missing public_key_hex"))
+}
+
+async fn wait_for_sidecar_keypackage(
+    relay_url: &str,
+    sidecar_state_dir: &Path,
+    gateway: &mut SpawnHandle,
+) -> Result<String> {
+    let relay_url = RelayUrl::parse(relay_url).context("parse openclaw relay url")?;
+    let relay_urls = vec![relay_url.clone()];
+    let identity_path = sidecar_state_dir.join("identity.json");
+    let client = Client::default();
+    client
+        .add_relay(relay_url.clone())
+        .await
+        .with_context(|| format!("add relay {relay_url}"))?;
+    client.connect().await;
+
+    let mut peer_pubkey_hex: Option<String> = None;
+    let mut last_fetch_err: Option<String> = None;
+
+    for _ in 0..240 {
+        if peer_pubkey_hex.is_none() && identity_path.is_file() {
+            peer_pubkey_hex = Some(read_identity_pubkey_hex(&identity_path)?);
+        }
+
+        if let Some(peer_pubkey_hex) = peer_pubkey_hex.as_deref() {
+            let peer_pubkey = PublicKey::from_hex(peer_pubkey_hex)
+                .with_context(|| format!("parse bot pubkey from {}", identity_path.display()))?;
+            match fetch_latest_key_package(
+                &client,
+                &peer_pubkey,
+                &relay_urls,
+                Duration::from_secs(2),
+            )
+            .await
+            {
+                Ok(_) => {
+                    client.shutdown().await;
+                    return Ok(peer_pubkey_hex.to_string());
+                }
+                Err(err) => {
+                    last_fetch_err = Some(format!("{err:#}"));
+                }
+            }
+        }
+
+        if let Some(status) = gateway.try_wait()? {
+            client.shutdown().await;
+            bail!(
+                "openclaw gateway exited before bot keypackage was published (status={status}, identity_present={}, last_fetch_error={})",
+                identity_path.is_file(),
+                last_fetch_err.unwrap_or_else(|| "none".to_string())
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    client.shutdown().await;
+    bail!(
+        "timed out waiting for OpenClaw bot keypackage publication (identity_present={}, last_fetch_error={})",
+        identity_path.is_file(),
+        last_fetch_err.unwrap_or_else(|| "none".to_string())
+    )
 }
 
 pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOutput> {
@@ -193,40 +273,26 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
     let openclaw_log = gateway.stdout_path.clone();
     let openclaw_err = gateway.stderr_path.clone();
 
-    let identity_path = sidecar_state_dir.join("identity.json");
-    let mut ready = false;
-    for _ in 0..80 {
-        if identity_path.is_file() {
-            ready = true;
-            break;
-        }
-        if gateway.try_wait()?.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    let peer_pubkey = wait_for_sidecar_keypackage(&relay_url, &sidecar_state_dir, &mut gateway)
+        .await
+        .inspect_err(|err| {
+            eprintln!(
+                "OpenClaw/pikachat-openclaw bot did not publish a usable keypackage: {err:#}"
+            );
+        });
 
-    if !ready {
-        eprintln!("OpenClaw/pikachat-openclaw sidecar did not start (missing identity.json)");
-        eprintln!(
-            "openclaw e2e failed; artifacts preserved at: {}",
-            artifact_dir.display()
-        );
-        let _ = artifacts::write_failure_tail(&context, "openclaw-gateway", &openclaw_log, 120);
-        eprintln!("{}", tail_lines(&openclaw_log, 120));
-        bail!("openclaw sidecar startup failed");
-    }
-
-    let identity: Value = serde_json::from_str(
-        &fs::read_to_string(&identity_path)
-            .with_context(|| format!("read {}", identity_path.display()))?,
-    )
-    .context("parse sidecar identity.json")?;
-    let peer_pubkey = identity
-        .get("public_key_hex")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("identity.json missing public_key_hex"))?
-        .to_string();
+    let peer_pubkey = match peer_pubkey {
+        Ok(peer_pubkey) => peer_pubkey,
+        Err(err) => {
+            eprintln!(
+                "openclaw e2e failed; artifacts preserved at: {}",
+                artifact_dir.display()
+            );
+            let _ = artifacts::write_failure_tail(&context, "openclaw-gateway", &openclaw_log, 120);
+            eprintln!("{}", tail_lines(&openclaw_log, 120));
+            return Err(err);
+        }
+    };
 
     let scenario_run = runner.run(
         &CommandSpec::cargo()

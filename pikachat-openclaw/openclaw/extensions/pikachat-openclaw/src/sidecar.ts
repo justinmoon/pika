@@ -62,6 +62,7 @@ export class SendThrottle {
 export class PikachatDaemonClient {
   #proc: ChildProcessWithoutNullStreams;
   #closed = false;
+  #readySeen = false;
   #requestSeq = 0;
   #pending = new Map<
     string,
@@ -78,6 +79,7 @@ export class PikachatDaemonClient {
   #readyPromise: Promise<PikachatDaemonOutMsg & { type: "ready" }>;
   #exitResolve: (() => void) | null = null;
   #exitPromise: Promise<void>;
+  #stderrTail: string[] = [];
   #sendThrottle = new SendThrottle(1000, (err) => {
     runtimeLogger()?.error?.(`[pikachat] throttled send failed: ${err}`);
   });
@@ -103,6 +105,15 @@ export class PikachatDaemonClient {
         for (const ln of s.split(/\r?\n/)) {
           const trimmed = ln.trim();
           if (!trimmed) continue;
+          this.#stderrTail.push(trimmed);
+          if (this.#stderrTail.length > 40) {
+            this.#stderrTail.shift();
+          }
+          const log = runtimeLogger();
+          if (!this.#readySeen) {
+            log?.info?.(`[pikachat] ${trimmed}`);
+            continue;
+          }
           // Sidecar parse/compat errors are critical for debugging interop, and OpenClaw's
           // default log level may hide debug output. Escalate likely call-signal errors.
           const looksLikeCallSignalIssue =
@@ -110,7 +121,6 @@ export class PikachatDaemonClient {
             trimmed.includes("call.invite") ||
             trimmed.includes("call.accept") ||
             trimmed.includes("call signal");
-          const log = runtimeLogger();
           if (looksLikeCallSignalIssue) {
             log?.warn?.(`[pikachat] ${trimmed}`);
           } else {
@@ -130,6 +140,11 @@ export class PikachatDaemonClient {
 
     this.#proc.on("exit", (code, signal) => {
       this.#closed = true;
+      if ((code ?? 0) !== 0 && this.#stderrTail.length > 0) {
+        runtimeLogger()?.error?.(
+          `[pikachat] daemon exited with recent stderr=${JSON.stringify(this.#stderrTail.slice(-12))}`,
+        );
+      }
       const err = new Error(`pikachat daemon exited code=${code ?? "null"} signal=${signal ?? "null"}`);
       for (const { reject } of this.#pending.values()) {
         reject(err);
@@ -398,6 +413,7 @@ export class PikachatDaemonClient {
     }
 
     if (msg.type === "ready") {
+      this.#readySeen = true;
       const rr = this.#readyResolve;
       if (rr) {
         this.#readyResolve = null;

@@ -11,7 +11,7 @@ pub async fn remote_call(
     state_dir: &Path,
     cmd_json: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    let sock_path = state_dir.join("daemon.sock");
+    let sock_path = pikachat_sidecar::resolve_daemon_socket_path(state_dir);
     let stream = UnixStream::connect(&sock_path)
         .await
         .with_context(|| format!("connect to daemon at {}", sock_path.display()))?;
