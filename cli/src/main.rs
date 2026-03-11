@@ -524,19 +524,15 @@ struct ChannelConfig {
     url_scheme: String,
 }
 
-async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
-    let cmd_json = match &cli.cmd {
-        Command::Groups => {
-            serde_json::json!({"cmd": "list_groups"})
-        }
-        Command::Welcomes => {
-            serde_json::json!({"cmd": "list_pending_welcomes"})
-        }
+fn remote_command_json(cli: &Cli) -> anyhow::Result<serde_json::Value> {
+    match &cli.cmd {
+        Command::Groups => Ok(serde_json::json!({"cmd": "list_groups"})),
+        Command::Welcomes => Ok(serde_json::json!({"cmd": "list_pending_welcomes"})),
         Command::AcceptWelcome { wrapper_event_id } => {
-            serde_json::json!({"cmd": "accept_welcome", "wrapper_event_id": wrapper_event_id})
+            Ok(serde_json::json!({"cmd": "accept_welcome", "wrapper_event_id": wrapper_event_id}))
         }
         Command::Messages { group, limit } => {
-            serde_json::json!({"cmd": "get_messages", "nostr_group_id": group, "limit": limit})
+            Ok(serde_json::json!({"cmd": "get_messages", "nostr_group_id": group, "limit": limit}))
         }
         Command::Send {
             group,
@@ -554,7 +550,7 @@ async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("--group is required in --remote mode"))?;
             if let Some(media_path) = media {
-                serde_json::json!({
+                Ok(serde_json::json!({
                     "cmd": "send_media",
                     "nostr_group_id": group,
                     "file_path": media_path.display().to_string(),
@@ -562,13 +558,13 @@ async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
                     "mime_type": mime_type,
                     "filename": filename,
                     "blossom_servers": blossom_servers,
-                })
+                }))
             } else {
-                serde_json::json!({
+                Ok(serde_json::json!({
                     "cmd": "send_message",
                     "nostr_group_id": group,
                     "content": content,
-                })
+                }))
             }
         }
         Command::SendHypernote {
@@ -591,30 +587,33 @@ async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
                 (None, None) => anyhow::bail!("either --content or --file is required"),
                 _ => unreachable!(),
             };
-            serde_json::json!({
+            Ok(serde_json::json!({
                 "cmd": "send_hypernote",
                 "nostr_group_id": group,
                 "content": body,
                 "title": title.as_deref().or(file_title.as_deref()),
                 "state": state.as_deref().or(file_state.as_deref()),
-            })
+            }))
         }
-        Command::Invite { peer, name } => {
-            serde_json::json!({
-                "cmd": "init_group",
-                "peer_pubkey": peer,
-                "group_name": name,
-            })
-        }
-        Command::PublishKp => {
-            serde_json::json!({"cmd": "publish_keypackage"})
-        }
+        Command::Invite { peer, name } => Ok(serde_json::json!({
+            "cmd": "init_group",
+            "peer_pubkey": peer,
+            "group_name": name,
+        })),
+        Command::PublishKp => Ok(serde_json::json!({
+            "cmd": "publish_keypackage",
+            "relays": cli.relay,
+        })),
         _ => {
             anyhow::bail!(
                 "command not supported in --remote mode; supported: groups, welcomes, accept-welcome, messages, send, send-hypernote, invite, publish-kp"
             );
         }
-    };
+    }
+}
+
+async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
+    let cmd_json = remote_command_json(cli)?;
     let result = remote::remote_call(&cli.state_dir, cmd_json).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
@@ -2754,6 +2753,29 @@ mod tests {
         ])
         .expect_err("removed recover-after-attempt flag should be rejected");
         assert!(err.to_string().contains("--recover-after-attempt"));
+    }
+
+    #[test]
+    fn remote_publish_kp_forwards_configured_relays() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "--remote",
+            "--state-dir",
+            "/tmp/pikachat-state",
+            "--relay",
+            "wss://relay-one.example.com",
+            "--relay",
+            "wss://relay-two.example.com",
+            "publish-kp",
+        ])
+        .expect("parse remote publish-kp args");
+
+        let payload = remote_command_json(&cli).expect("build remote command");
+        assert_eq!(payload["cmd"], "publish_keypackage");
+        assert_eq!(
+            payload["relays"],
+            json!(["wss://relay-one.example.com", "wss://relay-two.example.com"])
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vmSpawnerPkg, piAgentPkg, pikachatPkg, ... }:
+{ config, lib, pkgs, vmSpawnerPkg, piAgentPkg, openclawGatewayPkg, pikachatPkg, ... }:
 
 let
   cfg = config.pika.microvmHost;
@@ -107,7 +107,7 @@ in
         "VM_RUNNER_FLAKE_DIR=${spawnerRunDir}/runner-flakes"
         "VM_RUNTIME_ARTIFACTS_HOST_DIR=/data/microvm-shared/artifacts"
         "VM_RUNTIME_ARTIFACTS_GUEST_MOUNT=/opt/runtime-artifacts"
-        "VM_RUNTIME_ARTIFACTS=pi=${piAgentPkg}"
+        "VM_RUNTIME_ARTIFACTS=pi=${piAgentPkg},openclaw=${openclawGatewayPkg}"
         "VM_PIKACHAT_BIN=${pikachatPkg}/bin/pikachat"
         "VM_PREWARM_ENABLED=true"
         "VM_CHOWN_CMD=/run/current-system/sw/bin/chown"

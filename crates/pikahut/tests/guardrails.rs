@@ -350,6 +350,50 @@ fn integration_wrapper_scripts_dispatch_to_selectors() -> Result<()> {
 }
 
 #[test]
+fn agent_guest_chat_recipes_use_non_reset_wrapper() -> Result<()> {
+    let root = workspace_root();
+    let agent_just = fs::read_to_string(root.join("just/agent.just"))?;
+    let agent_demo = fs::read_to_string(root.join("scripts/agent-demo.sh"))?;
+    let agent_chat_demo = fs::read_to_string(root.join("scripts/agent-chat-demo.sh"))?;
+    let ensure_demo = fs::read_to_string(root.join("scripts/demo-agent-microvm.sh"))?;
+
+    assert!(
+        agent_just.contains("PIKA_AGENT_MICROVM_KIND=pi ./scripts/agent-chat-demo.sh"),
+        "agent-pi must use the non-reset chat wrapper"
+    );
+    assert!(
+        agent_just.contains(
+            "PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/agent-chat-demo.sh"
+        ),
+        "agent-claw must use the non-reset chat wrapper with native backend"
+    );
+    assert!(
+        agent_just.contains(
+            "PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/demo-agent-microvm.sh"
+        ),
+        "agent-claw-ensure must force native backend"
+    );
+    assert!(
+        !agent_demo.contains("--recover-after-attempt"),
+        "agent-demo wrapper must not pass removed pikachat agent chat flags"
+    );
+    assert!(
+        agent_demo.contains("openclaw)\n    set_agent_microvm_backend_default native"),
+        "agent-demo wrapper must default OpenClaw guests to native backend"
+    );
+    assert!(
+        agent_chat_demo.contains("openclaw)\n    set_agent_microvm_backend_default native"),
+        "agent-chat-demo wrapper must default OpenClaw guests to native backend"
+    );
+    assert!(
+        ensure_demo.contains("openclaw)\n    set_agent_microvm_backend_default native"),
+        "demo-agent-microvm wrapper must default OpenClaw guests to native backend"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn migration_docs_do_not_reference_legacy_cli_harness_paths() -> Result<()> {
     let root = workspace_root();
     for path in [

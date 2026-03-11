@@ -14,7 +14,7 @@ agent-pi-ensure *ARGS="":
 
 # Run the HTTP agent ensure demo for an OpenClaw guest over the daemon protocol.
 agent-claw-ensure *ARGS="":
-    PIKA_AGENT_MICROVM_KIND=openclaw ./scripts/demo-agent-microvm.sh {{ ARGS }}
+    PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
 # Ensure/reuse agent, send one message, then optionally listen for reply.
 agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
@@ -42,11 +42,11 @@ agent-demo-acp MESSAGE="CLI demo check: reply with ACK and one short sentence.":
 
 # Ensure/reuse a Pi ACP guest, then chat.
 agent-pi MESSAGE="CLI demo check: reply with ACK and one short sentence.":
-    PIKA_AGENT_MICROVM_KIND=pi ./scripts/agent-demo.sh "{{ MESSAGE }}"
+    PIKA_AGENT_MICROVM_KIND=pi ./scripts/agent-chat-demo.sh "{{ MESSAGE }}"
 
 # Ensure/reuse an OpenClaw guest, then chat.
 agent-claw MESSAGE="CLI demo check: reply with ACK and one short sentence.":
-    PIKA_AGENT_MICROVM_KIND=openclaw ./scripts/agent-demo.sh "{{ MESSAGE }}"
+    PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/agent-chat-demo.sh "{{ MESSAGE }}"
 
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:

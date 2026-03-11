@@ -25,13 +25,17 @@
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nix-openclaw = {
+      url = "github:openclaw/nix-openclaw";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     microvm = {
       url = "github:microvm-nix/microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, moq, rust-overlay, android-nixpkgs, disko, sops-nix, microvm }:
+  outputs = { self, nixpkgs, crane, flake-utils, moq, rust-overlay, android-nixpkgs, disko, sops-nix, nix-openclaw, microvm }:
     let
       mkRelay = hostFile: nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
@@ -62,6 +66,7 @@
           ./Cargo.lock
           ./config
           ./crates
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw
           ./rust
           ./cli
           ./uniffi-bindgen
@@ -74,6 +79,7 @@
           ./Cargo.lock
           ./config
           ./crates
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw
           ./rust
           ./cli
           ./uniffi-bindgen
@@ -120,6 +126,7 @@
           ./cli
           ./crates
           ./nix
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw
           ./rust
           ./uniffi-bindgen
         ];
@@ -281,6 +288,8 @@
           platforms = platforms.linux;
         };
       };
+
+      openclawGatewayPkg = nix-openclaw.packages."x86_64-linux"."openclaw-gateway";
 
       pikaRelayPkg = serverPkgs.buildGoModule {
         pname = "pika-relay";
@@ -819,6 +828,7 @@ EOF
       packages."x86_64-linux" = {
         vm-spawner = vmSpawnerPkg;
         pi-agent-runtime = piAgentPkg;
+        openclaw-gateway = openclawGatewayPkg;
         pikachat = pikachatPkg;
         pikaci = pikaciServerPkg;
       };
@@ -841,7 +851,7 @@ EOF
 
         pika-build = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit self sops-nix vmSpawnerPkg piAgentPkg pikaNewsPkg pikachatPkg pikaciServerPkg; };
+          specialArgs = { inherit self sops-nix vmSpawnerPkg piAgentPkg openclawGatewayPkg pikaNewsPkg pikachatPkg pikaciServerPkg; };
           modules = [
             disko.nixosModules.disko
             sops-nix.nixosModules.sops

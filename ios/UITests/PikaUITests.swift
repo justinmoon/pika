@@ -107,6 +107,36 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(nav.waitForExistence(timeout: timeout))
     }
 
+    private func openAgentProvisioningFromChatList(_ app: XCUIApplication, timeout: TimeInterval = 20) {
+        let chatsNav = app.navigationBars["Chats"]
+        XCTAssertTrue(chatsNav.waitForExistence(timeout: timeout))
+
+        let window = app.windows.element(boundBy: 0)
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.08)).tap()
+
+            let agentMenuItem = app.buttons.matching(identifier: "chatlist_agent").firstMatch
+            if agentMenuItem.waitForExistence(timeout: 1.0) {
+                agentMenuItem.tap()
+
+                let openclawChoice = app.buttons["OpenClaw"].firstMatch
+                if openclawChoice.waitForExistence(timeout: 1.0) {
+                    openclawChoice.tap()
+                }
+                return
+            }
+
+            // Dismiss the menu before retrying. The agent item appears only after
+            // the allowlist probe resolves and the chat list re-renders.
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.10, dy: 0.20)).tap()
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
+        XCTFail("Agent menu item did not appear on chat list")
+    }
+
     private func copyMyCodeAndCloseProfile(
         _ app: XCUIApplication,
         profileNavBar: XCUIElement? = nil,
@@ -279,6 +309,28 @@ final class PikaUITests: XCTestCase {
         }
 
         return merged
+    }
+
+    private func loginWithTestNsecIfNeeded(
+        _ app: XCUIApplication,
+        testNsec: String,
+        timeout: TimeInterval = 20
+    ) {
+        let chatsNavBar = app.navigationBars["Chats"]
+        if chatsNavBar.waitForExistence(timeout: 5) {
+            return
+        }
+
+        let loginNsec = app.secureTextFields.matching(identifier: "login_nsec_input").firstMatch
+        let loginSubmit = app.buttons.matching(identifier: "login_submit").firstMatch
+        XCTAssertTrue(loginNsec.waitForExistence(timeout: 10), "Login nsec field not shown")
+        XCTAssertTrue(loginSubmit.waitForExistence(timeout: 10), "Login submit button not shown")
+
+        loginNsec.tap()
+        loginNsec.typeText(testNsec)
+        loginSubmit.tap()
+
+        XCTAssertTrue(chatsNavBar.waitForExistence(timeout: timeout), "Chat list not shown after login")
     }
 
     func testCreateAccount_noteToSelf_sendMessage_and_logout() throws {
@@ -631,6 +683,94 @@ final class PikaUITests: XCTestCase {
 
         // Expect deterministic ack from the bot.
         XCTAssertTrue(app.staticTexts[expect].waitForExistence(timeout: 10))
+    }
+
+    func testE2E_openclawAgent_createAndReply() throws {
+        let env = ProcessInfo.processInfo.environment
+        let dotenv = loadDotenv()
+        let testNsec = env["PIKA_UI_E2E_NSEC"]
+            ?? env["PIKA_TEST_NSEC"]
+            ?? dotenv["PIKA_UI_E2E_NSEC"]
+            ?? dotenv["PIKA_TEST_NSEC"]
+            ?? ""
+        let relays = env["PIKA_UI_E2E_RELAYS"] ?? dotenv["PIKA_UI_E2E_RELAYS"] ?? ""
+        let kpRelays = env["PIKA_UI_E2E_KP_RELAYS"] ?? dotenv["PIKA_UI_E2E_KP_RELAYS"] ?? ""
+        let agentApiUrl = env["PIKA_AGENT_API_URL"]
+            ?? env["PIKA_SERVER_URL"]
+            ?? dotenv["PIKA_AGENT_API_URL"]
+            ?? dotenv["PIKA_SERVER_URL"]
+            ?? ""
+
+        if testNsec.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_NSEC (or PIKA_TEST_NSEC)"); return }
+        if relays.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_RELAYS"); return }
+        if kpRelays.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_KP_RELAYS"); return }
+
+        let app = XCUIApplication()
+        app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
+        app.launchEnvironment["PIKA_RELAY_URLS"] = relays
+        app.launchEnvironment["PIKA_KEY_PACKAGE_RELAY_URLS"] = kpRelays
+        if !agentApiUrl.isEmpty {
+            app.launchEnvironment["PIKA_AGENT_API_URL"] = agentApiUrl
+        }
+        app.launch()
+
+        loginWithTestNsecIfNeeded(app, testNsec: testNsec)
+        openAgentProvisioningFromChatList(app, timeout: 30)
+
+        let composerDeadline = Date().addingTimeInterval(120)
+        let msgField = app.textViews.matching(identifier: "chat_message_input").firstMatch
+        let msgFieldFallback = app.textFields.matching(identifier: "chat_message_input").firstMatch
+
+        while Date() < composerDeadline {
+            if msgField.exists || msgFieldFallback.exists { break }
+
+            if let errorMsg = dismissPikaToastIfPresent(app, timeout: 0.5) {
+                XCTFail("OpenClaw E2E failed while provisioning agent: \(errorMsg)")
+                return
+            }
+
+            let retry = app.buttons["Try Again"].firstMatch
+            if retry.exists {
+                let visibleTexts = app.staticTexts.allElementsBoundByIndex
+                    .map(\.label)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " | ")
+                XCTFail("OpenClaw provisioning entered error state: \(visibleTexts)")
+                return
+            }
+
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
+        let composer = msgField.exists ? msgField : msgFieldFallback
+        XCTAssertTrue(composer.waitForExistence(timeout: 5), "Timed out waiting for OpenClaw chat to open")
+
+        let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let expected = "IOS_OPENCLAW_E2E_OK token=\(nonce)"
+        let probe = "Reply with exactly: \(expected)"
+
+        composer.tap()
+        composer.typeText(probe)
+
+        let send = app.buttons.matching(identifier: "chat_send").firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 10))
+        send.tap()
+
+        let replyDeadline = Date().addingTimeInterval(90)
+        while Date() < replyDeadline {
+            if app.staticTexts[expected].exists {
+                return
+            }
+
+            if let errorMsg = dismissPikaToastIfPresent(app, timeout: 0.5) {
+                XCTFail("OpenClaw E2E failed after sending probe: \(errorMsg)")
+                return
+            }
+
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
+        XCTFail("Timed out waiting for OpenClaw reply: \(expected)")
     }
 
     func testE2E_hypernoteDetailsAndCodeBlock() throws {

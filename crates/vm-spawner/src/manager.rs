@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
@@ -44,6 +44,7 @@ struct VmDiskState {
     cpu: u32,
     memory_mb: u32,
     microvm_state_dir: PathBuf,
+    guest_autostart: GuestAutostartRequest,
 }
 
 #[derive(Debug, Clone)]
@@ -70,10 +71,11 @@ const AUTOSTART_STARTUP_PLAN_METADATA: &str = "autostart.startup-plan.json";
 const BACKUP_STATUS_METADATA: &str = "backup-status.v1.json";
 const BACKUP_HEALTHY_MAX_AGE_HOURS: i64 = 6;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct CurrentVmMetadata {
     cpu: u32,
     memory_mb: u32,
+    guest_autostart: GuestAutostartRequest,
 }
 
 #[derive(Debug)]
@@ -213,14 +215,7 @@ impl VmManager {
             create_tap_interface(&self.cfg.ip_cmd, &tap_name).await?;
             ensure_tap_bridged(&self.cfg.ip_cmd, &tap_name, &self.cfg.bridge_name).await?;
 
-            run_command(
-                Command::new(&self.cfg.systemctl_cmd)
-                    .arg("start")
-                    .arg("--no-block")
-                    .arg(self.microvm_unit_name(&id)),
-                "start microvm service",
-            )
-            .await?;
+            start_unit_nonblocking(&self.cfg.systemctl_cmd, &self.microvm_unit_name(&id)).await?;
             if !wait_for_unit_active_or_fail_fast(
                 &self.cfg.systemctl_cmd,
                 &self.microvm_unit_name(&id),
@@ -612,14 +607,7 @@ impl VmManager {
         self.sync_vm_gcroots(&vm.id, &vm.microvm_state_dir)?;
         create_tap_interface(&self.cfg.ip_cmd, &vm.tap_name).await?;
         ensure_tap_bridged(&self.cfg.ip_cmd, &vm.tap_name, &self.cfg.bridge_name).await?;
-        run_command(
-            Command::new(&self.cfg.systemctl_cmd)
-                .arg("start")
-                .arg("--no-block")
-                .arg(&unit_name),
-            "start microvm service",
-        )
-        .await?;
+        start_unit_nonblocking(&self.cfg.systemctl_cmd, &unit_name).await?;
         Ok(())
     }
 
@@ -726,6 +714,7 @@ impl VmManager {
             cpu: metadata.cpu,
             memory_mb: metadata.memory_mb,
             microvm_state_dir: paths.microvm_state_dir,
+            guest_autostart: metadata.guest_autostart,
         })
     }
 
@@ -915,9 +904,14 @@ impl VmManager {
             512,
             self.cfg.max_memory_mb,
         )?;
-        require_non_empty_file(&paths.microvm_state_dir.join("metadata/autostart.command"))?;
+        let guest_autostart =
+            load_guest_autostart_metadata(&paths.microvm_state_dir.join("metadata"))?;
 
-        Ok(CurrentVmMetadata { cpu, memory_mb })
+        Ok(CurrentVmMetadata {
+            cpu,
+            memory_mb,
+            guest_autostart,
+        })
     }
 
     fn load_guest_startup_plan(
@@ -1035,7 +1029,7 @@ impl VmManager {
             vm.memory_mb,
             &self.cfg.runtime_artifacts_guest_mount,
             daemon_bin.as_deref(),
-            None,
+            Some(&vm.guest_autostart),
         )
     }
 
@@ -1211,6 +1205,108 @@ fn shell_unquote(value: &str) -> String {
     }
 }
 
+fn load_guest_autostart_metadata(metadata_dir: &Path) -> anyhow::Result<GuestAutostartRequest> {
+    let command_path = metadata_dir.join("autostart.command");
+    require_non_empty_file(&command_path)?;
+    let command = fs::read_to_string(&command_path)
+        .with_context(|| format!("read {}", command_path.display()))?
+        .trim()
+        .to_string();
+
+    let startup_plan_path = metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA);
+    let startup_plan = if startup_plan_path.exists() {
+        let plan_text = fs::read_to_string(&startup_plan_path)
+            .with_context(|| format!("read {}", startup_plan_path.display()))?;
+        let plan: pika_agent_control_plane::GuestStartupPlan = serde_json::from_str(&plan_text)
+            .with_context(|| format!("parse {}", startup_plan_path.display()))?;
+        plan.validate()
+            .map_err(|err| anyhow!("validate {}: {err}", startup_plan_path.display()))?;
+        Some(plan)
+    } else {
+        None
+    };
+
+    Ok(GuestAutostartRequest {
+        command,
+        env: read_env_assignments(&metadata_dir.join("autostart.env"))?,
+        files: read_autostart_files(&metadata_dir.join("autostart.files"))?,
+        startup_plan,
+    })
+}
+
+fn read_env_assignments(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
+    if !path.exists() {
+        return Ok(env);
+    }
+
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    for (idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            anyhow::bail!(
+                "parse current-format metadata env assignment {}:{}",
+                path.display(),
+                idx + 1
+            );
+        };
+        let key = name.trim().to_string();
+        if !is_valid_env_key(&key) {
+            anyhow::bail!(
+                "invalid current-format metadata env key `{key}` in {}",
+                path.display()
+            );
+        }
+        env.insert(key, shell_unquote(value.trim()));
+    }
+
+    Ok(env)
+}
+
+fn read_autostart_files(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut files = BTreeMap::new();
+    if !path.exists() {
+        return Ok(files);
+    }
+    read_autostart_files_recursive(path, path, &mut files)?;
+    Ok(files)
+}
+
+fn read_autostart_files_recursive(
+    root: &Path,
+    dir: &Path,
+    out: &mut BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("read_dir entry {}", dir.display()))?;
+        let path = entry.path();
+        let ty = entry
+            .file_type()
+            .with_context(|| format!("file_type {}", path.display()))?;
+        if ty.is_dir() {
+            read_autostart_files_recursive(root, &path, out)?;
+            continue;
+        }
+        if !ty.is_file() {
+            continue;
+        }
+
+        let rel = path
+            .strip_prefix(root)
+            .with_context(|| format!("strip prefix {} from {}", root.display(), path.display()))?;
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        out.insert(
+            rel,
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?,
+        );
+    }
+
+    Ok(())
+}
+
 fn resolve_agent_daemon_bin() -> Option<PathBuf> {
     if let Some(path) = env_existing_path("VM_PIKACHAT_BIN") {
         return Some(path);
@@ -1274,6 +1370,14 @@ fn write_runtime_metadata(
     ));
     let default_pi_cmd = format!("{}/pi/bin/pi -p", runtime_artifacts_guest_mount.display());
     env_file.push_str(&format!("PIKA_PI_CMD={}\n", shell_quote(&default_pi_cmd),));
+    let default_openclaw_cmd = format!(
+        "{}/openclaw/bin/openclaw",
+        runtime_artifacts_guest_mount.display()
+    );
+    env_file.push_str(&format!(
+        "PIKA_OPENCLAW_CMD={}\n",
+        shell_quote(&default_openclaw_cmd),
+    ));
     if let Some(path) = daemon_bin {
         env_file.push_str(&format!(
             "PIKA_PIKACHAT_BIN={}\n",
@@ -1733,7 +1837,10 @@ async fn delete_tap_interface(ip_cmd: &str, tap_name: &str) -> anyhow::Result<()
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("Cannot find device") || stderr.contains("does not exist") {
+    if stderr.contains("Cannot find device")
+        || stderr.contains("does not exist")
+        || stderr.contains("No such device")
+    {
         return Ok(());
     }
 
@@ -1767,6 +1874,48 @@ async fn ensure_tap_bridged(ip_cmd: &str, tap_name: &str, bridge_name: &str) -> 
         "set tap up",
     )
     .await
+}
+
+async fn start_unit_nonblocking(systemctl_cmd: &str, unit: &str) -> anyhow::Result<()> {
+    reset_failed_unit_state(systemctl_cmd, unit).await?;
+    run_command(
+        Command::new(systemctl_cmd)
+            .arg("start")
+            .arg("--no-block")
+            .arg(unit),
+        "start microvm service",
+    )
+    .await
+}
+
+async fn reset_failed_unit_state(systemctl_cmd: &str, unit: &str) -> anyhow::Result<()> {
+    let output = Command::new(systemctl_cmd)
+        .arg("reset-failed")
+        .arg(unit)
+        .output()
+        .await
+        .context("failed to spawn command for reset failed microvm service")?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stderr.contains("not loaded")
+        || stderr.contains("not found")
+        || stdout.contains("not loaded")
+        || stdout.contains("not found")
+    {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "reset failed microvm service failed (code {:?})\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        stdout,
+        stderr
+    ))
 }
 
 async fn wait_for_unit_active_or_fail_fast(
@@ -1827,9 +1976,17 @@ fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn guest_artifact_host_path(vm_state_dir: &Path, guest_artifact_path: &str) -> PathBuf {
+    let rel = Path::new(guest_artifact_path);
+    match rel.strip_prefix("workspace") {
+        Ok(stripped) => vm_state_dir.join("home").join(stripped),
+        Err(_) => vm_state_dir.join(rel),
+    }
+}
+
 fn guest_ready_marker_exists(vm_state_dir: &Path) -> bool {
-    vm_state_dir.join(GUEST_READY_MARKER_PATH).is_file()
-        && !vm_state_dir.join(GUEST_FAILED_MARKER_PATH).is_file()
+    guest_artifact_host_path(vm_state_dir, GUEST_READY_MARKER_PATH).is_file()
+        && !guest_artifact_host_path(vm_state_dir, GUEST_FAILED_MARKER_PATH).is_file()
 }
 
 async fn run_command(cmd: &mut Command, context: &str) -> anyhow::Result<()> {
@@ -2245,6 +2402,93 @@ mod tests {
         assert!(env.contains("PIKA_VM_IP='192.168.83.11'"));
         assert!(env.contains("PIKA_GATEWAY_IP='192.168.83.1'"));
         assert!(env.contains("PIKA_DNS_IP='192.168.83.1'"));
+        assert!(env.contains("PIKA_PI_CMD='/opt/runtime-artifacts/pi/bin/pi -p'"));
+        assert!(env.contains("PIKA_OPENCLAW_CMD='/opt/runtime-artifacts/openclaw/bin/openclaw'"));
+    }
+
+    #[tokio::test]
+    async fn rewrite_runtime_metadata_for_recreate_restores_guest_autostart_when_metadata_dir_was_deleted(
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let resolved =
+            pika_agent_microvm::resolve_params(&pika_agent_control_plane::MicrovmProvisionParams {
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
+                ..pika_agent_control_plane::MicrovmProvisionParams::default()
+            });
+        pika_agent_microvm::validate_resolved_params(&resolved).unwrap();
+
+        let owner_keys = nostr_sdk::prelude::Keys::generate();
+        let bot_keys = nostr_sdk::prelude::Keys::generate();
+        let request = pika_agent_microvm::build_create_vm_request(
+            &owner_keys.public_key(),
+            &["wss://relay.example.com".to_string()],
+            &bot_keys.secret_key().to_secret_hex(),
+            &bot_keys.public_key().to_hex(),
+            &resolved,
+        );
+
+        let vm_id = "vm-00000001";
+        let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
+        let ip = from_u32(to_u32(cfg.ip_start) + slot);
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_runtime_metadata(
+            &vm_state_dir,
+            vm_id,
+            &mac_for_guest_ip(ip),
+            ip,
+            cfg.gateway_ip,
+            cfg.dns_ip,
+            2,
+            4096,
+            &cfg.runtime_artifacts_guest_mount,
+            None,
+            Some(&request.guest_autostart),
+        )
+        .unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm = manager.load_vm_disk_state(vm_id).unwrap();
+
+        fs::remove_dir_all(vm_state_dir.join("metadata")).unwrap();
+
+        manager.rewrite_runtime_metadata_for_recreate(&vm).unwrap();
+
+        let command = fs::read_to_string(vm_state_dir.join("metadata/autostart.command")).unwrap();
+        assert_eq!(command.trim(), request.guest_autostart.command);
+
+        let startup_plan_text = fs::read_to_string(
+            vm_state_dir
+                .join("metadata")
+                .join(AUTOSTART_STARTUP_PLAN_METADATA),
+        )
+        .unwrap();
+        let persisted_plan: pika_agent_control_plane::GuestStartupPlan =
+            serde_json::from_str(&startup_plan_text).unwrap();
+        assert_eq!(
+            persisted_plan,
+            request.guest_autostart.startup_plan.unwrap()
+        );
+
+        for (rel_path, expected) in &request.guest_autostart.files {
+            let persisted = fs::read_to_string(
+                vm_state_dir
+                    .join("metadata")
+                    .join("autostart.files")
+                    .join(rel_path),
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "missing recreated autostart file {}: {err}",
+                    vm_state_dir
+                        .join("metadata")
+                        .join("autostart.files")
+                        .join(rel_path)
+                        .display()
+                )
+            });
+            assert_eq!(&persisted, expected, "recreated file {}", rel_path);
+        }
     }
 
     #[tokio::test]
@@ -2285,6 +2529,7 @@ mod tests {
 
         let env = fs::read_to_string(vm_state_dir.join("metadata/env")).unwrap();
         assert!(env.contains("PIKA_DNS_IP='1.1.1.1'"));
+        assert!(env.contains("PIKA_OPENCLAW_CMD='/opt/runtime-artifacts/openclaw/bin/openclaw'"));
     }
 
     #[tokio::test]
@@ -2304,19 +2549,10 @@ mod tests {
         cfg.systemctl_cmd = systemctl_script.display().to_string();
         let vm_id = "vm-00000001";
         write_current_metadata(&cfg, vm_id, 2, 4096);
-        fs::create_dir_all(
-            cfg.state_dir.join(vm_id).join(
-                std::path::Path::new(GUEST_READY_MARKER_PATH)
-                    .parent()
-                    .unwrap(),
-            ),
-        )
-        .unwrap();
-        fs::write(
-            cfg.state_dir.join(vm_id).join(GUEST_READY_MARKER_PATH),
-            "{\"ready\":true}\n",
-        )
-        .unwrap();
+        let ready_path =
+            guest_artifact_host_path(&cfg.state_dir.join(vm_id), GUEST_READY_MARKER_PATH);
+        fs::create_dir_all(ready_path.parent().unwrap()).unwrap();
+        fs::write(ready_path, "{\"ready\":true}\n").unwrap();
         let manager = VmManager::new(cfg).await.unwrap();
 
         let status = manager.status(vm_id).await.unwrap();
@@ -2341,21 +2577,12 @@ mod tests {
         cfg.systemctl_cmd = systemctl_script.display().to_string();
         let vm_id = "vm-00000001";
         write_current_metadata(&cfg, vm_id, 2, 4096);
-        fs::create_dir_all(
-            cfg.state_dir.join(vm_id).join(
-                std::path::Path::new(GUEST_READY_MARKER_PATH)
-                    .parent()
-                    .unwrap(),
-            ),
-        )
-        .unwrap();
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        let ready_path = guest_artifact_host_path(&vm_state_dir, GUEST_READY_MARKER_PATH);
+        fs::create_dir_all(ready_path.parent().unwrap()).unwrap();
+        fs::write(&ready_path, "{\"ready\":true}\n").unwrap();
         fs::write(
-            cfg.state_dir.join(vm_id).join(GUEST_READY_MARKER_PATH),
-            "{\"ready\":true}\n",
-        )
-        .unwrap();
-        fs::write(
-            cfg.state_dir.join(vm_id).join(GUEST_FAILED_MARKER_PATH),
+            guest_artifact_host_path(&vm_state_dir, GUEST_FAILED_MARKER_PATH),
             "{\"ready\":false}\n",
         )
         .unwrap();
@@ -2461,7 +2688,8 @@ mod tests {
         assert_eq!(initial_status.status, "running");
         assert!(!initial_status.guest_ready);
 
-        let ready_path = vm_state_dir.join(&startup_plan.artifacts.ready_marker_path);
+        let ready_path =
+            guest_artifact_host_path(&vm_state_dir, &startup_plan.artifacts.ready_marker_path);
         fs::create_dir_all(ready_path.parent().unwrap()).unwrap();
         fs::write(
             &ready_path,
@@ -2477,7 +2705,8 @@ mod tests {
         assert_eq!(ready_status.status, "running");
         assert!(ready_status.guest_ready);
 
-        let failed_path = vm_state_dir.join(&startup_plan.artifacts.failed_marker_path);
+        let failed_path =
+            guest_artifact_host_path(&vm_state_dir, &startup_plan.artifacts.failed_marker_path);
         fs::write(
             &failed_path,
             serde_json::to_string(&serde_json::json!({
@@ -2518,6 +2747,22 @@ mod tests {
         let err = manager.destroy(vm_id).await.unwrap_err();
 
         assert!(err.to_string().contains("unsupported vm id: vm-bad-old"));
+    }
+
+    #[tokio::test]
+    async fn delete_tap_interface_ignores_rtnetlink_missing_device() {
+        let root = tempfile::tempdir().unwrap();
+        let ip_script = root.path().join("ip");
+        fs::write(
+            &ip_script,
+            "#!/bin/sh\necho 'RTNETLINK answers: No such device' >&2\nexit 2\n",
+        )
+        .unwrap();
+        fs::set_permissions(&ip_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        delete_tap_interface(ip_script.to_str().unwrap(), "vm-00000003")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -2774,6 +3019,44 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nonblocking_start_tolerates_stale_failed_state_before_polling() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts_dir = root.path().join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+
+        let systemctl_state = root.path().join("systemctl-state");
+        let reset_marker = root.path().join("systemctl-reset-failed");
+        fs::write(&systemctl_state, "failed\n").unwrap();
+
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(
+            &systemctl_script,
+            format!(
+                "#!/bin/sh\nstate_file=\"{}\"\nreset_marker=\"{}\"\ncase \"$1\" in\n  reset-failed)\n    printf 'inactive\\n' > \"$state_file\"\n    : > \"$reset_marker\"\n    exit 0\n    ;;\n  start)\n    if [ \"$2\" = \"--no-block\" ]; then\n      if [ -f \"$reset_marker\" ]; then\n        printf 'activating\\n' > \"$state_file\"\n      fi\n      (\n        sleep 0.3\n        printf 'active\\n' > \"$state_file\"\n      ) >/dev/null 2>&1 &\n      exit 0\n    fi\n    ;;\n  stop)\n    printf 'inactive\\n' > \"$state_file\"\n    exit 0\n    ;;\n  show)\n    cat \"$state_file\"\n    exit 0\n    ;;\n  kill)\n    exit 0\n    ;;\nesac\nexit 0\n",
+                systemctl_state.display(),
+                reset_marker.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        start_unit_nonblocking(
+            systemctl_script.to_str().unwrap(),
+            "microvm@vm-00000000.service",
+        )
+        .await
+        .unwrap();
+        assert!(wait_for_unit_active_or_fail_fast(
+            systemctl_script.to_str().unwrap(),
+            "microvm@vm-00000000.service",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap());
+        assert!(reset_marker.exists());
     }
 
     #[tokio::test]

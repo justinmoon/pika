@@ -13,4 +13,5 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 pika-test-utils = { path = "../pika-test-utils" }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
