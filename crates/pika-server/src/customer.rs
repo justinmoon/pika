@@ -226,6 +226,9 @@ fn startup_phase_label(phase: Option<pika_agent_control_plane::AgentStartupPhase
         Some(pika_agent_control_plane::AgentStartupPhase::WaitingForServiceReady) => {
             "waiting_for_service_ready"
         }
+        Some(pika_agent_control_plane::AgentStartupPhase::WaitingForKeypackagePublish) => {
+            "waiting_for_keypackage_publish"
+        }
         Some(pika_agent_control_plane::AgentStartupPhase::Ready) => "ready",
         Some(pika_agent_control_plane::AgentStartupPhase::Failed) => "failed",
     }

@@ -340,6 +340,9 @@ fn provisioning_phase_from_startup(
         AgentStartupPhase::WaitingForServiceReady => {
             crate::state::AgentProvisioningPhase::WaitingForServiceReady
         }
+        AgentStartupPhase::WaitingForKeypackagePublish => {
+            crate::state::AgentProvisioningPhase::PublishingKeyPackage
+        }
         AgentStartupPhase::Ready => {
             debug_assert!(
                 false,
@@ -923,6 +926,16 @@ mod tests {
         assert_eq!(
             provisioning_status_message(&crate::state::AgentProvisioningPhase::BootingGuest),
             "Booting guest..."
+        );
+        assert_eq!(
+            provisioning_phase_from_startup(AgentStartupPhase::WaitingForKeypackagePublish),
+            crate::state::AgentProvisioningPhase::PublishingKeyPackage
+        );
+        assert_eq!(
+            provisioning_status_message(
+                &crate::state::AgentProvisioningPhase::PublishingKeyPackage
+            ),
+            "Publishing key package..."
         );
     }
 

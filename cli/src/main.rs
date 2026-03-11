@@ -1880,6 +1880,7 @@ fn parse_agent_startup_phase_str(raw: &str) -> Option<AgentStartupPhase> {
         "provisioning_vm" => Some(AgentStartupPhase::ProvisioningVm),
         "booting_guest" => Some(AgentStartupPhase::BootingGuest),
         "waiting_for_service_ready" => Some(AgentStartupPhase::WaitingForServiceReady),
+        "waiting_for_keypackage_publish" => Some(AgentStartupPhase::WaitingForKeypackagePublish),
         "ready" => Some(AgentStartupPhase::Ready),
         "failed" => Some(AgentStartupPhase::Failed),
         _ => None,
@@ -1918,6 +1919,15 @@ fn agent_startup_status_message(
         }
         (_, AgentStartupPhase::WaitingForServiceReady) => {
             "Waiting for guest service to become ready..."
+        }
+        (Some(MicrovmAgentKind::Pi), AgentStartupPhase::WaitingForKeypackagePublish) => {
+            "Pi daemon emitted its ready event. Publishing key package..."
+        }
+        (Some(MicrovmAgentKind::Openclaw), AgentStartupPhase::WaitingForKeypackagePublish) => {
+            "OpenClaw gateway passed health check. Publishing key package..."
+        }
+        (_, AgentStartupPhase::WaitingForKeypackagePublish) => {
+            "Startup probe passed. Publishing key package..."
         }
         (_, AgentStartupPhase::Ready) => "Agent ready.",
         (_, AgentStartupPhase::Failed) => "Agent startup failed.",
@@ -2790,6 +2800,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_agent_startup_phase_reads_keypackage_publish_phase() {
+        let payload = json!({
+            "agent_id": "npub1test",
+            "state": "creating",
+            "startup_phase": "waiting_for_keypackage_publish"
+        });
+        let phase = parse_agent_startup_phase(&payload).expect("startup phase");
+        assert_eq!(phase, AgentStartupPhase::WaitingForKeypackagePublish);
+    }
+
+    #[test]
     fn agent_startup_status_message_uses_kind_specific_waiting_text() {
         assert!(
             agent_startup_status_message(
@@ -2804,6 +2825,13 @@ mod tests {
                 AgentStartupPhase::WaitingForServiceReady
             )
             .contains("OpenClaw")
+        );
+        assert!(
+            agent_startup_status_message(
+                Some(MicrovmAgentKind::Openclaw),
+                AgentStartupPhase::WaitingForKeypackagePublish
+            )
+            .contains("Publishing key package")
         );
     }
 

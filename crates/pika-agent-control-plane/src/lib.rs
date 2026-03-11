@@ -42,6 +42,7 @@ pub enum AgentStartupPhase {
     ProvisioningVm,
     BootingGuest,
     WaitingForServiceReady,
+    WaitingForKeypackagePublish,
     Ready,
     Failed,
 }
@@ -370,8 +371,7 @@ pub struct SpawnerGuestAutostartRequest {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub files: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub startup_plan: Option<GuestStartupPlan>,
+    pub startup_plan: GuestStartupPlan,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -379,6 +379,9 @@ pub struct SpawnerVmResponse {
     pub id: String,
     #[serde(default = "default_spawner_vm_status")]
     pub status: String,
+    #[serde(default)]
+    #[serde(alias = "guest_service_ready")]
+    pub startup_probe_satisfied: bool,
     #[serde(default)]
     pub guest_ready: bool,
 }
@@ -835,6 +838,19 @@ mod tests {
     }
 
     #[test]
+    fn spawner_vm_response_accepts_legacy_guest_service_ready_field() {
+        let decoded: SpawnerVmResponse = serde_json::from_value(serde_json::json!({
+            "id": "vm-123",
+            "status": "running",
+            "guest_service_ready": true,
+            "guest_ready": false
+        }))
+        .expect("decode vm response");
+        assert!(decoded.startup_probe_satisfied);
+        assert!(!decoded.guest_ready);
+    }
+
+    #[test]
     fn guest_startup_artifacts_default_to_shared_paths() {
         let artifacts = GuestStartupArtifacts::default();
         assert_eq!(artifacts.startup_plan_path, GUEST_STARTUP_PLAN_PATH);
@@ -871,7 +887,7 @@ mod tests {
             command: GUEST_AUTOSTART_COMMAND.to_string(),
             env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "owner".to_string())]),
             files: BTreeMap::from([(GUEST_STARTUP_PLAN_PATH.to_string(), "{}".to_string())]),
-            startup_plan: Some(plan.clone()),
+            startup_plan: plan.clone(),
         };
 
         let encoded = serde_json::to_string(&request).expect("encode request");
@@ -879,7 +895,18 @@ mod tests {
             serde_json::from_str(&encoded).expect("decode request");
 
         assert_eq!(decoded, request);
-        assert_eq!(decoded.startup_plan, Some(plan));
+        assert_eq!(decoded.startup_plan, plan);
+    }
+
+    #[test]
+    fn guest_autostart_request_rejects_missing_startup_plan() {
+        let err = serde_json::from_value::<SpawnerGuestAutostartRequest>(serde_json::json!({
+            "command": GUEST_AUTOSTART_COMMAND,
+            "env": {},
+            "files": {}
+        }))
+        .expect_err("startup_plan should be required");
+        assert!(err.to_string().contains("startup_plan"));
     }
 
     #[test]
