@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::config::{from_u32, to_u32, Config, RuntimeArtifactSpec};
 use anyhow::{anyhow, Context};
 use pika_agent_control_plane::{
-    GuestServiceKind, GuestServiceLaunch, GuestServiceReadinessCheck, GuestStartupPlan,
+    GuestServiceKind, GuestServiceLaunch, GuestStartupPlan,
     SpawnerCreateVmRequest as CreateVmRequest,
     SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmBackupStatus,
     SpawnerVmResponse as VmResponse, VmBackupFreshness, VmBackupStatusRecord,
@@ -259,7 +259,6 @@ impl VmManager {
                 Ok(VmResponse {
                     id,
                     status: runtime_status.to_string(),
-                    startup_probe_satisfied: false,
                     guest_ready: false,
                 })
             }
@@ -299,28 +298,10 @@ impl VmManager {
             Some("activating") | Some("reloading") => "starting",
             Some(_) | None => "starting",
         };
-        let guest_ready = guest_ready_marker_exists(&vm.microvm_state_dir);
-        let startup_probe_satisfied = if guest_ready {
-            true
-        } else if status == "running" {
-            match self
-                .startup_probe_satisfied_for_status(id, &vm.microvm_state_dir)
-                .await
-            {
-                Ok(satisfied) => satisfied,
-                Err(err) => {
-                    warn!(vm_id = %id, error = %err, "failed to evaluate guest startup probe status");
-                    false
-                }
-            }
-        } else {
-            false
-        };
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
-            startup_probe_satisfied,
-            guest_ready,
+            guest_ready: guest_ready_marker_exists(&vm.microvm_state_dir),
         })
     }
 
@@ -367,7 +348,6 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
-            startup_probe_satisfied: false,
             guest_ready: false,
         })
     }
@@ -599,6 +579,7 @@ impl VmManager {
         );
         Ok(canonical_home)
     }
+
     async fn ensure_prebuilt_runner(&self, cpu: u32, memory_mb: u32) -> anyhow::Result<PathBuf> {
         let key = format!("{cpu}c-{memory_mb}m");
         {
@@ -1151,17 +1132,6 @@ impl VmManager {
         })
     }
 
-    async fn startup_probe_satisfied_for_status(
-        &self,
-        id: &str,
-        microvm_state_dir: &Path,
-    ) -> anyhow::Result<bool> {
-        let startup_plan = self.load_guest_startup_plan(microvm_state_dir, id)?;
-        let vm_ip = self
-            .production_ip_for_vm_id(id)
-            .ok_or_else(|| anyhow!("unsupported vm id: {id}"))?;
-        startup_probe_satisfied(microvm_state_dir, vm_ip, &startup_plan).await
-    }
     fn parse_backup_status(
         &self,
         id: &str,
@@ -1240,6 +1210,7 @@ impl VmManager {
             observed_at: None,
         }
     }
+
     fn rewrite_runtime_metadata_for_recreate(&self, vm: &VmDiskState) -> anyhow::Result<()> {
         let daemon_bin = resolve_agent_daemon_bin();
 
@@ -1452,7 +1423,7 @@ fn load_guest_autostart_metadata(metadata_dir: &Path) -> anyhow::Result<GuestAut
         command,
         env: read_env_assignments(&metadata_dir.join("autostart.env"))?,
         files: read_autostart_files(&metadata_dir.join("autostart.files"))?,
-        startup_plan,
+        startup_plan: Some(startup_plan),
     })
 }
 
@@ -1657,12 +1628,14 @@ fn write_guest_autostart_metadata(
     )
     .with_context(|| format!("write {}", metadata_dir.join("autostart.command").display()))?;
 
-    autostart
-        .startup_plan
+    let startup_plan = autostart.startup_plan.as_ref().ok_or_else(|| {
+        anyhow!("guest_autostart.startup_plan must be present for current-format metadata")
+    })?;
+    startup_plan
         .validate()
         .map_err(|err| anyhow!("guest_autostart.startup_plan invalid: {err}"))?;
-    let plan_text = serde_json::to_string_pretty(&autostart.startup_plan)
-        .context("serialize guest startup plan")?;
+    let plan_text =
+        serde_json::to_string_pretty(startup_plan).context("serialize guest startup plan")?;
     fs::write(
         metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA),
         format!("{plan_text}\n"),
@@ -2204,59 +2177,9 @@ fn guest_artifact_host_path(vm_state_dir: &Path, guest_artifact_path: &str) -> P
     }
 }
 
-fn guest_failed_marker_exists(vm_state_dir: &Path) -> bool {
-    guest_artifact_host_path(vm_state_dir, GUEST_FAILED_MARKER_PATH).is_file()
-}
-
 fn guest_ready_marker_exists(vm_state_dir: &Path) -> bool {
     guest_artifact_host_path(vm_state_dir, GUEST_READY_MARKER_PATH).is_file()
-        && !guest_failed_marker_exists(vm_state_dir)
-}
-
-async fn startup_probe_satisfied(
-    vm_state_dir: &Path,
-    vm_ip: Ipv4Addr,
-    startup_plan: &GuestStartupPlan,
-) -> anyhow::Result<bool> {
-    if guest_failed_marker_exists(vm_state_dir) {
-        return Ok(false);
-    }
-    if guest_ready_marker_exists(vm_state_dir) {
-        return Ok(true);
-    }
-
-    match &startup_plan.readiness_check {
-        GuestServiceReadinessCheck::LogContains { path, pattern, .. } => {
-            let log_path = guest_artifact_host_path(vm_state_dir, path);
-            match fs::read_to_string(&log_path) {
-                Ok(text) => Ok(text.contains(pattern)),
-                Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
-                Err(err) => Err(err).with_context(|| format!("read {}", log_path.display())),
-            }
-        }
-        GuestServiceReadinessCheck::HttpGetOk { url, .. } => {
-            let host_visible_url = host_visible_readiness_url(vm_ip, url)?;
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_millis(500))
-                .build()
-                .context("build startup probe client")?;
-            match client.get(host_visible_url).send().await {
-                Ok(response) => Ok(response.status().is_success()),
-                Err(err) if err.is_connect() || err.is_timeout() => Ok(false),
-                Err(err) => Err(anyhow!("probe guest startup readiness over HTTP: {err}")),
-            }
-        }
-    }
-}
-
-fn host_visible_readiness_url(vm_ip: Ipv4Addr, guest_url: &str) -> anyhow::Result<reqwest::Url> {
-    let mut url = reqwest::Url::parse(guest_url)
-        .with_context(|| format!("parse readiness URL {guest_url}"))?;
-    if matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")) {
-        url.set_host(Some(&vm_ip.to_string()))
-            .map_err(|_| anyhow!("rewrite readiness URL host for vm {vm_ip}: {guest_url}"))?;
-    }
-    Ok(url)
+        && !guest_artifact_host_path(vm_state_dir, GUEST_FAILED_MARKER_PATH).is_file()
 }
 
 async fn run_command(cmd: &mut Command, context: &str) -> anyhow::Result<()> {
@@ -2389,6 +2312,7 @@ mod tests {
     fn write_backup_status(cfg: &Config, vm_id: &str, latest_successful_backup_at: &str) {
         write_backup_status_with_host(cfg, vm_id, latest_successful_backup_at, &cfg.host_id);
     }
+
     fn write_current_metadata(cfg: &Config, vm_id: &str, cpu: u32, memory_mb: u32) {
         let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
         let ip = from_u32(to_u32(cfg.ip_start) + slot);
@@ -2465,7 +2389,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: GuestStartupPlan {
+            startup_plan: Some(GuestStartupPlan {
                 agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
                 service_kind: GuestServiceKind::OpenclawGateway,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
@@ -2484,7 +2408,7 @@ mod tests {
                 },
                 artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
                 exit_failure_reason: "openclaw_gateway_exited".to_string(),
-            },
+            }),
         };
         write_runtime_metadata(
             &cfg.state_dir.join(vm_id),
@@ -2834,7 +2758,10 @@ mod tests {
         .unwrap();
         let persisted_plan: pika_agent_control_plane::GuestStartupPlan =
             serde_json::from_str(&startup_plan_text).unwrap();
-        assert_eq!(persisted_plan, request.guest_autostart.startup_plan);
+        assert_eq!(
+            persisted_plan,
+            request.guest_autostart.startup_plan.unwrap()
+        );
 
         for (rel_path, expected) in &request.guest_autostart.files {
             let persisted = fs::read_to_string(
@@ -3169,62 +3096,7 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
-        assert!(status.startup_probe_satisfied);
         assert!(status.guest_ready);
-    }
-
-    #[tokio::test]
-    async fn status_reports_startup_probe_satisfied_from_log_probe_before_ready_marker() {
-        let root = tempfile::tempdir().unwrap();
-        let scripts_dir = root.path().join("bin");
-        fs::create_dir_all(&scripts_dir).unwrap();
-        let systemctl_script = scripts_dir.join("systemctl");
-        fs::write(
-            &systemctl_script,
-            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
-        )
-        .unwrap();
-        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
-
-        let mut cfg = test_config(&root);
-        cfg.systemctl_cmd = systemctl_script.display().to_string();
-        let vm_id = "vm-00000001";
-        write_current_metadata(&cfg, vm_id, 2, 4096);
-        let log_path = guest_artifact_host_path(&cfg.state_dir.join(vm_id), GUEST_LOG_PATH);
-        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-        fs::write(&log_path, "{\"type\":\"ready\",\"npub\":\"npub1test\"}\n").unwrap();
-        let manager = VmManager::new(cfg).await.unwrap();
-
-        let status = manager.status(vm_id).await.unwrap();
-        assert_eq!(status.status, "running");
-        assert!(status.startup_probe_satisfied);
-        assert!(!status.guest_ready);
-    }
-
-    #[tokio::test]
-    async fn status_tolerates_damaged_autostart_metadata() {
-        let root = tempfile::tempdir().unwrap();
-        let scripts_dir = root.path().join("bin");
-        fs::create_dir_all(&scripts_dir).unwrap();
-        let systemctl_script = scripts_dir.join("systemctl");
-        fs::write(
-            &systemctl_script,
-            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
-        )
-        .unwrap();
-        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
-
-        let mut cfg = test_config(&root);
-        cfg.systemctl_cmd = systemctl_script.display().to_string();
-        let vm_id = "vm-00000001";
-        write_current_metadata(&cfg, vm_id, 2, 4096);
-        fs::remove_dir_all(cfg.state_dir.join(vm_id).join("metadata")).unwrap();
-        let manager = VmManager::new(cfg).await.unwrap();
-
-        let status = manager.status(vm_id).await.unwrap();
-        assert_eq!(status.status, "running");
-        assert!(!status.startup_probe_satisfied);
-        assert!(!status.guest_ready);
     }
 
     #[tokio::test]
@@ -3257,7 +3129,6 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
-        assert!(!status.startup_probe_satisfied);
         assert!(!status.guest_ready);
     }
 
@@ -3293,7 +3164,11 @@ mod tests {
             &bot_keys.public_key().to_hex(),
             &resolved,
         );
-        let startup_plan = request.guest_autostart.startup_plan.clone();
+        let startup_plan = request
+            .guest_autostart
+            .startup_plan
+            .clone()
+            .expect("startup plan");
         startup_plan.validate().unwrap();
         assert_eq!(
             startup_plan.agent_kind,
@@ -3350,7 +3225,6 @@ mod tests {
 
         let initial_status = manager.status(vm_id).await.unwrap();
         assert_eq!(initial_status.status, "running");
-        assert!(!initial_status.startup_probe_satisfied);
         assert!(!initial_status.guest_ready);
 
         let ready_path =
@@ -3368,7 +3242,6 @@ mod tests {
 
         let ready_status = manager.status(vm_id).await.unwrap();
         assert_eq!(ready_status.status, "running");
-        assert!(ready_status.startup_probe_satisfied);
         assert!(ready_status.guest_ready);
 
         let failed_path =
@@ -3386,18 +3259,7 @@ mod tests {
 
         let failed_status = manager.status(vm_id).await.unwrap();
         assert_eq!(failed_status.status, "running");
-        assert!(!failed_status.startup_probe_satisfied);
         assert!(!failed_status.guest_ready);
-    }
-
-    #[test]
-    fn host_visible_readiness_url_rewrites_loopback_to_vm_ip() {
-        let url = host_visible_readiness_url(
-            Ipv4Addr::new(192, 168, 83, 12),
-            "http://127.0.0.1:18789/health",
-        )
-        .unwrap();
-        assert_eq!(url.as_str(), "http://192.168.83.12:18789/health");
     }
 
     #[tokio::test]
@@ -3681,9 +3543,14 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let mut guest_autostart = test_guest_autostart_request();
-        guest_autostart.command.clear();
-        let req = CreateVmRequest { guest_autostart };
+        let req = CreateVmRequest {
+            guest_autostart: GuestAutostartRequest {
+                command: "".to_string(),
+                env: BTreeMap::new(),
+                files: BTreeMap::new(),
+                startup_plan: None,
+            },
+        };
 
         let _err = manager.create(req).await.unwrap_err();
         let entries = fs::read_dir(&cfg.state_dir)
@@ -3784,7 +3651,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: pika_agent_control_plane::GuestStartupPlan {
+            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
                 agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
@@ -3804,7 +3671,7 @@ mod tests {
                     },
                 artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
                 exit_failure_reason: "pi_agent_exited".to_string(),
-            },
+            }),
         };
 
         write_runtime_metadata(
@@ -3861,7 +3728,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: pika_agent_control_plane::GuestStartupPlan {
+            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
                 agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
@@ -3881,7 +3748,7 @@ mod tests {
                     },
                 artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
                 exit_failure_reason: "pi_agent_exited".to_string(),
-            },
+            }),
         };
 
         write_runtime_metadata(
@@ -3920,7 +3787,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: pika_agent_control_plane::GuestStartupPlan {
+            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
                 agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
@@ -3943,7 +3810,7 @@ mod tests {
                     ..pika_agent_control_plane::GuestStartupArtifacts::default()
                 },
                 exit_failure_reason: "pi_agent_exited".to_string(),
-            },
+            }),
         };
 
         let err = write_runtime_metadata(
