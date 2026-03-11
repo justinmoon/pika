@@ -4240,10 +4240,12 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let resolved = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
-            .resolve_group(&hex::encode(created.group.nostr_group_id))
-            .expect("resolve group");
-        assert_eq!(resolved, created.group.mls_group_id);
+        let snapshot = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
+            .lookup_joined_group_snapshot(&hex::encode(created.group.nostr_group_id))
+            .expect("lookup joined group snapshot");
+        assert_eq!(snapshot.mls_group_id, created.group.mls_group_id);
+        assert_eq!(snapshot.relay_urls, relay_urls);
+        assert_eq!(snapshot.member_snapshots.len(), 2);
     }
 
     #[test]
@@ -4265,7 +4267,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        inviter_mdk
+        let created = inviter_mdk
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
@@ -4281,6 +4283,21 @@ mod tests {
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(groups.len(), 1);
+        assert_eq!(snapshots[0].member_snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0].is_admin(&inviter_keys.public_key()),
+            created
+                .group
+                .admin_pubkeys
+                .contains(&inviter_keys.public_key())
+        );
+        assert_eq!(
+            snapshots[0].is_admin(&invitee_keys.public_key()),
+            created
+                .group
+                .admin_pubkeys
+                .contains(&invitee_keys.public_key())
+        );
         assert_eq!(
             groups[0].nostr_group_id_hex,
             snapshots[0].nostr_group_id_hex

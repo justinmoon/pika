@@ -284,16 +284,17 @@ fn diag_nostr_publish_enabled() -> bool {
 #[derive(Debug, Clone)]
 struct GroupMember {
     pubkey: PublicKey,
+    is_admin: bool,
     name: Option<String>,
     picture_url: Option<String>,
 }
 
 impl GroupMember {
-    fn to_member_info(&self, admin_pubkeys: &[String]) -> crate::state::MemberInfo {
+    fn to_member_info(&self) -> crate::state::MemberInfo {
         let hex = self.pubkey.to_hex();
         crate::state::MemberInfo {
             npub: self.pubkey.to_bech32().unwrap_or_else(|_| hex.clone()),
-            is_admin: admin_pubkeys.contains(&hex),
+            is_admin: self.is_admin,
             pubkey: hex,
             name: self.name.clone(),
             picture_url: self.picture_url.clone(),
@@ -306,9 +307,9 @@ struct GroupIndexEntry {
     mls_group_id: GroupId,
     is_group: bool,
     group_name: Option<String>,
+    self_is_admin: bool,
     /// Every member except self.
     members: Vec<GroupMember>,
-    admin_pubkeys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6566,7 +6567,6 @@ mod tests {
 
     mod handle_message_processing {
         use super::*;
-        use crate::core::GroupIndexEntry;
         use crate::mdk_support::open_mdk;
         use crate::state::ChatViewState;
         use mdk_core::prelude::{
@@ -6940,16 +6940,10 @@ mod tests {
 
         #[test]
         fn app_send_preparation_uses_shared_runtime_facade() {
-            let (mut core, chat_id, keys, group_id) = make_core_with_group();
-            core.session.as_mut().expect("session").groups.insert(
-                chat_id.clone(),
-                GroupIndexEntry {
-                    mls_group_id: group_id,
-                    is_group: false,
-                    group_name: Some("Test".to_string()),
-                    members: vec![],
-                    admin_pubkeys: vec![],
-                },
+            let (core, chat_id, keys, _group_id) = make_core_with_group();
+            assert!(
+                core.session.as_ref().expect("session").groups.is_empty(),
+                "shared runtime lookup should not require cached group entries"
             );
 
             let prepared = core
@@ -6974,16 +6968,10 @@ mod tests {
 
         #[test]
         fn app_host_context_prepares_outbound_action_for_chat() {
-            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
-            core.session.as_mut().expect("session").groups.insert(
-                chat_id.clone(),
-                GroupIndexEntry {
-                    mls_group_id: group_id,
-                    is_group: false,
-                    group_name: Some("Test".to_string()),
-                    members: vec![],
-                    admin_pubkeys: vec![],
-                },
+            let (core, chat_id, _keys, _group_id) = make_core_with_group();
+            assert!(
+                core.session.as_ref().expect("session").groups.is_empty(),
+                "host context should resolve joined-group context from runtime state"
             );
 
             let prepared = core
@@ -7458,8 +7446,8 @@ mod tests {
                     mls_group_id: group_id.clone(),
                     is_group: true,
                     group_name: Some("Test Group".into()),
+                    self_is_admin: true,
                     members: vec![],
-                    admin_pubkeys: vec![pubkey.to_hex()],
                 },
             );
             core.session = Some(super::super::Session {
@@ -7629,9 +7617,14 @@ mod tests {
 
         #[test]
         fn app_add_members_preparation_uses_shared_membership_runtime() {
-            let (core, chat_id, _keys, _gid) = make_core_with_group();
+            let (mut core, chat_id, _keys, _gid) = make_core_with_group();
             let peer = Keys::generate();
             let kp_event = make_peer_key_package(&peer);
+            core.session.as_mut().expect("session").groups.clear();
+            assert!(
+                core.session.as_ref().expect("session").groups.is_empty(),
+                "membership prep should not require cached group entries"
+            );
 
             let prepared = core
                 .prepare_membership_evolution_for_chat(&chat_id, &[kp_event])
@@ -7986,7 +7979,7 @@ mod tests {
 
         #[test]
         fn chat_list_refresh_uses_shared_joined_group_snapshots() {
-            let (mut core, chat_id, _keys, _gid) = make_core_with_group();
+            let (mut core, chat_id, keys, _gid) = make_core_with_group();
             let snapshots = core
                 .host_context()
                 .expect("host context")
@@ -8001,7 +7994,19 @@ mod tests {
             let snapshot = &snapshots[0];
             assert_eq!(entry.mls_group_id, snapshot.mls_group_id);
             assert_eq!(entry.group_name.as_deref(), Some(snapshot.name.as_str()));
+            assert_eq!(entry.self_is_admin, snapshot.is_admin(&keys.public_key()));
+            assert_eq!(
+                entry.members.len(),
+                snapshot.other_member_snapshots(&keys.public_key()).len()
+            );
             assert_eq!(core.state.chat_list[0].chat_id, snapshot.nostr_group_id_hex,);
+            let entry_is_admin = entry.self_is_admin;
+            let entry_member_count = entry.members.len();
+
+            core.refresh_current_chat(&chat_id);
+            let current = core.state.current_chat.as_ref().expect("current chat");
+            assert_eq!(current.is_admin, entry_is_admin);
+            assert_eq!(current.members.len(), entry_member_count);
         }
 
         #[test]
@@ -8572,8 +8577,8 @@ mod tests {
                     mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
                     is_group: true,
                     group_name: Some("Test".into()),
+                    self_is_admin: false,
                     members: vec![],
-                    admin_pubkeys: vec![],
                 },
             );
 
@@ -8942,12 +8947,13 @@ mod tests {
                     mls_group_id: created.group.mls_group_id.clone(),
                     is_group: false,
                     group_name: Some("App call test".to_string()),
+                    self_is_admin: false,
                     members: vec![GroupMember {
                         pubkey: peer_pubkey,
+                        is_admin: false,
                         name: None,
                         picture_url: None,
                     }],
-                    admin_pubkeys: vec![],
                 },
             );
 
