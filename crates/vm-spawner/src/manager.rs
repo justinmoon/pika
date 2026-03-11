@@ -481,6 +481,7 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
+            startup_probe_satisfied: false,
             guest_ready: false,
         })
     }
