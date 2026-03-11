@@ -188,9 +188,14 @@
             : 'Dismiss Selected';
         }
 
+        var dismissing = false;
         async function dismissItems(prIds) {
+          if (dismissing) return;
+          dismissing = true;
+          dismissSelectedBtn.disabled = true;
+          dismissAllBtn.disabled = true;
           var token = getToken();
-          if (!token) return;
+          if (!token) { dismissing = false; return; }
           try {
             var res = await fetch('/news/api/inbox/dismiss', {
               method: 'POST',
@@ -206,13 +211,21 @@
             loadInbox(currentPage);
           } catch (e) {
             alert('Error: ' + e.message);
+          } finally {
+            dismissing = false;
+            dismissAllBtn.disabled = false;
+            updateDismissSelectedBtn();
           }
         }
 
         async function dismissAll() {
+          if (dismissing) return;
           if (!confirm('Dismiss all inbox items?')) return;
+          dismissing = true;
+          dismissAllBtn.disabled = true;
+          dismissSelectedBtn.disabled = true;
           var token = getToken();
-          if (!token) return;
+          if (!token) { dismissing = false; return; }
           try {
             var res = await fetch('/news/api/inbox/dismiss', {
               method: 'POST',
@@ -228,6 +241,10 @@
             loadInbox(1);
           } catch (e) {
             alert('Error: ' + e.message);
+          } finally {
+            dismissing = false;
+            dismissAllBtn.disabled = false;
+            updateDismissSelectedBtn();
           }
         }
 
