@@ -1,8 +1,8 @@
 use super::*;
-#[cfg(test)]
 use pika_marmot_runtime::membership::EvolutionPublishStatus;
 #[cfg(test)]
-use pika_marmot_runtime::membership::{MembershipUpdateResult, PreparedMembershipEvolution};
+use pika_marmot_runtime::membership::MembershipUpdateResult;
+use pika_marmot_runtime::membership::PreparedMembershipEvolution;
 
 #[derive(Debug)]
 pub(super) enum DaemonPrepareError {
@@ -225,7 +225,6 @@ impl<'a> DaemonHostContext<'a> {
             .map_err(DaemonPrepareError::Prepare)
     }
 
-    #[cfg(test)]
     pub(super) fn prepare_add_members(
         &self,
         nostr_group_id: &str,
@@ -239,6 +238,31 @@ impl<'a> DaemonHostContext<'a> {
             .map_err(DaemonPrepareError::Prepare)
     }
 
+    pub(super) fn prepare_remove_members(
+        &self,
+        nostr_group_id: &str,
+        removed_pubkeys: &[PublicKey],
+    ) -> Result<PreparedMembershipEvolution, DaemonPrepareError> {
+        let mls_group_id = self
+            .resolve_group(nostr_group_id)
+            .map_err(DaemonPrepareError::BadGroup)?;
+        self.commands()
+            .prepare_remove_members(&mls_group_id, removed_pubkeys)
+            .map_err(DaemonPrepareError::Prepare)
+    }
+
+    pub(super) fn prepare_leave_group(
+        &self,
+        nostr_group_id: &str,
+    ) -> Result<PreparedMembershipEvolution, DaemonPrepareError> {
+        let mls_group_id = self
+            .resolve_group(nostr_group_id)
+            .map_err(DaemonPrepareError::BadGroup)?;
+        self.commands()
+            .prepare_leave_group(&mls_group_id)
+            .map_err(DaemonPrepareError::Prepare)
+    }
+
     #[cfg(test)]
     pub(super) fn finalize_published_evolution(
         &self,
@@ -247,7 +271,6 @@ impl<'a> DaemonHostContext<'a> {
         self.commands().finalize_published_evolution(prepared)
     }
 
-    #[cfg(test)]
     pub(super) fn complete_membership_evolution_operation(
         &self,
         prepared: PreparedMembershipEvolution,
