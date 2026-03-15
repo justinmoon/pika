@@ -180,6 +180,11 @@ Working assumptions:
    - `rust/tests/e2e_group_profiles.rs` now keeps only the narrower owner-side per-chat profile state for this behavior instead of also owning the broader DM-local visibility/scoping contract
    - the DM helper in both `rust/tests/support/helpers.rs` and `crates/pikahut/tests/support.rs` now explicitly ignores group chats, so messaging/profile selectors and semantic tests no longer rely on a fuzzy "chat with this peer" lookup
    - the messaging/profile family is now coherent at the selector layer for the main user-facing flows; the remaining caveat is still the harness-limited true pre-existing late-joiner rebroadcast case, not a broad ownership blur
+18. Slice 19 started the same ownership cleanup on the single-app auth/session/persistence family:
+   - `crates/pikahut/tests/integration_deterministic.rs::post_rebase_logout_session_convergence_boundary` is no longer a thin shell around `rust/tests/app_flows.rs`; it now owns a direct deterministic lifecycle contract in `crates/pikahut/tests/support.rs`
+   - that selector now proves the readable Rust-owned reset story here: logout clears app state, and a fresh `FfiApp` from the same data dir still starts logged out with no surfaced chat state until some outer layer explicitly restores a session
+   - `rust/tests/app_flows.rs` now keeps the narrower immediate runtime-reset semantics in `logout_clears_runtime_state` instead of also carrying the broader relaunch-readable contract
+   - the iOS and Android local logout/relaunch tests are now labeled more honestly as platform shell/auth-store smoke, and `ios/Tests/AppManagerTests.swift` now says explicitly that stored-auth restore dispatch is native glue ownership rather than the owner of Rust restore semantics
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -266,9 +271,10 @@ Verified in the repo today:
 ## FFI Behavioral Surface Map (Account / Chat / Messaging / Group / Profile)
 
 1. `rust/tests/app_flows.rs`
-   - Owns single-app `FfiApp` state/lifecycle behavior: account creation, router changes, logout/reset, persistence/restart, paging, reactions, and external-signer/bunker/Nostr Connect flows.
+   - Owns single-app `FfiApp` state/lifecycle behavior: account creation, router changes, immediate logout/reset semantics, persistence/restore state, paging, reactions, and external-signer/bunker/Nostr Connect flows.
    - This is the right ownership layer when the product question is “what does one app instance do after this action/update?” rather than “can two apps talk over local fixtures?”
-   - The main overlap with native UI is shell-level: iOS can still validate that login/chat/logout/navigation render correctly, but it should not be the primary owner of these Rust semantics.
+   - The main overlap with native UI is shell-level: iOS/Android can still validate that login/chat/logout/navigation render correctly, but they should not be the primary owners of these Rust semantics.
+   - The auth/session area is now intentionally split: `pikahut` owns the readable logout-reset boundary, while this file keeps the narrower runtime-reset and restore-state semantics underneath it.
 
 2. `rust/tests/e2e_messaging.rs`
    - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: relay-backed DM delivery into peer chat state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
@@ -282,12 +288,12 @@ Verified in the repo today:
 
 4. `crates/pikahut/tests/integration_deterministic.rs`
    - Owns the CI-facing deterministic selector contract.
-   - For this audit area it now owns the main readable user-facing contracts: `dm_creation_and_first_message_delivery_boundary`, `late_joiner_group_profile_visibility_after_refresh_boundary`, and `dm_local_profile_override_visibility_boundary`, plus the narrower post-rebase regression boundaries `post_rebase_invalid_event_rejection_boundary` and `post_rebase_logout_session_convergence_boundary`.
+   - For this audit area it now owns the main readable user-facing contracts: `dm_creation_and_first_message_delivery_boundary`, `late_joiner_group_profile_visibility_after_refresh_boundary`, `dm_local_profile_override_visibility_boundary`, and the direct logout-reset lifecycle boundary `post_rebase_logout_session_convergence_boundary`, plus the narrower post-rebase invalid-event regression boundary.
    - That split is acceptable when the selector is clearly pinning a narrower Rust semantic owner, but it would be questionable if `pikahut` tried to become a second full owner of every messaging/profile assertion.
 
 5. `ios/UITests/PikaUITests.swift`
    - Owns platform-hosted capability smoke: login/chat navigation, session persistence across relaunch, layout/focus behavior, long-press actions, deep links, and native interop launch.
-   - The local note-to-self/login/logout path overlaps `app_flows.rs` semantically, but it still validates a real iOS-hosted UI shell and persistence capability.
+   - The local note-to-self/login/logout and relaunch paths overlap `app_flows.rs` semantically, but they still validate a real iOS-hosted UI shell plus auth-store persistence capability.
    - It is questionable as an owner of core message/profile semantics and should stay a platform smoke layer, not the canonical behavior contract.
 
 6. `android/app/src/androidTest/.../PikaE2eUiTest.kt`
@@ -299,6 +305,7 @@ Verified in the repo today:
    - similar DM bootstrap helpers still exist in `crates/pikahut/tests/support.rs`, but that duplication is currently intentional because selector-side fixture/orchestration support cannot depend on the private `rust/tests` layer
    - both helper layers now at least agree on one important boundary: DM lookup excludes group chats with the same peer instead of relying on a fuzzy member-only match
    - the main user-facing message/profile flows now have selector-owned deterministic `pikahut` contracts; the remaining confusing area is the harness-limited true pre-existing late-joiner rebroadcast case, not general ownership drift across this family
+   - the single-app auth/session family is cleaner but not fully closed: logout/reset now has a direct selector-owned contract, while session restore after restart still lives mainly in `rust/tests/app_flows.rs` plus platform shell smoke instead of a dedicated selector boundary
 
 ## Strongest Problems
 

@@ -445,33 +445,13 @@ fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
 #[test]
 #[ignore = "deterministic post-rebase regression selector"]
 fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
-    // Keep the single-app logout/session semantics owned by `rust/tests/app_flows.rs`; this
-    // selector exists to pin that behavior into the CI-facing deterministic contract.
+    // Keep the narrower single-app runtime-reset semantics in `rust/tests/app_flows.rs`; this
+    // selector owns the readable lifecycle contract that logout clears Rust-owned app state and a
+    // fresh process still starts clean until some outer layer explicitly restores a session.
     let mut context = TestContext::builder("regression-logout-session-convergence")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
-    let runner = CommandRunner::new(&context);
-    let spec = staged_test_binary_spec(
-        "PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN",
-        "logout_resets_state",
-        "regression-logout-session-convergence",
-    )
-    .unwrap_or_else(|| {
-        CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "test",
-                "-p",
-                "pika_core",
-                "--test",
-                "app_flows",
-                "logout_resets_state",
-                "--",
-                "--nocapture",
-            ])
-            .capture_name("regression-logout-session-convergence")
-    });
-    runner.run(&spec)?;
+    support::run_logout_reset_across_restart(&context)?;
     context.mark_success();
     Ok(())
 }

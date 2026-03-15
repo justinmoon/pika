@@ -637,7 +637,10 @@ fn start_call_toggle_mute_and_end_transitions_state() {
 }
 
 #[test]
-fn logout_resets_state() {
+fn logout_clears_runtime_state() {
+    // `pikahut` now owns the broader lifecycle contract that logout stays clean in a fresh
+    // process. This test stays as the narrower owner for the immediate Rust-owned runtime state
+    // reset inside one app instance.
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(

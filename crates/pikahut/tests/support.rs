@@ -608,6 +608,107 @@ pub fn run_dm_local_profile_override_visibility(context: &TestContext) -> Result
     })
 }
 
+// CI-facing readable logout contract: after a user logs out, Rust-owned app state clears, and a
+// fresh process from the same data dir still starts clean until some outer layer explicitly
+// restores a session.
+pub fn run_logout_reset_across_restart(context: &TestContext) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let data_dir = context.state_dir().join("app");
+    write_config_offline(&data_dir)?;
+
+    let app = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
+    app.dispatch(AppAction::CreateAccount);
+    wait_until("logged in", Duration::from_secs(10), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    })?;
+
+    let my_npub = match app.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => bail!("account failed to enter logged-in state"),
+    };
+
+    app.dispatch(AppAction::CreateChat {
+        peer_npub: my_npub.clone(),
+    });
+    wait_until("note-to-self chat created", Duration::from_secs(10), || {
+        !app.state().chat_list.is_empty()
+    })?;
+
+    let chat_id = app.state().chat_list[0].chat_id.clone();
+    app.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("chat opened", Duration::from_secs(10), || {
+        app.state()
+            .current_chat
+            .as_ref()
+            .map(|chat| chat.chat_id == chat_id)
+            .unwrap_or(false)
+    })?;
+
+    let message = "reset-me";
+    app.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: message.to_owned(),
+        kind: None,
+        reply_to_message_id: None,
+    });
+    wait_until(
+        "message appears before logout",
+        Duration::from_secs(10),
+        || {
+            app.state()
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.messages.iter().any(|msg| msg.content == message))
+                .unwrap_or(false)
+        },
+    )?;
+    wait_until(
+        "chat preview updates before logout",
+        Duration::from_secs(10),
+        || {
+            app.state()
+                .chat_list
+                .iter()
+                .find(|chat| chat.chat_id == chat_id)
+                .and_then(|chat| chat.last_message.as_deref())
+                == Some(message)
+        },
+    )?;
+
+    app.dispatch(AppAction::Logout);
+    wait_until(
+        "logout clears runtime state",
+        Duration::from_secs(10),
+        || {
+            let state = app.state();
+            matches!(state.auth, AuthState::LoggedOut)
+                && state.router.default_screen == pika_core::Screen::Login
+                && state.chat_list.is_empty()
+                && state.current_chat.is_none()
+        },
+    )?;
+
+    drop(app);
+
+    let restarted = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
+    wait_until(
+        "fresh process starts logged out",
+        Duration::from_secs(5),
+        || {
+            let state = restarted.state();
+            matches!(state.auth, AuthState::LoggedOut)
+                && state.router.default_screen == pika_core::Screen::Login
+                && state.chat_list.is_empty()
+                && state.current_chat.is_none()
+        },
+    )?;
+
+    Ok(())
+}
+
 pub fn run_call_with_pikachat_daemon(context: &TestContext) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -1371,6 +1472,25 @@ fn write_config_with_relay(data_dir: &Path, relay_url: &str) -> Result<()> {
         "relay_urls": [relay_url],
         "key_package_relay_urls": [relay_url],
         "call_moq_url": "ws://moq.local/anon",
+        "call_broadcast_prefix": "pika/calls",
+        "call_audio_backend": "synthetic",
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec(&value).context("serialize config")?,
+    )
+    .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+fn write_config_offline(data_dir: &Path) -> Result<()> {
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("create config dir {}", data_dir.display()))?;
+    let path = data_dir.join("pika_config.json");
+    let value = serde_json::json!({
+        "disable_network": true,
+        "disable_agent_allowlist_probe": true,
+        "call_moq_url": "https://moq.local/anon",
         "call_broadcast_prefix": "pika/calls",
         "call_audio_backend": "synthetic",
     });
