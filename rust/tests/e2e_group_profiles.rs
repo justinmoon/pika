@@ -121,7 +121,10 @@ fn group_profile_visible_to_other_member() {
 }
 
 #[test]
-fn new_member_receives_rebroadcasted_group_profiles() {
+fn rebroadcasted_group_profiles_reach_late_joiner_member_state() {
+    // `pikahut` now owns the readable visibility-after-refresh contract for this area. This test
+    // stays as the narrower semantic owner for the relay-backed rebroadcast/member-state mechanics,
+    // including reciprocal existing-member propagation and Charlie eventually seeing both names.
     let infra = support::TestInfra::start_relay();
 
     let dir_a = tempdir().unwrap();
@@ -181,7 +184,8 @@ fn new_member_receives_rebroadcasted_group_profiles() {
         about: String::new(),
     });
 
-    // Wait for profiles to propagate between Alice and Bob.
+    // Keep the reciprocal existing-member propagation semantics owned here even though `pikahut`
+    // now owns a higher-level late-joiner visibility contract nearby.
     alice.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });

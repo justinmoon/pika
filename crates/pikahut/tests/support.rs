@@ -347,6 +347,143 @@ pub fn run_dm_creation_and_first_message_delivery(context: &TestContext) -> Resu
     })
 }
 
+// CI-facing readable group-profile contract: after a late joiner gets the group shell, an
+// explicit member profile refresh makes those names visible in the group they open.
+pub fn run_late_joiner_group_profile_visibility_after_refresh(context: &TestContext) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    with_relay_fixture(context, |fixture| {
+        let relay_url = fixture
+            .relay_url()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing relay_url"))?;
+
+        let alice_dir = context.state_dir().join("alice");
+        let bob_dir = context.state_dir().join("bob");
+        let charlie_dir = context.state_dir().join("charlie");
+        write_config_with_relay(&alice_dir, &relay_url)?;
+        write_config_with_relay(&bob_dir, &relay_url)?;
+        write_config_with_relay(&charlie_dir, &relay_url)?;
+
+        let alice = FfiApp::new(path_arg(&alice_dir), String::new(), String::new());
+        let bob = FfiApp::new(path_arg(&bob_dir), String::new(), String::new());
+        let charlie = FfiApp::new(path_arg(&charlie_dir), String::new(), String::new());
+
+        alice.dispatch(AppAction::CreateAccount);
+        bob.dispatch(AppAction::CreateAccount);
+        charlie.dispatch(AppAction::CreateAccount);
+        wait_until("alice logged in", Duration::from_secs(10), || {
+            matches!(alice.state().auth, AuthState::LoggedIn { .. })
+        })?;
+        wait_until("bob logged in", Duration::from_secs(10), || {
+            matches!(bob.state().auth, AuthState::LoggedIn { .. })
+        })?;
+        wait_until("charlie logged in", Duration::from_secs(10), || {
+            matches!(charlie.state().auth, AuthState::LoggedIn { .. })
+        })?;
+
+        let bob_npub = match bob.state().auth {
+            AuthState::LoggedIn { npub, .. } => npub,
+            _ => bail!("bob failed to enter logged-in state"),
+        };
+        let charlie_npub = match charlie.state().auth {
+            AuthState::LoggedIn { npub, .. } => npub,
+            _ => bail!("charlie failed to enter logged-in state"),
+        };
+
+        let chat_id = create_group_chat(
+            &alice,
+            &bob_npub,
+            "LateJoinerProfileBoundary",
+            Duration::from_secs(60),
+        )?;
+        wait_until("bob sees group shell", Duration::from_secs(30), || {
+            bob.state()
+                .chat_list
+                .iter()
+                .any(|chat| chat.chat_id == chat_id)
+        })?;
+
+        alice.dispatch(AppAction::SaveGroupProfile {
+            chat_id: chat_id.clone(),
+            name: "Admin Alice".to_owned(),
+            about: String::new(),
+        });
+        bob.dispatch(AppAction::SaveGroupProfile {
+            chat_id: chat_id.clone(),
+            name: "Builder Bob".to_owned(),
+            about: String::new(),
+        });
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(60) {
+            if charlie
+                .state()
+                .chat_list
+                .iter()
+                .any(|chat| chat.chat_id == chat_id)
+            {
+                break;
+            }
+            alice.dispatch(AppAction::AddGroupMembers {
+                chat_id: chat_id.clone(),
+                peer_npubs: vec![charlie_npub.clone()],
+            });
+            std::thread::sleep(Duration::from_secs(2));
+        }
+
+        wait_until("charlie sees group shell", Duration::from_secs(30), || {
+            charlie
+                .state()
+                .chat_list
+                .iter()
+                .any(|chat| chat.chat_id == chat_id)
+        })?;
+
+        std::thread::sleep(Duration::from_secs(2));
+
+        // This selector owns the readable "late joiner sees member names after post-join refresh"
+        // contract. It is not yet a true proof that already-established pre-join names rebroadcast
+        // without an explicit refresh in this deterministic harness.
+        alice.dispatch(AppAction::SaveGroupProfile {
+            chat_id: chat_id.clone(),
+            name: "Admin Alice".to_owned(),
+            about: String::new(),
+        });
+        bob.dispatch(AppAction::SaveGroupProfile {
+            chat_id: chat_id.clone(),
+            name: "Builder Bob".to_owned(),
+            about: String::new(),
+        });
+
+        charlie.dispatch(AppAction::OpenChat {
+            chat_id: chat_id.clone(),
+        });
+        wait_until(
+            "charlie sees rebroadcast group member names",
+            Duration::from_secs(30),
+            || {
+                charlie
+                    .state()
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| {
+                        chat.members
+                            .iter()
+                            .any(|member| member.name.as_deref() == Some("Admin Alice"))
+                            && chat
+                                .members
+                                .iter()
+                                .any(|member| member.name.as_deref() == Some("Builder Bob"))
+                    })
+                    .unwrap_or(false)
+            },
+        )?;
+
+        Ok(())
+    })
+}
+
 pub fn run_call_with_pikachat_daemon(context: &TestContext) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -738,6 +875,31 @@ fn with_relay_fixture(
     }
 
     Ok(())
+}
+
+fn create_group_chat(
+    creator: &FfiApp,
+    peer_npub: &str,
+    group_name: &str,
+    timeout: Duration,
+) -> Result<String> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(chat) = creator
+            .state()
+            .chat_list
+            .iter()
+            .find(|chat| chat.group_name.as_deref() == Some(group_name))
+        {
+            return Ok(chat.chat_id.clone());
+        }
+        creator.dispatch(AppAction::CreateGroupChat {
+            peer_npubs: vec![peer_npub.to_owned()],
+            group_name: group_name.to_owned(),
+        });
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    bail!("group '{group_name}' was not created within {timeout:?}");
 }
 
 fn fixture_context(context: &TestContext) -> Result<TestContext> {
