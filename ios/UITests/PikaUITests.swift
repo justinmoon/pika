@@ -337,6 +337,8 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: timeout), "Chat list not shown after login")
     }
 
+    // Platform-hosted shell smoke only: this covers iOS rendering/input/logout wiring, not the
+    // canonical Rust-owned session semantics.
     func testCreateAccount_noteToSelf_sendMessage_and_logout() throws {
         let app = XCUIApplication()
         // Keep this test deterministic/offline.
@@ -392,6 +394,8 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Pika"].waitForExistence(timeout: 10))
     }
 
+    // Platform-hosted relaunch smoke: this proves iOS auth-store/app-shell restore wiring, while
+    // Rust-owned restore semantics live below this layer.
     func testSessionPersistsAcrossRelaunch() throws {
         let app = XCUIApplication()
 

@@ -838,20 +838,10 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             "pikahut deterministic regressions must keep the staged pika_core e2e_messaging override while those boundaries stay in-lane"
         );
         assert!(
-            integration_deterministic.contains("PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN"),
-            "pikahut deterministic regressions must keep the staged pika_core app_flows override while those boundaries stay in-lane"
-        );
-        assert!(
             linux_rust.contains(
                 "export PIKAHUT_TEST_PIKA_CORE_E2E_MESSAGING_BIN=\"$root/bin/pika-core-e2e-messaging\""
             ),
             "staged pikachat wrapper must export PIKAHUT_TEST_PIKA_CORE_E2E_MESSAGING_BIN while that boundary stays in-lane"
-        );
-        assert!(
-            linux_rust.contains(
-                "export PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN=\"$root/bin/pika-core-app-flows\""
-            ),
-            "staged pikachat wrapper must export PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN while that boundary stays in-lane"
         );
     }
 

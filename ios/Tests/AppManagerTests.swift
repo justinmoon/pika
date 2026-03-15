@@ -62,6 +62,8 @@ final class AppManagerTests: XCTestCase {
         )
     }
 
+    // Native glue owner: this stays in Swift because it verifies AppManager -> Rust restore
+    // dispatch from stored auth, not the Rust restore semantics themselves.
     func testInitRestoresSessionWhenNsecExists() async {
         let core = MockCore(state: makeState(rev: 1))
         let store = MockAuthStore(stored: StoredAuth(mode: .localNsec, nsec: "nsec1test", bunkerUri: nil, bunkerClientNsec: nil))

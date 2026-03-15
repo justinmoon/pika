@@ -394,6 +394,21 @@ fn late_joiner_group_profile_visibility_after_refresh_boundary() -> Result<()> {
 }
 
 #[test]
+#[ignore = "deterministic messaging/profile selector"]
+fn dm_local_profile_override_visibility_boundary() -> Result<()> {
+    // Keep the narrower per-chat profile-state semantics in
+    // `rust/tests/e2e_group_profiles.rs`; this selector owns the readable DM-local contract that
+    // the override is visible in the DM and does not leak into a separate chat with the same
+    // peer.
+    let mut context = TestContext::builder("dm-local-profile-override-visibility")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_dm_local_profile_override_visibility(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
 #[ignore = "deterministic post-rebase regression selector"]
 fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
     // Keep the narrow invalid-invite semantics owned by `rust/tests/e2e_messaging.rs`; this
@@ -430,33 +445,13 @@ fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
 #[test]
 #[ignore = "deterministic post-rebase regression selector"]
 fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
-    // Keep the single-app logout/session semantics owned by `rust/tests/app_flows.rs`; this
-    // selector exists to pin that behavior into the CI-facing deterministic contract.
+    // Keep the narrower single-app runtime-reset semantics in `rust/tests/app_flows.rs`; this
+    // selector owns the readable lifecycle contract that logout clears Rust-owned app state and a
+    // fresh process still starts clean until some outer layer explicitly restores a session.
     let mut context = TestContext::builder("regression-logout-session-convergence")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
-    let runner = CommandRunner::new(&context);
-    let spec = staged_test_binary_spec(
-        "PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN",
-        "logout_resets_state",
-        "regression-logout-session-convergence",
-    )
-    .unwrap_or_else(|| {
-        CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "test",
-                "-p",
-                "pika_core",
-                "--test",
-                "app_flows",
-                "logout_resets_state",
-                "--",
-                "--nocapture",
-            ])
-            .capture_name("regression-logout-session-convergence")
-    });
-    runner.run(&spec)?;
+    support::run_logout_reset_across_restart(&context)?;
     context.mark_success();
     Ok(())
 }

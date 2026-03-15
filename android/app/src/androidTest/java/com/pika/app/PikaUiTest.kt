@@ -83,6 +83,8 @@ class PikaUiTest {
 
     @Test
     @OptIn(ExperimentalTestApi::class)
+    // Platform-hosted shell smoke only: this covers Android rendering/input/logout wiring, not
+    // the canonical Rust-owned session semantics.
     fun createAccount_noteToSelf_sendMessage_and_logout() {
         hardResetForeground()
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
