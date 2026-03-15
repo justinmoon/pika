@@ -1279,6 +1279,53 @@ We have at least one important Linux Rust lane where:
         - that overhead is now effectively gone on unchanged reruns, with pre-command setup down from about `26.7s` to about `0.04s`,
         - so the next biggest visible cost is the real lane runtime itself plus small fixed orchestration/post-run bookkeeping rather than self-inflicted workspace control-plane churn,
         - and that is much closer to the eventual daemon/direct-push shape than the old copied-workspace design was,
+      - the next CI control-plane slice is now landed too:
+        - the remaining GitHub-side waste after the host-local cache redesign was no longer Cargo recompiling the lane body; it was the workflow wrapper path around `pikaci` itself,
+        - recent real GitHub evidence from pre-merge run `23116139394` showed the waste concretely:
+          - `check-pikachat-openclaw-e2e (pikaci)` spent about `47s` in the workflow step `OPENCLAW_DIR=openclaw nix develop .#default -c just pre-merge-pikachat-openclaw-e2e`, and the log still showed `Updating crates.io index`, `Downloading crates ...`, and a fresh Cargo build before the lane body,
+          - `check-pika-rust (pikaci)` also entered the staged-remote shell path and locally compiled `pikaci` on the runner before doing remote work; the log showed `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust`, then `Compiling pikaci`, then another quick follow-up Cargo build for the helper/launcher binaries,
+        - the structural fix is to stop letting the workflow build `target/debug/pikaci` at all:
+          - GitHub pikaci jobs now call packaged control-plane entrypoints directly instead of `nix develop ... just ...` wrappers for the pikaci jobs,
+          - there is a checked-in `scripts/pikaci-ci-run.sh` entrypoint for host-local CI lanes,
+          - the staged remote scripts now resolve `pikaci`, `pikaci-fulfill-prepared-output`, and `pikaci-launch-fulfill-prepared-output` from the Nix package output instead of running `cargo build -p pikaci`,
+          - and host-local execution now enters `nix develop path:./#default` only at the actual job-command boundary when it needs the dev environment, so the workflow step no longer pays a Cargo build just to launch the control plane,
+        - observability stays explicit:
+          - the scripts log whether they resolved control-plane tools from the environment, `PATH`, or a Nix package build/store path,
+          - and host-local logs now record whether the job body ran in a direct shell or through `nix develop path:./#default`,
+        - the workflow cache layout now matches the new host-local architecture better:
+          - the pikaci host-local GitHub jobs now persist `.pikaci/cache` instead of only `~/.cargo` and `target`, so the cached host-local workspace/target roots can survive between runs,
+          - advisory staged-remote jobs dropped the runner-local Cargo cache steps because they no longer compile `pikaci` locally at all,
+        - local CI-shaped timing moved materially:
+          - before this slice, `env OPENCLAW_DIR=/Users/justin/code/openclaw /usr/bin/time -p nix develop .#default -c just pre-merge-pikachat-openclaw-e2e` took `95.31s` locally (`20260315T191739Z-c5e59315`), with about `57.82s` before the host-local command even started,
+          - after switching to the packaged control-plane entrypoint and clearing `IN_NIX_SHELL` to match GitHub, the first run after the code change was `55.72s` (`20260315T193128Z-78aa1e96`) while the Nix package and cached workspace refreshed,
+          - the next unchanged reruns were `30.21s` (`20260315T193207Z-70361f87`) and `27.87s` (`20260315T193238Z-985872a0`),
+          - on those unchanged reruns the host-local command now starts after about `5.38s` to `5.57s` instead of about `57.82s`,
+          - and the remaining visible cost after that slice was mostly the inner per-job `nix develop path:./#default` shell entry plus the actual OpenClaw lane itself; the command body was about `20.56s` to `21.55s`, with the actual test body about `14.82s` to `15.07s`,
+        - the next host-local warm-path slice is now landed too:
+          - the remaining self-inflicted tax was the inner `nix develop` hop on every host-local job even when the source snapshot and shell inputs were unchanged,
+          - `pikaci` now caches a rendered `nix print-dev-env` script under `.pikaci/cache/host-local/target-<target-id>/dev-env/`,
+          - the cache records the selected shell, the last validated source hash, and the shell derivation fingerprint,
+          - unchanged source hashes now reuse the cached environment script with no Nix call at all,
+          - changed source snapshots only re-run `nix eval` to revalidate the shell fingerprint, and they only regenerate the cached env script when that shell fingerprint actually changes,
+          - cached execution also now reads the Nix-provided Bash path out of the generated env script and runs the job under that shell instead of macOS `/bin/bash`, so the cached path preserves the same bash-language contract that `nix develop` had,
+        - the measured effect on the same CI-shaped local lane is concrete:
+          - first post-change run `20260315T210329Z-adf83695` still paid one expected revalidation and recompile wave at `52.58s`, with `3.07s` spent revalidating the cached env and about `18.20s` in the actual test body,
+          - after that, unchanged reruns dropped to `19.36s` (`20260315T210431Z-11f9dc4e`) and `17.63s` (`20260315T210454Z-5c7bc2e9`),
+          - pre-job delay dropped again from about `5.38s` to `5.57s` down to about `2.97s` and then `1.88s`,
+          - the host-local job body itself dropped from about `20.56s` to `21.55s` down to about `15.49s` and `14.96s`,
+          - those unchanged reruns now log `host-local environment reused cached nix environment for unchanged source hash in 0.000s`,
+          - and inside the command the remaining work is essentially the lane body:
+          - `cargo build -p pikachat`: `0.18s` to `0.19s`,
+          - `cargo test -p pikahut --test integration_openclaw ...`: `0.24s`,
+          - actual OpenClaw test body: `14.32s` to `14.84s`,
+        - validating the staged-remote entrypoint got meaningfully further:
+          - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` now starts by resolving packaged `pikaci`/helper binaries from the Nix store instead of compiling them locally,
+          - the first validation run exposed and forced removal of stale conflict markers in `nix/ci/linux-rust.nix`,
+          - the follow-up run got past that syntax failure and reached the real staged `workspaceDeps` build again,
+          - the current blocker there is not workflow bootstrap anymore; it is a staged Linux Rust dependency/vendor failure on `pika-build` (`no matching package named pulldown-cmark found` while building `pika-linux-rust-workspace-deps-deps-0.1.0`),
+        - after this slice, the next biggest CI performance target is not runner-local `pikaci` bootstrap:
+          - for host-local lanes it is now the real lane body itself plus small fixed control-plane/post-run overhead, not per-job environment startup,
+          - and for staged remote lanes it is the actual remote prepare/build path, not Cargo-building the control plane on GitHub runners,
     - the last non-`pikaci` Linux remainder inside `check-pika` is now also gone:
       - `pre-merge-pika-followup` is now a host-local `pikaci` target covering:
         - Android instrumentation-test Kotlin compile,
@@ -1288,13 +1335,59 @@ We have at least one important Linux Rust lane where:
         - docs/justfile contract checks,
       - the real lane passed locally as `20260312T074905Z-64a134b6`,
       - so the broader `check-pika` family is no longer split between `pikaci` and legacy Linux shell steps,
-    - the workflow and policy shape are now:
+    - the last real staged-remote Linux blocker is now closed as well:
+      - the reduced staged `pika-core` workspace lockfile on this branch had drifted from the actual staged source graph,
+      - specifically, `nix/ci/pika-core-workspace/Cargo.lock` still listed `pika-desktop` without its `pulldown-cmark` crates.io dependency,
+      - that stale lock drift was why `pika-build` failed in `ci.x86_64-linux.workspaceDeps` with `no matching package named pulldown-cmark found`,
+      - regenerating the lock against the real staged workspace shape showed the fix was minimal and specific:
+        - add `pulldown-cmark v0.10.3` to the staged lock,
+        - and add it to the `pika-desktop` dependency list in that same checked-in lock,
+      - after that lock correction, the direct staged remote rerun succeeded on current tip:
+        - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust`
+        - run `20260315T213808Z-5031dbf5`
+        - `workspaceDeps` succeeded remotely on `pika-build`,
+        - `workspaceBuild` succeeded remotely on `pika-build`,
+        - `pika-core-messaging-e2e-tests` passed,
+        - `pika-core-lib-app-flows-tests` passed,
+      - that means the old `pulldown-cmark` failure was a real staged-input integrity bug, not a deeper remote-fulfillment or remote-execute instability,
+    - the workflow and policy shape are now finally clean:
       - all required Linux pre-merge job families gate through `pikaci`,
-      - legacy Linux GitHub jobs remain advisory-only comparison signal where they still exist,
+      - the stale advisory legacy Linux GitHub jobs were removed from `.github/workflows/pre-merge.yml`,
       - there is no longer a `check-fixture` carve-out,
+      - and the remaining non-blocking Linux surfaces are the explicit staged-remote/nightly observation paths rather than duplicate legacy required-family jobs,
     - updated Linux-required coverage picture:
       - full under `pikaci`: `check-pika`, `check-pikachat`, `check-pikachat-openclaw-e2e`, `check-agent-contracts`, `check-rmp`, `check-notifications`, `check-fixture`,
       - Linux required coverage under `pikaci`: `7 / 7`,
-    - after this point, the next strategic questions are no longer Linux coverage questions:
-      - whether to keep any advisory legacy Linux jobs around for a short comparison window,
-      - and when to start applying the same replacement pressure to non-Linux / Apple paths.
+      - staged remote `pika-build` path for `pre-merge-pika-rust`: healthy on current tip,
+    - Linux can now be treated as operationally complete for this migration:
+      - required Linux coverage is under `pikaci`,
+      - the staged remote `pika-build` path is green again,
+      - and the remaining strategic questions are no longer Linux-migration cleanup:
+        - when to start applying the same replacement pressure to non-Linux / Apple paths,
+        - and whether later platform work wants a broader daemon/direct-push shape rather than more Linux-specific churn.
+    - the next Linux quality slice closed one of the remaining runtime-model inconsistencies too:
+      - `pre-merge-fixture-rust` was the best first remaining host-local Linux target to move, because it was already declared as a staged Linux Rust target, already had `fixtureWorkspaceDeps` / `fixtureWorkspaceBuild` outputs, and already had a staged-remote entrypoint surface in `scripts/pikaci-staged-linux-remote.sh`,
+      - the first live remote attempt on current tip proved the original blocker sharply:
+        - before this slice, `./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust` still failed at the target contract boundary because the target mixed staged metadata with host-local jobs,
+        - after converting the jobs to staged remote lanes, the first real remote execute run (`20260315T220234Z-d166f441`) reached `microvm.nix` on `pika-build` but failed for two narrow reasons:
+          - `pikahut-clippy` still tried to run `cargo clippy` online inside the guest,
+          - and `fixture-relay-smoke` still let `pikahut` fall back to `go build pika-relay` inside the guest,
+      - the landable fix was to remove those guest-network assumptions instead of inventing another Linux executor:
+        - fixture workspace build now runs `cargo clippy -p pikahut -- -D warnings` during staged prepare and emits a checked marker consumed by the remote execute wrapper,
+        - fixture workspace build now also installs the staged `pika-relay` binary and the relay-smoke wrapper exports `PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"` so the guest never tries `go build`,
+        - a guardrail test now pins that offline staged-fixture contract in `crates/pikahut/tests/guardrails.rs`,
+      - the decisive rerun passed end to end on `pika-build`:
+        - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust`
+        - run `20260315T220937Z-8e956caf`
+        - `workspaceDeps` succeeded remotely on `pika-build`,
+        - `workspaceBuild` succeeded remotely on `pika-build`,
+        - `pikahut-clippy` passed under the remote `microvm.nix` guest,
+        - `fixture-relay-smoke` passed under the remote `microvm.nix` guest,
+      - that means `pre-merge-fixture-rust` no longer runs as `HostLocal` on the GitHub runner and now matches the existing staged remote microVM runtime model,
+      - remaining Linux runner-side execution after this slice:
+        - `pre-merge-pika-followup`,
+        - `pre-merge-pikachat-openclaw-e2e`,
+      - path to one Linux runtime model from here:
+        - keep choosing remaining Linux targets that can be reshaped into staged inputs plus remote microVM wrappers,
+        - reject guest-network and host-assumption leaks as migration blockers to stage away,
+        - and only stop when required Linux lanes no longer execute real workload as `HostLocal` on the GitHub runner.

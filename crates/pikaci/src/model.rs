@@ -160,7 +160,8 @@ pub enum StagedLinuxRustLane {
     AgentContractsCoreNip98,
     AgentContractsDeterministicHttp,
     NotificationsServerPackageTests,
-    FixturePikahutPackageTests,
+    FixturePikahutClippy,
+    FixtureRelaySmoke,
     RmpInitSmokeCi,
     PikachatPackageTests,
     PikachatSidecarPackageTests,
@@ -188,7 +189,9 @@ impl StagedLinuxRustLane {
                 StagedLinuxRustTarget::PreMergeAgentContracts
             }
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
-            Self::FixturePikahutPackageTests => StagedLinuxRustTarget::PreMergeFixtureRust,
+            Self::FixturePikahutClippy | Self::FixtureRelaySmoke => {
+                StagedLinuxRustTarget::PreMergeFixtureRust
+            }
             Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
             Self::PikachatPackageTests
             | Self::PikachatSidecarPackageTests
@@ -249,8 +252,11 @@ impl StagedLinuxRustLane {
             Self::NotificationsServerPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
             }
-            Self::FixturePikahutPackageTests => {
-                "/staged/linux-rust/workspace-build/bin/run-pikahut-package-tests"
+            Self::FixturePikahutClippy => {
+                "/staged/linux-rust/workspace-build/bin/run-pikahut-clippy"
+            }
+            Self::FixtureRelaySmoke => {
+                "/staged/linux-rust/workspace-build/bin/run-fixture-relay-smoke"
             }
             Self::RmpInitSmokeCi => "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci",
             Self::PikachatPackageTests => {
@@ -524,19 +530,27 @@ mod tests {
 
     #[test]
     fn fixture_lane_uses_fixture_workspace_outputs() {
-        let lane = StagedLinuxRustLane::FixturePikahutPackageTests;
+        for lane in [
+            StagedLinuxRustLane::FixturePikahutClippy,
+            StagedLinuxRustLane::FixtureRelaySmoke,
+        ] {
+            assert_eq!(
+                lane.workspace_deps_output_name(),
+                "ci.x86_64-linux.fixtureWorkspaceDeps"
+            );
+            assert_eq!(
+                lane.workspace_build_output_name(),
+                "ci.x86_64-linux.fixtureWorkspaceBuild"
+            );
+        }
 
         assert_eq!(
-            lane.workspace_deps_output_name(),
-            "ci.x86_64-linux.fixtureWorkspaceDeps"
+            StagedLinuxRustLane::FixturePikahutClippy.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-pikahut-clippy"
         );
         assert_eq!(
-            lane.workspace_build_output_name(),
-            "ci.x86_64-linux.fixtureWorkspaceBuild"
-        );
-        assert_eq!(
-            lane.execute_wrapper_command(),
-            "/staged/linux-rust/workspace-build/bin/run-pikahut-package-tests"
+            StagedLinuxRustLane::FixtureRelaySmoke.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-fixture-relay-smoke"
         );
     }
 
@@ -596,10 +610,12 @@ mod tests {
             ".#ci.x86_64-linux.fixtureWorkspaceBuild"
         );
         assert_eq!(fixture_config.shadow_recipe, "");
-        assert_eq!(
-            StagedLinuxRustLane::FixturePikahutPackageTests.target(),
-            StagedLinuxRustTarget::PreMergeFixtureRust
-        );
+        for lane in [
+            StagedLinuxRustLane::FixturePikahutClippy,
+            StagedLinuxRustLane::FixtureRelaySmoke,
+        ] {
+            assert_eq!(lane.target(), StagedLinuxRustTarget::PreMergeFixtureRust);
+        }
 
         let pikachat = StagedLinuxRustTarget::from_target_id("pre-merge-pikachat-rust")
             .expect("pikachat target");
@@ -721,6 +737,21 @@ mod tests {
                 "fixture staged Linux lane must export LIBCLANG_PATH while pika-desktop keeps nokhwa in the build graph"
             );
         }
+    }
+
+    #[test]
+    fn linux_fixture_lane_does_not_stage_unused_package_tests() {
+        let linux_rust = fs::read_to_string(workspace_root().join("nix/ci/linux-rust.nix"))
+            .expect("read linux-rust.nix");
+
+        assert!(
+            !linux_rust.contains("PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST"),
+            "fixture staged Linux lane must not keep staging pikahut package-test manifests after the lane contract narrowed to clippy plus relay smoke"
+        );
+        assert!(
+            !linux_rust.contains("run-pikahut-package-tests"),
+            "fixture staged Linux lane must not keep installing an unused package-test wrapper after the lane contract narrowed to clippy plus relay smoke"
+        );
     }
 }
 

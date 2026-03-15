@@ -80,6 +80,12 @@ jobs:
               - 'crates/pika-media/**'
               - 'crates/pika-tls/**'
               - 'rust/**'
+              - 'scripts/pikaci-ci-run.sh'
+              - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
+              - 'scripts/pika-build-prewarm-workspace-deps.sh'
+              - 'scripts/pika-build-run-workspace-deps.sh'
+              - 'scripts/lib/pikaci-tools.sh'
             pikachat_openclaw_e2e:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -97,6 +103,12 @@ jobs:
               - 'crates/pika-tls/**'
               - 'tools/**'
               - 'pikachat-openclaw/openclaw/extensions/pikachat-openclaw/**'
+              - 'scripts/pikaci-ci-run.sh'
+              - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
+              - 'scripts/pika-build-prewarm-workspace-deps.sh'
+              - 'scripts/pika-build-run-workspace-deps.sh'
+              - 'scripts/lib/pikaci-tools.sh'
             agent_contracts:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -109,6 +121,7 @@ jobs:
               - 'just/infra.just'
               - '.github/workflows/pre-merge.yml'
               - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
               - 'crates/pikaci/**'
               - 'crates/pika-agent-control-plane/**'
               - 'crates/pika-agent-protocol/**'
@@ -127,6 +140,10 @@ jobs:
               - 'crates/pikachat-sidecar/**'
               - 'rust/**'
               - 'docs/agent-ci.md'
+              - 'scripts/pikaci-ci-run.sh'
+              - 'scripts/pika-build-prewarm-workspace-deps.sh'
+              - 'scripts/pika-build-run-workspace-deps.sh'
+              - 'scripts/lib/pikaci-tools.sh'
             rmp:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -136,6 +153,11 @@ jobs:
               - 'justfile'
               - '.github/workflows/pre-merge.yml'
               - 'crates/rmp-cli/**'
+              - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
+              - 'scripts/pika-build-prewarm-workspace-deps.sh'
+              - 'scripts/pika-build-run-workspace-deps.sh'
+              - 'scripts/lib/pikaci-tools.sh'
             notifications:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -147,6 +169,7 @@ jobs:
               - 'just/infra.just'
               - '.github/workflows/pre-merge.yml'
               - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
               - 'crates/pikaci/**'
               - 'crates/pika-agent-control-plane/**'
               - 'crates/pika-agent-microvm/**'
@@ -157,6 +180,10 @@ jobs:
               - 'crates/pika-relay-profiles/**'
               - 'crates/pika-test-utils/**'
               - 'crates/pika-tls/**'
+              - 'scripts/pikaci-ci-run.sh'
+              - 'scripts/pika-build-prewarm-workspace-deps.sh'
+              - 'scripts/pika-build-run-workspace-deps.sh'
+              - 'scripts/lib/pikaci-tools.sh'
             fixture:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -178,6 +205,12 @@ jobs:
               - 'crates/pika-agent-microvm/Cargo.toml'
               - 'crates/pika-desktop/**'
               - 'crates/pikahut/**'
+              - 'scripts/pikaci-ci-run.sh'
+              - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
+              - 'scripts/pika-build-prewarm-workspace-deps.sh'
+              - 'scripts/pika-build-run-workspace-deps.sh'
+              - 'scripts/lib/pikaci-tools.sh'
               - 'crates/pika-marmot-runtime/**'
               - 'crates/pika-media/**'
               - 'crates/pikachat-sidecar/Cargo.toml'
@@ -219,19 +252,20 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
+          key: ${{ github.repository }}-pikaci-cache-v1-${{ runner.os }}
+          path: .pikaci/cache
+      - name: Fix .pikaci ownership
+        run: |
+          if [ -d .pikaci ] && [ "$(stat -c %u .pikaci)" != "$(id -u)" ]; then
+            sudo chown "$(id -u):$(id -g)" .pikaci
+          fi
 
       - uses: useblacksmith/stickydisk@v1
         with:
           key: ${{ github.repository }}-gradle-v1-${{ runner.os }}
           path: ~/.gradle
 
-      - run: nix develop .#default -c just pre-merge-pika-followup
+      - run: ./scripts/pikaci-ci-run.sh pre-merge-pika-followup
 
   shadow-pikaci-pre-merge-pika-rust:
     name: check-pika-rust (pikaci)
@@ -257,15 +291,6 @@ jobs:
             sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
 
       - name: Run advisory staged Linux Rust shadow lane
         id: shadow
@@ -298,14 +323,13 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
             ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
 
-            nix develop .#default -c just pre-merge-pika-rust-shadow
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust
             exit_code=$?
           fi
 
@@ -348,7 +372,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "- command: \`nix develop .#default -c just pre-merge-pika-rust-shadow\`"
+            echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust\`"
             echo "- result: \`${{ steps.shadow.outputs.result }}\`"
             echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
@@ -382,15 +406,6 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
       - name: Run advisory staged Linux notifications shadow lane
         id: shadow
         env:
@@ -422,14 +437,13 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
             ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
 
-            nix develop .#default -c just pre-merge-notifications-shadow
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-notifications
             exit_code=$?
           fi
 
@@ -472,7 +486,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "- command: \`nix develop .#default -c just pre-merge-notifications-shadow\`"
+            echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-notifications\`"
             echo "- result: \`${{ steps.shadow.outputs.result }}\`"
             echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
@@ -506,15 +520,6 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
       - name: Run advisory staged Linux agent-contracts shadow lane
         id: shadow
         env:
@@ -546,14 +551,13 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
             ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
 
-            nix develop .#default -c just pre-merge-agent-contracts-shadow
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts
             exit_code=$?
           fi
 
@@ -596,7 +600,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "- command: \`nix develop .#default -c just pre-merge-agent-contracts-shadow\`"
+            echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts\`"
             echo "- result: \`${{ steps.shadow.outputs.result }}\`"
             echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
@@ -630,15 +634,6 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
       - name: Run advisory staged Linux rmp shadow lane
         id: shadow
         env:
@@ -670,14 +665,13 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
             ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
 
-            nix develop .#default -c just pre-merge-rmp-shadow
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-rmp
             exit_code=$?
           fi
 
@@ -720,7 +714,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "- command: \`nix develop .#default -c just pre-merge-rmp-shadow\`"
+            echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-rmp\`"
             echo "- result: \`${{ steps.shadow.outputs.result }}\`"
             echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
@@ -754,15 +748,6 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
       - name: Run advisory staged Linux pikachat shadow lane
         id: shadow
         env:
@@ -794,14 +779,13 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
             ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
 
-            nix develop .#default -c just pre-merge-pikachat-rust-shadow
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-rust
             exit_code=$?
           fi
 
@@ -844,7 +828,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "- command: \`nix develop .#default -c just pre-merge-pikachat-rust-shadow\`"
+            echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-rust\`"
             echo "- result: \`${{ steps.shadow.outputs.result }}\`"
             echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
@@ -941,40 +925,7 @@ jobs:
             echo "### Linux CI Policy"
             echo
             echo "- All required Linux pre-merge families now gate through <code>pikaci</code>."
-            echo "- Legacy Linux GitHub jobs remain advisory only while we watch parity and flake rate."
           } >> "$GITHUB_STEP_SUMMARY"
-
-  check-pikachat:
-    name: legacy check-pikachat (advisory)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.pikachat == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    environment:
-      name: ${{ github.event_name == 'pull_request' && github.actor != 'justinmoon' && github.actor != 'futurepaul' && github.actor != 'AnthonyRonning' && github.actor != 'benthecarman' && github.actor != 'clarkmoody' && 'ci-approval' || 'ci-auto' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R "$(id -u):$(id -g)" /nix
-          fi
-      - uses: nixbuild/nix-quick-install-action@v30
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: nix develop .#default -c just pre-merge-pikachat
 
   check-pikachat-openclaw-e2e:
     name: check-pikachat-openclaw-e2e (pikaci)
@@ -1004,104 +955,15 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: OPENCLAW_DIR=openclaw nix develop .#default -c just openclaw-pikachat-e2e
-
-  check-agent-contracts:
-    name: legacy check-agent-contracts (advisory)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.agent_contracts == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
+          key: ${{ github.repository }}-pikaci-cache-v1-${{ runner.os }}
+          path: .pikaci/cache
+      - name: Fix .pikaci ownership
         run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R "$(id -u):$(id -g)" /nix
+          if [ -d .pikaci ] && [ "$(stat -c %u .pikaci)" != "$(id -u)" ]; then
+            sudo chown "$(id -u):$(id -g)" .pikaci
           fi
-      - uses: nixbuild/nix-quick-install-action@v30
 
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: nix develop .#default -c just pre-merge-agent-contracts
-
-  check-rmp:
-    name: legacy check-rmp (advisory)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.rmp == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R "$(id -u):$(id -g)" /nix
-          fi
-      - uses: nixbuild/nix-quick-install-action@v30
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: nix develop .#rmp -c just pre-merge-rmp
-
-  check-notifications:
-    name: legacy check-notifications (advisory)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.notifications == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R "$(id -u):$(id -g)" /nix
-          fi
-      - uses: nixbuild/nix-quick-install-action@v30
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: nix develop .#default -c just pre-merge-notifications
+      - run: OPENCLAW_DIR=openclaw ./scripts/pikaci-ci-run.sh pre-merge-pikachat-openclaw-e2e
 
   check-fixture:
     name: check-fixture (pikaci)
@@ -1122,16 +984,31 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
+      - name: Run staged remote fixture lane
+        env:
+          PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
+          PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-fixture" >&2
+            exit 2
+          fi
+          if [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-fixture" >&2
+            exit 2
+          fi
 
-      - run: nix develop .#default -c just pre-merge-fixture
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+          ./scripts/ci-add-known-host.sh "$host"
+
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+          ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+
+          ./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
@@ -1202,7 +1079,9 @@ jobs:
           report_advisory_pikaci_lane "check-agent-contracts" "${{ needs.detect-changes.outputs.agent_contracts }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.result }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.result }}"
           report_advisory_pikaci_lane "check-rmp" "${{ needs.detect-changes.outputs.rmp }}" "${{ needs.shadow-pikaci-pre-merge-rmp.result }}" "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.result }}"
           report_advisory_pikaci_lane "check-notifications" "${{ needs.detect-changes.outputs.notifications }}" "${{ needs.shadow-pikaci-pre-merge-notifications.result }}" "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.result }}"
-          echo "legacy Linux jobs are advisory; nightly-* jobs remain non-blocking and run only on schedule/manual nightly mode."
+          echo "Non-blocking lanes:"
+          echo "shadow pikaci integration lanes are advisory."
+          echo "nightly-* jobs remain non-blocking and run only on schedule/manual nightly mode."
 
           if [[ -n "$failed" ]]; then
             echo "::error::Failed lanes: $failed"
