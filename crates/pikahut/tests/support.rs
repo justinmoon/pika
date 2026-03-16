@@ -360,9 +360,11 @@ pub fn run_dm_creation_and_first_message_delivery(context: &TestContext) -> Resu
     })
 }
 
-// CI-facing readable group-profile contract: after a late joiner gets the group shell, an
+// Checked-in deterministic group-profile contract: after a late joiner gets the group shell, an
 // explicit member profile refresh makes those names visible in the group they open.
-pub fn run_late_joiner_group_profile_visibility_after_refresh(context: &TestContext) -> Result<()> {
+pub fn run_late_joiner_group_profile_visibility_after_explicit_refresh(
+    context: &TestContext,
+) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     with_relay_fixture(context, |fixture| {
@@ -455,9 +457,9 @@ pub fn run_late_joiner_group_profile_visibility_after_refresh(context: &TestCont
 
         std::thread::sleep(Duration::from_secs(2));
 
-        // This selector owns the readable "late joiner sees member names after post-join refresh"
-        // contract. It is not yet a true proof that already-established pre-join names rebroadcast
-        // without an explicit refresh in this deterministic harness.
+        // This selector owns only the readable "late joiner sees member names after explicit
+        // post-join refresh" contract. It is not a proof that already-established pre-join names
+        // rebroadcast on their own in this deterministic harness.
         alice.dispatch(AppAction::SaveGroupProfile {
             chat_id: chat_id.clone(),
             name: "Admin Alice".to_owned(),
@@ -473,7 +475,7 @@ pub fn run_late_joiner_group_profile_visibility_after_refresh(context: &TestCont
             chat_id: chat_id.clone(),
         });
         wait_until(
-            "charlie sees rebroadcast group member names",
+            "charlie sees explicitly refreshed group member names",
             Duration::from_secs(30),
             || {
                 charlie
