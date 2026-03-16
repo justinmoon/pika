@@ -1419,7 +1419,13 @@ We have at least one important Linux Rust lane where:
         - and the current Android settings still resolve plugins and dependencies from `google()`, `mavenCentral()`, `gradlePluginPortal()`, and `jitpack`,
       - required workflow policy stays aligned with that reality:
         - `check-pika` remains on the host-local follow-up path until the Android staging blocker is actually cleared,
-        - and the new remote `check-pikachat-openclaw-e2e` path is guarded like fixture for fork PRs where `PIKA_BUILD_SSH_KEY` is unavailable,
+        - pre-merge trust policy now keys off approval, not PR origin:
+          - the workflow runs required Linux pre-merge under `pull_request_target` so fork PRs can receive the same remote Linux coverage after approval,
+          - the allowlisted GitHub users remain explicit in `.github/workflows/pre-merge.yml` (`justinmoon`, `futurepaul`, `AnthonyRonning`, `benthecarman`, `clarkmoody`) and auto-run the secret-backed remote Linux jobs,
+          - every other actor goes through the `ci-approval` environment before any SSH-key-backed remote Linux job runs,
+          - required remote jobs no longer have fork-only skip branches in either the job `if:` logic or the final `pre-merge` summary gate,
+          - `check-pikachat-openclaw-e2e` no longer falls back to a runner-local host path when remote secrets are unavailable; it now stays a single remote-`pika-build` check contract like fixture,
+          - and the workflow now checks out the PR head explicitly with `persist-credentials: false`, so the approval-based path still evaluates the submitted code rather than silently testing the base branch,
       - path to full Linux runtime unification from here:
         - either stage a reproducible offline Android Gradle dependency closure for `:app:compileDebugAndroidTestKotlin`,
         - or narrow the required followup lane contract so it no longer depends on that unstaged online Android build step.

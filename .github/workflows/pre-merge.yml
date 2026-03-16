@@ -1,7 +1,7 @@
 name: pre-merge
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [master]
   schedule:
     - cron: '0 8 * * *'
@@ -15,9 +15,13 @@ on:
           - nightly
         default: pre-merge
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   detect-changes:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    if: github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
     runs-on: ubuntu-latest
     outputs:
       pika: ${{ steps.filter.outputs.pika || 'true' }}
@@ -29,7 +33,7 @@ jobs:
       fixture: ${{ steps.filter.outputs.fixture || 'true' }}
     steps:
       - uses: dorny/paths-filter@v3
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request_target'
         id: filter
         with:
           filters: |
@@ -244,6 +248,10 @@ jobs:
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -278,6 +286,8 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pika == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
       result: ${{ steps.shadow.outputs.result }}
       exit_code: ${{ steps.shadow.outputs.exit_code }}
@@ -286,6 +296,10 @@ jobs:
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -392,6 +406,8 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.notifications == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
       result: ${{ steps.shadow.outputs.result }}
       exit_code: ${{ steps.shadow.outputs.exit_code }}
@@ -400,6 +416,10 @@ jobs:
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -506,6 +526,8 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.agent_contracts == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
       result: ${{ steps.shadow.outputs.result }}
       exit_code: ${{ steps.shadow.outputs.exit_code }}
@@ -514,6 +536,10 @@ jobs:
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -620,6 +646,8 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.rmp == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
       result: ${{ steps.shadow.outputs.result }}
       exit_code: ${{ steps.shadow.outputs.exit_code }}
@@ -628,6 +656,10 @@ jobs:
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -734,6 +766,8 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pikachat == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
       result: ${{ steps.shadow.outputs.result }}
       exit_code: ${{ steps.shadow.outputs.exit_code }}
@@ -742,6 +776,10 @@ jobs:
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -844,7 +882,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   summarize-pikaci-shadow-lanes:
-    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
+    if: always() && (github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
     needs:
       - shadow-pikaci-pre-merge-pika-rust
       - shadow-pikaci-pre-merge-notifications
@@ -931,17 +969,22 @@ jobs:
             echo "### Linux CI Policy"
             echo
             echo "- All required Linux pre-merge families now gate through <code>pikaci</code>."
+            echo "- Trusted GitHub actors run remote Linux jobs automatically; everyone else goes through the <code>ci-approval</code> environment."
           } >> "$GITHUB_STEP_SUMMARY"
 
   check-pikachat-openclaw-e2e:
     name: check-pikachat-openclaw-e2e (pikaci)
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.pikachat_openclaw_e2e == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: needs.detect-changes.outputs.pikachat_openclaw_e2e == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     environment:
-      name: ${{ github.event_name == 'pull_request' && github.actor != 'justinmoon' && github.actor != 'futurepaul' && github.actor != 'AnthonyRonning' && github.actor != 'benthecarman' && github.actor != 'clarkmoody' && 'ci-approval' || 'ci-auto' }}
+      name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -960,29 +1003,39 @@ jobs:
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
         run: |
           set -euo pipefail
-          if [ -n "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ] && [ -n "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            mkdir -p "$HOME/.ssh"
-            chmod 700 "$HOME/.ssh"
-            host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
-            eval "$(ssh-agent -s)"
-            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
-            ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
-            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-openclaw-e2e
-            exit 0
+          if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-pikachat-openclaw-e2e" >&2
+            exit 2
+          fi
+          if [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-pikachat-openclaw-e2e" >&2
+            exit 2
           fi
 
-          echo "warning: PIKA_BUILD_SSH_HOST / PIKA_BUILD_SSH_KEY not set; using host-local pre-merge-pikachat-openclaw-e2e" >&2
-          nix run .#pikaci -- run pre-merge-pikachat-openclaw-e2e
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+          ./scripts/ci-add-known-host.sh "$host"
+
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+          ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+
+          ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-openclaw-e2e
 
   check-fixture:
     name: check-fixture (pikaci)
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.fixture == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: needs.detect-changes.outputs.fixture == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -1022,7 +1075,7 @@ jobs:
           ./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust
 
   pre-merge:
-    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
+    if: always() && (github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
     needs:
       - detect-changes
       - check-pika
@@ -1046,7 +1099,6 @@ jobs:
           echo "  rmp=${{ needs.detect-changes.outputs.rmp }}"
           echo "  notifications=${{ needs.detect-changes.outputs.notifications }}"
           echo "  fixture=${{ needs.detect-changes.outputs.fixture }}"
-          echo "  fixture_remote_enabled=${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
 
           check_required_job() {
             local label="$1"
@@ -1082,16 +1134,8 @@ jobs:
 
           echo "Required pre-merge lanes:"
           check_required_job "check-pika-followup" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.check-pika.result }}"
-          if [[ "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" == "true" && "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}" == "true" ]]; then
-            echo "check-pikachat-openclaw-e2e: skipped (fork PR; remote secrets unavailable)"
-          else
-            check_required_job "check-pikachat-openclaw-e2e" "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" "${{ needs.check-pikachat-openclaw-e2e.result }}"
-          fi
-          if [[ "${{ needs.detect-changes.outputs.fixture }}" == "true" && "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}" == "true" ]]; then
-            echo "check-fixture: skipped (fork PR; remote secrets unavailable)"
-          else
-            check_required_job "check-fixture" "${{ needs.detect-changes.outputs.fixture }}" "${{ needs.check-fixture.result }}"
-          fi
+          check_required_job "check-pikachat-openclaw-e2e" "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" "${{ needs.check-pikachat-openclaw-e2e.result }}"
+          check_required_job "check-fixture" "${{ needs.detect-changes.outputs.fixture }}" "${{ needs.check-fixture.result }}"
 
           echo "Advisory integration lanes:"
           report_advisory_pikaci_lane "check-pika-rust" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }}"
