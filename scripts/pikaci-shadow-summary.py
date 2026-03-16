@@ -36,8 +36,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-created-at-exclusive",
         help="Only consider runs created strictly after this timestamp.",
-        "--min-created-at-exclusive",
-        help="Only consider runs created strictly after this timestamp.",
     )
     parser.add_argument(
         "--allow-missing",
@@ -85,12 +83,6 @@ class JobSummary:
 def load_run_record(run_json: Path) -> dict:
     return json.loads(run_json.read_text())
 
-
-def find_latest_run(
-    state_root: Path,
-    target_id: str,
-    min_created_at_exclusive: str | None,
-) -> Path | None:
 def find_latest_run(
     state_root: Path,
     target_id: str,
@@ -109,10 +101,6 @@ def find_latest_run(
         except json.JSONDecodeError:
             continue
         if record.get("target_id") == target_id:
-            created_at = record.get("created_at", "")
-            if min_created_at_exclusive and created_at <= min_created_at_exclusive:
-                continue
-            candidates.append((created_at, run_json))
             created_at = record.get("created_at", "")
             if min_created_at_exclusive and created_at <= min_created_at_exclusive:
                 continue
@@ -141,9 +129,6 @@ def main() -> int:
     if args.run_id:
         run_json = state_root / "runs" / args.run_id / "run.json"
     else:
-        run_json = find_latest_run(
-            state_root, args.target_id, args.min_created_at_exclusive
-        )
         run_json = find_latest_run(
             state_root, args.target_id, args.min_created_at_exclusive
         )
