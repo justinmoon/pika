@@ -123,6 +123,7 @@ struct MockSpawnerExchange {
     expected_request_prefix: &'static str,
     status: &'static str,
     body: &'static str,
+    response_delay_ms: u64,
 }
 
 fn spawn_scripted_mock_vm_spawner(
@@ -190,6 +191,9 @@ fn spawn_scripted_mock_vm_spawner(
                 status = exchange.status,
                 body = exchange.body,
             );
+            if exchange.response_delay_ms > 0 {
+                thread::sleep(Duration::from_millis(exchange.response_delay_ms));
+            }
             stream
                 .write_all(response.as_bytes())
                 .context("write spawner response")?;
@@ -212,17 +216,20 @@ fn spawn_mock_vm_spawner(
             expected_request_prefix: "POST /vms ",
             status: "200 OK",
             body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            response_delay_ms: 0,
         }],
         2 => vec![
             MockSpawnerExchange {
                 expected_request_prefix: "POST /vms ",
                 status: "200 OK",
                 body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+                response_delay_ms: 0,
             },
             MockSpawnerExchange {
                 expected_request_prefix: "GET /vms/vm-test-1 ",
                 status: "200 OK",
                 body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+                response_delay_ms: 0,
             },
         ],
         3 => vec![
@@ -230,16 +237,19 @@ fn spawn_mock_vm_spawner(
                 expected_request_prefix: "POST /vms ",
                 status: "200 OK",
                 body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+                response_delay_ms: 0,
             },
             MockSpawnerExchange {
                 expected_request_prefix: "GET /vms/vm-test-1 ",
                 status: "200 OK",
                 body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+                response_delay_ms: 0,
             },
             MockSpawnerExchange {
                 expected_request_prefix: "POST /vms/vm-test-1/recover ",
                 status: "200 OK",
                 body: r#"{"id":"vm-test-1","status":"running","guest_ready":true}"#,
+                response_delay_ms: 0,
             },
         ],
         _ => bail!("unsupported default mock vm-spawner request count: {expected_requests}"),
@@ -675,21 +685,25 @@ fn agent_launch_provisioning_boundary() -> Result<()> {
             expected_request_prefix: "POST /vms ",
             status: "200 OK",
             body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            response_delay_ms: 0,
         },
         MockSpawnerExchange {
             expected_request_prefix: "GET /vms/vm-test-1 ",
             status: "200 OK",
             body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            response_delay_ms: 150,
         },
         MockSpawnerExchange {
             expected_request_prefix: "GET /vms/vm-test-1 ",
             status: "200 OK",
             body: r#"{"id":"vm-test-1","status":"running","guest_ready":false,"startup_probe_satisfied":false}"#,
+            response_delay_ms: 150,
         },
         MockSpawnerExchange {
             expected_request_prefix: "GET /vms/vm-test-1 ",
             status: "200 OK",
             body: r#"{"id":"vm-test-1","status":"running","guest_ready":true}"#,
+            response_delay_ms: 150,
         },
     ])?;
     let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
@@ -722,6 +736,7 @@ fn agent_launch_provisioning_failure_boundary() -> Result<()> {
             expected_request_prefix: "POST /vms ",
             status: "500 Internal Server Error",
             body: r#"{"error":"spawner down"}"#,
+            response_delay_ms: 0,
         }])?;
     let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
     support::run_agent_launch_provisioning_failure(&context)?;
@@ -732,6 +747,57 @@ fn agent_launch_provisioning_failure_boundary() -> Result<()> {
     if spawner_request_lines.len() != 1 || !spawner_request_lines[0].starts_with("POST /vms ") {
         bail!(
             "expected exactly one failing vm-spawner provision request, got: {spawner_request_lines:?}"
+        );
+    }
+
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic app-facing post-launch agent chat selector"]
+fn agent_launch_first_reply_boundary() -> Result<()> {
+    let _env_lock = ENV_LOCK.blocking_lock();
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
+    let mut context = TestContext::builder("agent-launch-first-reply")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_scripted_mock_vm_spawner(vec![
+        MockSpawnerExchange {
+            expected_request_prefix: "POST /vms ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            response_delay_ms: 0,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            response_delay_ms: 0,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"running","guest_ready":false,"startup_probe_satisfied":false}"#,
+            response_delay_ms: 0,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"running","guest_ready":true}"#,
+            response_delay_ms: 0,
+        },
+    ])?;
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    support::run_agent_launch_first_reply(&context)?;
+
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if spawner_request_lines.len() != 4 {
+        bail!(
+            "expected four vm-spawner requests for post-launch first-reply coverage, got: {spawner_request_lines:?}"
         );
     }
 
