@@ -248,6 +248,12 @@ jobs:
     runs-on: blacksmith-16vcpu-ubuntu-2404
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
+    outputs:
+      result: ${{ steps.lane.outputs.result }}
+      exit_code: ${{ steps.lane.outputs.exit_code }}
+      run_id: ${{ steps.metadata.outputs.run_id }}
+      run_status: ${{ steps.metadata.outputs.run_status }}
+      run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -281,9 +287,78 @@ jobs:
           key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-gradle-v1-${{ runner.os }}
           path: ~/.gradle
 
-      - run: ./scripts/pikaci-ci-run.sh pre-merge-pika-followup
+      - name: Run host-local pika followup lane
+        id: lane
+        run: |
+          set +e
+          previous_run_id="$(
+            find .pikaci/runs -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null \
+              | LC_ALL=C sort -r \
+              | head -n1 \
+              || true
+          )"
+          previous_run_created_at=""
+          if [ -n "$previous_run_id" ] && [ -f ".pikaci/runs/$previous_run_id/run.json" ]; then
+            previous_run_created_at="$(
+              python3 -c 'import json, pathlib, sys; run = json.loads(pathlib.Path(".pikaci/runs", sys.argv[1], "run.json").read_text()); print(run.get("created_at", ""))' "$previous_run_id"
+            )"
+          fi
 
-  shadow-pikaci-pre-merge-pika-rust:
+          ./scripts/pikaci-ci-run.sh pre-merge-pika-followup
+          exit_code=$?
+
+          if [ "$exit_code" -eq 0 ]; then
+            result=success
+          else
+            result=failure
+            echo "::error::check-pika failed with exit code $exit_code"
+          fi
+
+          {
+            echo "result=$result"
+            echo "exit_code=$exit_code"
+            echo "previous_run_id=$previous_run_id"
+            echo "previous_run_created_at=$previous_run_created_at"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect lane metadata
+        if: always()
+        id: metadata
+        run: |
+          python3 scripts/pikaci-run-summary.py \
+            --target-id pre-merge-pika-followup \
+            --min-created-at-exclusive "${{ steps.lane.outputs.previous_run_created_at }}" \
+            --allow-missing \
+            --github-output "$GITHUB_OUTPUT" \
+            --markdown-out "$RUNNER_TEMP/pikaci-run-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-run-artifact"
+
+      - name: Upload lane debug bundle
+        if: always() && steps.metadata.outputs.run_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: ${{ runner.temp }}/pikaci-run-artifact
+          if-no-files-found: error
+
+      - name: Summarize lane
+        if: always()
+        run: |
+          {
+            echo "- command: \`./scripts/pikaci-ci-run.sh pre-merge-pika-followup\`"
+            echo "- result: \`${{ steps.lane.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
+            echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
+            echo ""
+            cat "$RUNNER_TEMP/pikaci-run-summary.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce lane result
+        if: always() && steps.lane.outputs.result != 'success'
+        run: exit 1
+
+  check-pika-rust:
     name: check-pika-rust (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pika == 'true'
@@ -291,8 +366,8 @@ jobs:
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
-      result: ${{ steps.shadow.outputs.result }}
-      exit_code: ${{ steps.shadow.outputs.exit_code }}
+      result: ${{ steps.lane.outputs.result }}
+      exit_code: ${{ steps.lane.outputs.exit_code }}
       run_id: ${{ steps.metadata.outputs.run_id }}
       run_status: ${{ steps.metadata.outputs.run_status }}
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
@@ -314,8 +389,8 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Run advisory staged Linux Rust shadow lane
-        id: shadow
+      - name: Run staged Linux Rust lane
+        id: lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
@@ -336,10 +411,10 @@ jobs:
           fi
 
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKA_BUILD_SSH_HOST for the staged Linux Rust shadow lane" >&2
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-pika-rust" >&2
             exit_code=2
           elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKA_BUILD_SSH_KEY for the staged Linux Rust shadow lane" >&2
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-pika-rust" >&2
             exit_code=2
           else
             mkdir -p "$HOME/.ssh"
@@ -359,7 +434,7 @@ jobs:
             result=success
           else
             result=failure
-            echo "::warning::Advisory staged Linux Rust shadow lane failed with exit code $exit_code"
+            echo "::error::check-pika-rust failed with exit code $exit_code"
           fi
 
           {
@@ -370,40 +445,44 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Collect shadow lane metadata
+      - name: Collect lane metadata
         if: always()
         id: metadata
         run: |
-          python3 scripts/pikaci-shadow-summary.py \
+          python3 scripts/pikaci-run-summary.py \
             --target-id pre-merge-pika-rust \
-            --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
+            --min-created-at-exclusive "${{ steps.lane.outputs.previous_run_created_at }}" \
             --allow-missing \
             --github-output "$GITHUB_OUTPUT" \
-            --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \
-            --artifact-dir "$RUNNER_TEMP/pikaci-shadow-artifact"
+            --markdown-out "$RUNNER_TEMP/pikaci-run-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-run-artifact"
 
-      - name: Upload shadow lane debug bundle
+      - name: Upload lane debug bundle
         if: always() && steps.metadata.outputs.run_id != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
-          path: ${{ runner.temp }}/pikaci-shadow-artifact
+          path: ${{ runner.temp }}/pikaci-run-artifact
           if-no-files-found: error
 
-      - name: Summarize shadow lane
+      - name: Summarize lane
         if: always()
         run: |
           {
             echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust\`"
-            echo "- result: \`${{ steps.shadow.outputs.result }}\`"
-            echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
+            echo "- result: \`${{ steps.lane.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
             echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
             echo ""
-            cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
+            cat "$RUNNER_TEMP/pikaci-run-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  shadow-pikaci-pre-merge-notifications:
+      - name: Enforce lane result
+        if: always() && steps.lane.outputs.result != 'success'
+        run: exit 1
+
+  check-notifications:
     name: check-notifications (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.notifications == 'true'
@@ -411,8 +490,8 @@ jobs:
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
-      result: ${{ steps.shadow.outputs.result }}
-      exit_code: ${{ steps.shadow.outputs.exit_code }}
+      result: ${{ steps.lane.outputs.result }}
+      exit_code: ${{ steps.lane.outputs.exit_code }}
       run_id: ${{ steps.metadata.outputs.run_id }}
       run_status: ${{ steps.metadata.outputs.run_status }}
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
@@ -434,8 +513,8 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Run advisory staged Linux notifications shadow lane
-        id: shadow
+      - name: Run staged Linux notifications lane
+        id: lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
@@ -456,10 +535,10 @@ jobs:
           fi
 
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKA_BUILD_SSH_HOST for the staged Linux notifications shadow lane" >&2
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-notifications" >&2
             exit_code=2
           elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKA_BUILD_SSH_KEY for the staged Linux notifications shadow lane" >&2
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-notifications" >&2
             exit_code=2
           else
             mkdir -p "$HOME/.ssh"
@@ -479,7 +558,7 @@ jobs:
             result=success
           else
             result=failure
-            echo "::warning::Advisory staged Linux notifications shadow lane failed with exit code $exit_code"
+            echo "::error::check-notifications failed with exit code $exit_code"
           fi
 
           {
@@ -490,40 +569,44 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Collect shadow lane metadata
+      - name: Collect lane metadata
         if: always()
         id: metadata
         run: |
-          python3 scripts/pikaci-shadow-summary.py \
+          python3 scripts/pikaci-run-summary.py \
             --target-id pre-merge-notifications \
-            --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
+            --min-created-at-exclusive "${{ steps.lane.outputs.previous_run_created_at }}" \
             --allow-missing \
             --github-output "$GITHUB_OUTPUT" \
-            --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \
-            --artifact-dir "$RUNNER_TEMP/pikaci-shadow-artifact"
+            --markdown-out "$RUNNER_TEMP/pikaci-run-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-run-artifact"
 
-      - name: Upload shadow lane debug bundle
+      - name: Upload lane debug bundle
         if: always() && steps.metadata.outputs.run_id != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
-          path: ${{ runner.temp }}/pikaci-shadow-artifact
+          path: ${{ runner.temp }}/pikaci-run-artifact
           if-no-files-found: error
 
-      - name: Summarize shadow lane
+      - name: Summarize lane
         if: always()
         run: |
           {
             echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-notifications\`"
-            echo "- result: \`${{ steps.shadow.outputs.result }}\`"
-            echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
+            echo "- result: \`${{ steps.lane.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
             echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
             echo ""
-            cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
+            cat "$RUNNER_TEMP/pikaci-run-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  shadow-pikaci-pre-merge-agent-contracts:
+      - name: Enforce lane result
+        if: always() && steps.lane.outputs.result != 'success'
+        run: exit 1
+
+  check-agent-contracts:
     name: check-agent-contracts (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.agent_contracts == 'true'
@@ -531,8 +614,8 @@ jobs:
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
-      result: ${{ steps.shadow.outputs.result }}
-      exit_code: ${{ steps.shadow.outputs.exit_code }}
+      result: ${{ steps.lane.outputs.result }}
+      exit_code: ${{ steps.lane.outputs.exit_code }}
       run_id: ${{ steps.metadata.outputs.run_id }}
       run_status: ${{ steps.metadata.outputs.run_status }}
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
@@ -554,8 +637,8 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Run advisory staged Linux agent-contracts shadow lane
-        id: shadow
+      - name: Run staged Linux agent-contracts lane
+        id: lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
@@ -576,10 +659,10 @@ jobs:
           fi
 
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKA_BUILD_SSH_HOST for the staged Linux agent-contracts shadow lane" >&2
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-agent-contracts" >&2
             exit_code=2
           elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKA_BUILD_SSH_KEY for the staged Linux agent-contracts shadow lane" >&2
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-agent-contracts" >&2
             exit_code=2
           else
             mkdir -p "$HOME/.ssh"
@@ -599,7 +682,7 @@ jobs:
             result=success
           else
             result=failure
-            echo "::warning::Advisory staged Linux agent-contracts shadow lane failed with exit code $exit_code"
+            echo "::error::check-agent-contracts failed with exit code $exit_code"
           fi
 
           {
@@ -610,40 +693,44 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Collect shadow lane metadata
+      - name: Collect lane metadata
         if: always()
         id: metadata
         run: |
-          python3 scripts/pikaci-shadow-summary.py \
+          python3 scripts/pikaci-run-summary.py \
             --target-id pre-merge-agent-contracts \
-            --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
+            --min-created-at-exclusive "${{ steps.lane.outputs.previous_run_created_at }}" \
             --allow-missing \
             --github-output "$GITHUB_OUTPUT" \
-            --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \
-            --artifact-dir "$RUNNER_TEMP/pikaci-shadow-artifact"
+            --markdown-out "$RUNNER_TEMP/pikaci-run-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-run-artifact"
 
-      - name: Upload shadow lane debug bundle
+      - name: Upload lane debug bundle
         if: always() && steps.metadata.outputs.run_id != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
-          path: ${{ runner.temp }}/pikaci-shadow-artifact
+          path: ${{ runner.temp }}/pikaci-run-artifact
           if-no-files-found: error
 
-      - name: Summarize shadow lane
+      - name: Summarize lane
         if: always()
         run: |
           {
             echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts\`"
-            echo "- result: \`${{ steps.shadow.outputs.result }}\`"
-            echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
+            echo "- result: \`${{ steps.lane.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
             echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
             echo ""
-            cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
+            cat "$RUNNER_TEMP/pikaci-run-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  shadow-pikaci-pre-merge-rmp:
+      - name: Enforce lane result
+        if: always() && steps.lane.outputs.result != 'success'
+        run: exit 1
+
+  check-rmp:
     name: check-rmp (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.rmp == 'true'
@@ -651,8 +738,8 @@ jobs:
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
-      result: ${{ steps.shadow.outputs.result }}
-      exit_code: ${{ steps.shadow.outputs.exit_code }}
+      result: ${{ steps.lane.outputs.result }}
+      exit_code: ${{ steps.lane.outputs.exit_code }}
       run_id: ${{ steps.metadata.outputs.run_id }}
       run_status: ${{ steps.metadata.outputs.run_status }}
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
@@ -674,8 +761,8 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Run advisory staged Linux rmp shadow lane
-        id: shadow
+      - name: Run staged Linux rmp lane
+        id: lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
@@ -696,10 +783,10 @@ jobs:
           fi
 
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKA_BUILD_SSH_HOST for the staged Linux rmp shadow lane" >&2
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-rmp" >&2
             exit_code=2
           elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKA_BUILD_SSH_KEY for the staged Linux rmp shadow lane" >&2
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-rmp" >&2
             exit_code=2
           else
             mkdir -p "$HOME/.ssh"
@@ -719,7 +806,7 @@ jobs:
             result=success
           else
             result=failure
-            echo "::warning::Advisory staged Linux rmp shadow lane failed with exit code $exit_code"
+            echo "::error::check-rmp failed with exit code $exit_code"
           fi
 
           {
@@ -730,40 +817,44 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Collect shadow lane metadata
+      - name: Collect lane metadata
         if: always()
         id: metadata
         run: |
-          python3 scripts/pikaci-shadow-summary.py \
+          python3 scripts/pikaci-run-summary.py \
             --target-id pre-merge-rmp \
-            --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
+            --min-created-at-exclusive "${{ steps.lane.outputs.previous_run_created_at }}" \
             --allow-missing \
             --github-output "$GITHUB_OUTPUT" \
-            --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \
-            --artifact-dir "$RUNNER_TEMP/pikaci-shadow-artifact"
+            --markdown-out "$RUNNER_TEMP/pikaci-run-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-run-artifact"
 
-      - name: Upload shadow lane debug bundle
+      - name: Upload lane debug bundle
         if: always() && steps.metadata.outputs.run_id != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
-          path: ${{ runner.temp }}/pikaci-shadow-artifact
+          path: ${{ runner.temp }}/pikaci-run-artifact
           if-no-files-found: error
 
-      - name: Summarize shadow lane
+      - name: Summarize lane
         if: always()
         run: |
           {
             echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-rmp\`"
-            echo "- result: \`${{ steps.shadow.outputs.result }}\`"
-            echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
+            echo "- result: \`${{ steps.lane.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
             echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
             echo ""
-            cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
+            cat "$RUNNER_TEMP/pikaci-run-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  shadow-pikaci-pre-merge-pikachat-rust:
+      - name: Enforce lane result
+        if: always() && steps.lane.outputs.result != 'success'
+        run: exit 1
+
+  check-pikachat:
     name: check-pikachat (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pikachat == 'true'
@@ -771,8 +862,8 @@ jobs:
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     outputs:
-      result: ${{ steps.shadow.outputs.result }}
-      exit_code: ${{ steps.shadow.outputs.exit_code }}
+      result: ${{ steps.lane.outputs.result }}
+      exit_code: ${{ steps.lane.outputs.exit_code }}
       run_id: ${{ steps.metadata.outputs.run_id }}
       run_status: ${{ steps.metadata.outputs.run_status }}
       run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
@@ -794,8 +885,8 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Run advisory staged Linux pikachat shadow lane
-        id: shadow
+      - name: Run staged Linux pikachat lane
+        id: lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
@@ -816,10 +907,10 @@ jobs:
           fi
 
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKA_BUILD_SSH_HOST for the staged Linux pikachat shadow lane" >&2
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-pikachat" >&2
             exit_code=2
           elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKA_BUILD_SSH_KEY for the staged Linux pikachat shadow lane" >&2
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-pikachat" >&2
             exit_code=2
           else
             mkdir -p "$HOME/.ssh"
@@ -839,7 +930,7 @@ jobs:
             result=success
           else
             result=failure
-            echo "::warning::Advisory staged Linux pikachat shadow lane failed with exit code $exit_code"
+            echo "::error::check-pikachat failed with exit code $exit_code"
           fi
 
           {
@@ -850,47 +941,54 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Collect shadow lane metadata
+      - name: Collect lane metadata
         if: always()
         id: metadata
         run: |
-          python3 scripts/pikaci-shadow-summary.py \
+          python3 scripts/pikaci-run-summary.py \
             --target-id pre-merge-pikachat-rust \
-            --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
+            --min-created-at-exclusive "${{ steps.lane.outputs.previous_run_created_at }}" \
             --allow-missing \
             --github-output "$GITHUB_OUTPUT" \
-            --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \
-            --artifact-dir "$RUNNER_TEMP/pikaci-shadow-artifact"
+            --markdown-out "$RUNNER_TEMP/pikaci-run-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-run-artifact"
 
-      - name: Upload shadow lane debug bundle
+      - name: Upload lane debug bundle
         if: always() && steps.metadata.outputs.run_id != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.metadata.outputs.artifact_name }}
-          path: ${{ runner.temp }}/pikaci-shadow-artifact
+          path: ${{ runner.temp }}/pikaci-run-artifact
           if-no-files-found: error
 
-      - name: Summarize shadow lane
+      - name: Summarize lane
         if: always()
         run: |
           {
             echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-rust\`"
-            echo "- result: \`${{ steps.shadow.outputs.result }}\`"
-            echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
+            echo "- result: \`${{ steps.lane.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
             echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
             echo ""
-            cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
+            cat "$RUNNER_TEMP/pikaci-run-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  summarize-pikaci-shadow-lanes:
+      - name: Enforce lane result
+        if: always() && steps.lane.outputs.result != 'success'
+        run: exit 1
+
+  summarize-pikaci-linux-lanes:
     if: always() && (github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
     needs:
-      - shadow-pikaci-pre-merge-pika-rust
-      - shadow-pikaci-pre-merge-notifications
-      - shadow-pikaci-pre-merge-agent-contracts
-      - shadow-pikaci-pre-merge-rmp
-      - shadow-pikaci-pre-merge-pikachat-rust
+      - check-pika
+      - check-pika-rust
+      - check-notifications
+      - check-agent-contracts
+      - check-rmp
+      - check-pikachat
+      - check-pikachat-openclaw-e2e
+      - check-fixture
     runs-on: ubuntu-latest
     steps:
       - name: Summarize pikaci Linux lanes
@@ -898,15 +996,15 @@ jobs:
           lane_row() {
             local label="$1"
             local job_state="$2"
-            local advisory_result="$3"
+            local lane_result="$3"
             local run_status="$4"
             local duration="$5"
             local run_id="$6"
 
             if [[ "$job_state" == "skipped" ]]; then
-              advisory_result="not_triggered"
-            elif [[ -z "$advisory_result" ]]; then
-              advisory_result="unavailable"
+              lane_result="not_triggered"
+            elif [[ -z "$lane_result" ]]; then
+              lane_result="unavailable"
             fi
 
             if [[ -z "$run_status" ]]; then
@@ -924,53 +1022,75 @@ jobs:
             fi
 
             printf "| <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> |\n" \
-              "$label" "$job_state" "$advisory_result" "$run_status" "$duration" "$run_id"
+              "$label" "$job_state" "$lane_result" "$run_status" "$duration" "$run_id"
           }
 
           {
-            echo "## Pikaci Linux lanes"
+            echo "## Authoritative Linux Pikaci Lanes"
             echo
-            echo "| lane | workflow job | pikaci result | pikaci run status | duration | run id |"
+            echo "| lane | workflow job | lane result | pikaci run status | duration | run id |"
             echo "| --- | --- | --- | --- | --- | --- |"
             lane_row \
+              "pre-merge-pika-followup" \
+              "${{ needs.check-pika.result }}" \
+              "${{ needs.check-pika.outputs.result }}" \
+              "${{ needs.check-pika.outputs.run_status }}" \
+              "${{ needs.check-pika.outputs.run_duration_seconds }}" \
+              "${{ needs.check-pika.outputs.run_id }}"
+            lane_row \
               "pre-merge-pika-rust" \
-              "${{ needs.shadow-pikaci-pre-merge-pika-rust.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.run_status }}" \
-              "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.run_duration_seconds }}" \
-              "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.run_id }}"
+              "${{ needs.check-pika-rust.result }}" \
+              "${{ needs.check-pika-rust.outputs.result }}" \
+              "${{ needs.check-pika-rust.outputs.run_status }}" \
+              "${{ needs.check-pika-rust.outputs.run_duration_seconds }}" \
+              "${{ needs.check-pika-rust.outputs.run_id }}"
             lane_row \
               "pre-merge-notifications" \
-              "${{ needs.shadow-pikaci-pre-merge-notifications.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.run_status }}" \
-              "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.run_duration_seconds }}" \
-              "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.run_id }}"
+              "${{ needs.check-notifications.result }}" \
+              "${{ needs.check-notifications.outputs.result }}" \
+              "${{ needs.check-notifications.outputs.run_status }}" \
+              "${{ needs.check-notifications.outputs.run_duration_seconds }}" \
+              "${{ needs.check-notifications.outputs.run_id }}"
             lane_row \
               "pre-merge-agent-contracts" \
-              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_status }}" \
-              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_duration_seconds }}" \
-              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_id }}"
+              "${{ needs.check-agent-contracts.result }}" \
+              "${{ needs.check-agent-contracts.outputs.result }}" \
+              "${{ needs.check-agent-contracts.outputs.run_status }}" \
+              "${{ needs.check-agent-contracts.outputs.run_duration_seconds }}" \
+              "${{ needs.check-agent-contracts.outputs.run_id }}"
             lane_row \
               "pre-merge-rmp" \
-              "${{ needs.shadow-pikaci-pre-merge-rmp.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.run_status }}" \
-              "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.run_duration_seconds }}" \
-              "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.run_id }}"
+              "${{ needs.check-rmp.result }}" \
+              "${{ needs.check-rmp.outputs.result }}" \
+              "${{ needs.check-rmp.outputs.run_status }}" \
+              "${{ needs.check-rmp.outputs.run_duration_seconds }}" \
+              "${{ needs.check-rmp.outputs.run_id }}"
             lane_row \
               "pre-merge-pikachat-rust" \
-              "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.result }}" \
-              "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.run_status }}" \
-              "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.run_duration_seconds }}" \
-              "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.run_id }}"
+              "${{ needs.check-pikachat.result }}" \
+              "${{ needs.check-pikachat.outputs.result }}" \
+              "${{ needs.check-pikachat.outputs.run_status }}" \
+              "${{ needs.check-pikachat.outputs.run_duration_seconds }}" \
+              "${{ needs.check-pikachat.outputs.run_id }}"
+            lane_row \
+              "pre-merge-pikachat-openclaw-e2e" \
+              "${{ needs.check-pikachat-openclaw-e2e.result }}" \
+              "${{ needs.check-pikachat-openclaw-e2e.outputs.result }}" \
+              "${{ needs.check-pikachat-openclaw-e2e.outputs.run_status }}" \
+              "${{ needs.check-pikachat-openclaw-e2e.outputs.run_duration_seconds }}" \
+              "${{ needs.check-pikachat-openclaw-e2e.outputs.run_id }}"
+            lane_row \
+              "pre-merge-fixture-rust" \
+              "${{ needs.check-fixture.result }}" \
+              "${{ needs.check-fixture.outputs.result }}" \
+              "${{ needs.check-fixture.outputs.run_status }}" \
+              "${{ needs.check-fixture.outputs.run_duration_seconds }}" \
+              "${{ needs.check-fixture.outputs.run_id }}"
             echo
             echo "### Linux CI Policy"
             echo
-            echo "- All required Linux pre-merge families now gate through <code>pikaci</code>."
+            echo "- Linux <code>pikaci</code> lanes are now authoritative for required Linux CI."
+            echo "- <code>pre-merge-pika-followup</code> remains the one deferred host-local exception until the Android offline Gradle blocker is cleared."
             echo "- Trusted GitHub actors run remote Linux jobs automatically; everyone else goes through the <code>ci-approval</code> environment."
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -981,6 +1101,12 @@ jobs:
     runs-on: blacksmith-16vcpu-ubuntu-2404
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
+    outputs:
+      result: ${{ steps.lane.outputs.result }}
+      exit_code: ${{ steps.lane.outputs.exit_code }}
+      run_id: ${{ steps.metadata.outputs.run_id }}
+      run_status: ${{ steps.metadata.outputs.run_status }}
+      run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1000,30 +1126,97 @@ jobs:
       - uses: nixbuild/nix-quick-install-action@v30
 
       - name: Run OpenClaw E2E lane
+        id: lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
         run: |
-          set -euo pipefail
+          set +e
+          exit_code=0
+          previous_run_id="$(
+            find .pikaci/runs -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null \
+              | LC_ALL=C sort -r \
+              | head -n1 \
+              || true
+          )"
+          previous_run_created_at=""
+          if [ -n "$previous_run_id" ] && [ -f ".pikaci/runs/$previous_run_id/run.json" ]; then
+            previous_run_created_at="$(
+              python3 -c 'import json, pathlib, sys; run = json.loads(pathlib.Path(".pikaci/runs", sys.argv[1], "run.json").read_text()); print(run.get("created_at", ""))' "$previous_run_id"
+            )"
+          fi
+
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
             echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-pikachat-openclaw-e2e" >&2
-            exit 2
-          fi
-          if [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            exit_code=2
+          elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
             echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-pikachat-openclaw-e2e" >&2
-            exit 2
+            exit_code=2
+          else
+            mkdir -p "$HOME/.ssh"
+            chmod 700 "$HOME/.ssh"
+            host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+            ./scripts/ci-add-known-host.sh "$host"
+
+            eval "$(ssh-agent -s)"
+            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+            ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-openclaw-e2e
+            exit_code=$?
           fi
 
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-          ./scripts/ci-add-known-host.sh "$host"
+          if [ "$exit_code" -eq 0 ]; then
+            result=success
+          else
+            result=failure
+            echo "::error::check-pikachat-openclaw-e2e failed with exit code $exit_code"
+          fi
 
-          eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
-          ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+          {
+            echo "result=$result"
+            echo "exit_code=$exit_code"
+            echo "previous_run_id=$previous_run_id"
+            echo "previous_run_created_at=$previous_run_created_at"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
 
-          ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-openclaw-e2e
+      - name: Collect lane metadata
+        if: always()
+        id: metadata
+        run: |
+          python3 scripts/pikaci-run-summary.py \
+            --target-id pre-merge-pikachat-openclaw-e2e \
+            --min-created-at-exclusive "${{ steps.lane.outputs.previous_run_created_at }}" \
+            --allow-missing \
+            --github-output "$GITHUB_OUTPUT" \
+            --markdown-out "$RUNNER_TEMP/pikaci-run-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-run-artifact"
+
+      - name: Upload lane debug bundle
+        if: always() && steps.metadata.outputs.run_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: ${{ runner.temp }}/pikaci-run-artifact
+          if-no-files-found: error
+
+      - name: Summarize lane
+        if: always()
+        run: |
+          {
+            echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-openclaw-e2e\`"
+            echo "- result: \`${{ steps.lane.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
+            echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
+            echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
+            echo ""
+            cat "$RUNNER_TEMP/pikaci-run-summary.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce lane result
+        if: always() && steps.lane.outputs.result != 'success'
+        run: exit 1
 
   check-fixture:
     name: check-fixture (pikaci)
@@ -1032,6 +1225,12 @@ jobs:
     runs-on: blacksmith-16vcpu-ubuntu-2404
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
+    outputs:
+      result: ${{ steps.lane.outputs.result }}
+      exit_code: ${{ steps.lane.outputs.exit_code }}
+      run_id: ${{ steps.metadata.outputs.run_id }}
+      run_status: ${{ steps.metadata.outputs.run_status }}
+      run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1051,42 +1250,109 @@ jobs:
       - uses: nixbuild/nix-quick-install-action@v30
 
       - name: Run staged remote fixture lane
+        id: lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
         run: |
-          set -euo pipefail
+          set +e
+          exit_code=0
+          previous_run_id="$(
+            find .pikaci/runs -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null \
+              | LC_ALL=C sort -r \
+              | head -n1 \
+              || true
+          )"
+          previous_run_created_at=""
+          if [ -n "$previous_run_id" ] && [ -f ".pikaci/runs/$previous_run_id/run.json" ]; then
+            previous_run_created_at="$(
+              python3 -c 'import json, pathlib, sys; run = json.loads(pathlib.Path(".pikaci/runs", sys.argv[1], "run.json").read_text()); print(run.get("created_at", ""))' "$previous_run_id"
+            )"
+          fi
+
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
             echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-fixture" >&2
-            exit 2
-          fi
-          if [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            exit_code=2
+          elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
             echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-fixture" >&2
-            exit 2
+            exit_code=2
+          else
+            mkdir -p "$HOME/.ssh"
+            chmod 700 "$HOME/.ssh"
+            host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+            ./scripts/ci-add-known-host.sh "$host"
+
+            eval "$(ssh-agent -s)"
+            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+            ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust
+            exit_code=$?
           fi
 
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-          ./scripts/ci-add-known-host.sh "$host"
+          if [ "$exit_code" -eq 0 ]; then
+            result=success
+          else
+            result=failure
+            echo "::error::check-fixture failed with exit code $exit_code"
+          fi
 
-          eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
-          ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+          {
+            echo "result=$result"
+            echo "exit_code=$exit_code"
+            echo "previous_run_id=$previous_run_id"
+            echo "previous_run_created_at=$previous_run_created_at"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
 
-          ./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust
+      - name: Collect lane metadata
+        if: always()
+        id: metadata
+        run: |
+          python3 scripts/pikaci-run-summary.py \
+            --target-id pre-merge-fixture-rust \
+            --min-created-at-exclusive "${{ steps.lane.outputs.previous_run_created_at }}" \
+            --allow-missing \
+            --github-output "$GITHUB_OUTPUT" \
+            --markdown-out "$RUNNER_TEMP/pikaci-run-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-run-artifact"
+
+      - name: Upload lane debug bundle
+        if: always() && steps.metadata.outputs.run_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: ${{ runner.temp }}/pikaci-run-artifact
+          if-no-files-found: error
+
+      - name: Summarize lane
+        if: always()
+        run: |
+          {
+            echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust\`"
+            echo "- result: \`${{ steps.lane.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
+            echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
+            echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
+            echo ""
+            cat "$RUNNER_TEMP/pikaci-run-summary.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce lane result
+        if: always() && steps.lane.outputs.result != 'success'
+        run: exit 1
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
     needs:
       - detect-changes
       - check-pika
-      - shadow-pikaci-pre-merge-pika-rust
-      - shadow-pikaci-pre-merge-pikachat-rust
+      - check-pika-rust
+      - check-pikachat
       - check-pikachat-openclaw-e2e
-      - shadow-pikaci-pre-merge-agent-contracts
-      - shadow-pikaci-pre-merge-rmp
-      - shadow-pikaci-pre-merge-notifications
+      - check-agent-contracts
+      - check-rmp
+      - check-notifications
       - check-fixture
     runs-on: ubuntu-latest
     steps:
@@ -1117,36 +1383,17 @@ jobs:
             fi
           }
 
-          report_advisory_pikaci_lane() {
-            local label="$1"
-            local changed="$2"
-            local job_result="$3"
-            local lane_result="$4"
-
-            if [[ "$changed" != "true" ]]; then
-              echo "$label: skipped (unchanged)"
-            elif [[ "$job_result" != "success" ]]; then
-              echo "$label: workflow job $job_result (advisory)"
-            elif [[ "$lane_result" != "success" ]]; then
-              echo "$label: pikaci result ${lane_result:-unavailable} (advisory)"
-            else
-              echo "$label: success (ok)"
-            fi
-          }
-
-          echo "Required pre-merge lanes:"
+          echo "Required Linux pre-merge lanes:"
           check_required_job "check-pika-followup" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.check-pika.result }}"
+          check_required_job "check-pika-rust" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.check-pika-rust.result }}"
+          check_required_job "check-pikachat" "${{ needs.detect-changes.outputs.pikachat }}" "${{ needs.check-pikachat.result }}"
           check_required_job "check-pikachat-openclaw-e2e" "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" "${{ needs.check-pikachat-openclaw-e2e.result }}"
+          check_required_job "check-agent-contracts" "${{ needs.detect-changes.outputs.agent_contracts }}" "${{ needs.check-agent-contracts.result }}"
+          check_required_job "check-rmp" "${{ needs.detect-changes.outputs.rmp }}" "${{ needs.check-rmp.result }}"
+          check_required_job "check-notifications" "${{ needs.detect-changes.outputs.notifications }}" "${{ needs.check-notifications.result }}"
           check_required_job "check-fixture" "${{ needs.detect-changes.outputs.fixture }}" "${{ needs.check-fixture.result }}"
 
-          echo "Advisory integration lanes:"
-          report_advisory_pikaci_lane "check-pika-rust" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }}"
-          report_advisory_pikaci_lane "check-pikachat" "${{ needs.detect-changes.outputs.pikachat }}" "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.result }}"
-          report_advisory_pikaci_lane "check-agent-contracts" "${{ needs.detect-changes.outputs.agent_contracts }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.result }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.result }}"
-          report_advisory_pikaci_lane "check-rmp" "${{ needs.detect-changes.outputs.rmp }}" "${{ needs.shadow-pikaci-pre-merge-rmp.result }}" "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.result }}"
-          report_advisory_pikaci_lane "check-notifications" "${{ needs.detect-changes.outputs.notifications }}" "${{ needs.shadow-pikaci-pre-merge-notifications.result }}" "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.result }}"
           echo "Non-blocking lanes:"
-          echo "shadow pikaci integration lanes are advisory."
           echo "nightly-* jobs remain non-blocking and run only on schedule/manual nightly mode."
 
           if [[ -n "$failed" ]]; then
