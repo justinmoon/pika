@@ -623,9 +623,9 @@ pub fn run_dm_local_profile_override_visibility(context: &TestContext) -> Result
     })
 }
 
-fn run_agent_launch_with_ready_peer(
+fn run_agent_launch_with_provisioned_peer(
     context: &TestContext,
-    post_launch: impl FnOnce(&FfiApp, &FfiApp, &str, &str) -> Result<()>,
+    post_launch: impl FnOnce(&FfiApp, &FfiApp, &str) -> Result<()>,
 ) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -718,9 +718,19 @@ fn run_agent_launch_with_ready_peer(
             &bob_npub,
             Duration::from_secs(10),
         )?;
+        post_launch(&alice, &bob, &bob_npub)?;
 
-        let phase_history =
-            wait_for_agent_chat_outcome(&alice, &bob_npub, Duration::from_secs(45))?;
+        Ok(())
+    })
+}
+
+// CI-facing readable agent-launch contract: the app sees the launch button, kicks off
+// provisioning through the same FfiApp actions the native shells use, shows meaningful
+// provisioning phases, and lands in the direct chat once the mocked backend reports ready.
+pub fn run_agent_launch_provisioning_success(context: &TestContext) -> Result<()> {
+    run_agent_launch_with_provisioned_peer(context, |alice, _bob, bob_npub| {
+        let phase_history = wait_for_agent_chat_outcome(alice, bob_npub, Duration::from_secs(45))?;
+        let chat_id = wait_for_agent_direct_chat_open(alice, bob_npub, Duration::from_secs(1))?;
         assert_phase_sequence(
             &phase_history,
             &[
@@ -734,6 +744,10 @@ fn run_agent_launch_with_ready_peer(
             .current_chat
             .as_ref()
             .ok_or_else(|| anyhow!("agent launch did not open a chat"))?;
+        anyhow::ensure!(
+            chat.chat_id == chat_id,
+            "agent launch should keep the opened direct chat selected"
+        );
         anyhow::ensure!(
             chat.group_name.is_none(),
             "agent launch should land in a direct chat"
@@ -759,25 +773,16 @@ fn run_agent_launch_with_ready_peer(
             "launch busy state should clear after success"
         );
 
-        let chat_id = chat.chat_id.clone();
-        post_launch(&alice, &bob, &bob_npub, &chat_id)?;
-
         Ok(())
     })
-}
-
-// CI-facing readable agent-launch contract: the app sees the launch button, kicks off
-// provisioning through the same FfiApp actions the native shells use, shows meaningful
-// provisioning phases, and lands in the direct chat once the mocked backend reports ready.
-pub fn run_agent_launch_provisioning_success(context: &TestContext) -> Result<()> {
-    run_agent_launch_with_ready_peer(context, |_, _, _, _| Ok(()))
 }
 
 // CI-facing readable post-launch contract: after provisioning opens the direct chat, the
 // provisioned peer behaves like a real chat partner under the local fixture and its first reply
 // surfaces in the launched app's chat state.
 pub fn run_agent_launch_first_reply(context: &TestContext) -> Result<()> {
-    run_agent_launch_with_ready_peer(context, |alice, bob, _bob_npub, chat_id| {
+    run_agent_launch_with_provisioned_peer(context, |alice, bob, bob_npub| {
+        let chat_id = wait_for_agent_direct_chat_open(alice, bob_npub, Duration::from_secs(45))?;
         wait_until(
             "provisioned peer sees chat shell",
             Duration::from_secs(20),
@@ -2741,6 +2746,27 @@ fn wait_for_agent_chat_outcome(
         "timed out waiting for agent chat outcome; observed provisioning phases: {:?}",
         phase_history
     );
+}
+
+fn wait_for_agent_direct_chat_open(
+    app: &FfiApp,
+    peer_npub: &str,
+    timeout: Duration,
+) -> Result<String> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        let state = app.state();
+        let chat = state.current_chat.as_ref().filter(|chat| {
+            chat.group_name.is_none() && chat.members.iter().any(|member| member.npub == peer_npub)
+        });
+        if let Some(chat) = chat
+            && state.agent_provisioning.is_none()
+        {
+            return Ok(chat.chat_id.clone());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    bail!("timed out waiting for agent direct chat with peer {peer_npub}");
 }
 
 fn assert_phase_sequence(
