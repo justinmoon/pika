@@ -473,9 +473,10 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             pikachat_openclaw_e2e_jobs(),
         )),
-        "pre-merge-pika-followup" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergePikaFollowup,
-            &[
+        "pre-merge-pika-followup" => Ok(TargetSpec {
+            id: "pre-merge-pika-followup",
+            description: "Run the non-Rust follow-up checks for the Pika pre-merge lane on a host-local Linux runner",
+            filters: &[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
@@ -500,8 +501,8 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "rust/**",
                 "uniffi-bindgen/**",
             ],
-            pika_followup_jobs(),
-        )),
+            jobs: pika_followup_jobs(),
+        }),
         "pre-merge-pikachat-apple-followup" => Ok(TargetSpec {
             id: "pre-merge-pikachat-apple-followup",
             description: "Run the Apple-host pikachat follow-up after the staged Linux Rust lane",
@@ -1155,43 +1156,63 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
             id: "pika-android-test-compile",
-            description: "Compile Android instrumentation test Kotlin for the Pika app in a remote Linux microVM",
+            description: "Compile Android instrumentation test Kotlin for the Pika app on a host-local Linux runner",
             timeout_secs: 3600,
             writable_workspace: true,
-            guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupAndroidTestCompile),
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cd android && ./gradlew :app:compileDebugAndroidTestKotlin",
+            },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pikachat-build",
-            description: "Validate the pikachat build in a remote Linux microVM",
+            description: "Build pikachat on a host-local Linux runner",
             timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupPikachatBuild),
+            writable_workspace: true,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo build -p pikachat",
+            },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pika-desktop-check",
-            description: "Validate desktop-check in a remote Linux microVM",
+            description: "Run desktop-check on a host-local Linux runner",
             timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupDesktopCheck),
+            writable_workspace: true,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "just desktop-check",
+            },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pika-actionlint",
-            description: "Run actionlint in a remote Linux microVM",
+            description: "Run actionlint on a host-local Linux runner",
             timeout_secs: 600,
             writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+            guest_command: GuestCommand::HostShellCommand {
+                command: "actionlint",
+            },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pika-doc-contracts",
-            description: "Run docs and justfile contract checks in a remote Linux microVM",
+            description: "Run docs and justfile contract checks on a host-local Linux runner",
             timeout_secs: 900,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupDocContracts),
+            writable_workspace: true,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "npx --yes @justinmoon/agent-tools check-docs && npx --yes @justinmoon/agent-tools check-justfile",
+            },
+            staged_linux_rust_lane: None,
+        },
+        JobSpec {
+            id: "pika-rust-deps-hygiene",
+            description: "Run cargo machete dependency hygiene on a host-local Linux runner",
+            timeout_secs: 900,
+            writable_workspace: true,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "./scripts/check-cargo-machete",
+            },
+            staged_linux_rust_lane: None,
         },
     ]
 }
@@ -1781,23 +1802,29 @@ mod tests {
     }
 
     #[test]
-    fn pre_merge_pika_followup_target_uses_staged_linux_runner() {
+    fn pre_merge_pika_followup_target_uses_host_local_jobs() {
         let target = target_spec("pre-merge-pika-followup").expect("pika followup target");
 
-        assert_eq!(target.jobs.len(), 5);
+        assert_eq!(target.jobs.len(), 6);
         assert!(
             target
                 .jobs
                 .iter()
-                .all(|job| job.staged_linux_rust_lane().is_some())
+                .all(|job| job.staged_linux_rust_lane().is_none())
         );
         assert!(
             target
                 .jobs
                 .iter()
-                .all(|job| job.runner_kind() == RunnerKind::MicrovmRemote)
+                .all(|job| job.runner_kind() == RunnerKind::HostLocal)
         );
         assert!(target.jobs[0].writable_workspace);
+        assert!(
+            target
+                .jobs
+                .iter()
+                .any(|job| job.id == "pika-rust-deps-hygiene")
+        );
     }
 
     #[test]

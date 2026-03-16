@@ -1417,6 +1417,9 @@ We have at least one important Linux Rust lane where:
         - the repo already provides Android SDK/JDK inputs through Nix,
         - but it does not yet provide a vendored or Nix-managed offline Gradle plugin / Maven dependency closure for the Android build,
         - and the current Android settings still resolve plugins and dependencies from `google()`, `mavenCentral()`, `gradlePluginPortal()`, and `jitpack`,
+      - required workflow policy stays aligned with that reality:
+        - `check-pika` remains on the host-local follow-up path until the Android staging blocker is actually cleared,
+        - and the new remote `check-pikachat-openclaw-e2e` path is guarded like fixture for fork PRs where `PIKA_BUILD_SSH_KEY` is unavailable,
       - path to full Linux runtime unification from here:
         - either stage a reproducible offline Android Gradle dependency closure for `:app:compileDebugAndroidTestKotlin`,
         - or narrow the required followup lane contract so it no longer depends on that unstaged online Android build step.

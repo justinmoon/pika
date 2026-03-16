@@ -256,27 +256,22 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Run pika follow-up lane
-        env:
-          PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
-          PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-pikaci-cache-v1-${{ runner.os }}
+          path: .pikaci/cache
+      - name: Fix .pikaci ownership
         run: |
-          set -euo pipefail
-          if [ -n "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ] && [ -n "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            mkdir -p "$HOME/.ssh"
-            chmod 700 "$HOME/.ssh"
-            host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
-            eval "$(ssh-agent -s)"
-            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
-            ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
-            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-followup
-            exit 0
+          if [ -d .pikaci ] && [ "$(stat -c %u .pikaci)" != "$(id -u)" ]; then
+            sudo chown "$(id -u):$(id -g)" .pikaci
           fi
 
-          echo "warning: PIKA_BUILD_SSH_HOST / PIKA_BUILD_SSH_KEY not set; using host-local pre-merge-pika-followup" >&2
-          nix run .#pikaci -- run pre-merge-pika-followup
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-gradle-v1-${{ runner.os }}
+          path: ~/.gradle
+
+      - run: ./scripts/pikaci-ci-run.sh pre-merge-pika-followup
 
   shadow-pikaci-pre-merge-pika-rust:
     name: check-pika-rust (pikaci)
@@ -941,7 +936,7 @@ jobs:
   check-pikachat-openclaw-e2e:
     name: check-pikachat-openclaw-e2e (pikaci)
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.pikachat_openclaw_e2e == 'true'
+    if: needs.detect-changes.outputs.pikachat_openclaw_e2e == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: blacksmith-16vcpu-ubuntu-2404
     environment:
       name: ${{ github.event_name == 'pull_request' && github.actor != 'justinmoon' && github.actor != 'futurepaul' && github.actor != 'AnthonyRonning' && github.actor != 'benthecarman' && github.actor != 'clarkmoody' && 'ci-approval' || 'ci-auto' }}
@@ -1087,7 +1082,11 @@ jobs:
 
           echo "Required pre-merge lanes:"
           check_required_job "check-pika-followup" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.check-pika.result }}"
-          check_required_job "check-pikachat-openclaw-e2e" "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" "${{ needs.check-pikachat-openclaw-e2e.result }}"
+          if [[ "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" == "true" && "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}" == "true" ]]; then
+            echo "check-pikachat-openclaw-e2e: skipped (fork PR; remote secrets unavailable)"
+          else
+            check_required_job "check-pikachat-openclaw-e2e" "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" "${{ needs.check-pikachat-openclaw-e2e.result }}"
+          fi
           if [[ "${{ needs.detect-changes.outputs.fixture }}" == "true" && "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}" == "true" ]]; then
             echo "check-fixture: skipped (fork PR; remote secrets unavailable)"
           else
