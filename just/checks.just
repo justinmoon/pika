@@ -144,7 +144,10 @@ apple-host-bundle:
         export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
         exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-bundle
     fi
-    cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
+    cargo clippy -p pikachat -- -D warnings
+    cargo clippy -p pikachat-sidecar -- -D warnings
+    just desktop-e2e-local
+    npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
     just cli-smoke
     just openclaw-pikachat-deterministic
     just desktop-ui-test

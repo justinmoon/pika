@@ -1544,9 +1544,79 @@ jobs:
       - run: nix develop .#default -c just ios-ui-test
       - run: nix develop .#default -c just nightly-primal-ios-interop
 
+  nightly-apple-host-bundle:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: apple-host-bundle-${{ vars.PIKACI_APPLE_SSH_HOST || 'default' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Join Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.PIKACI_APPLE_TAILSCALE_AUTHKEY }}
+          hostname: gha-pikaci-apple-${{ github.run_id }}
+          ping: ${{ vars.PIKACI_APPLE_SSH_HOST }}
+
+      - name: Run mini-owned Apple bundle
+        id: remote
+        env:
+          PIKACI_APPLE_SSH_HOST: ${{ vars.PIKACI_APPLE_SSH_HOST }}
+          PIKACI_APPLE_SSH_USER: ${{ vars.PIKACI_APPLE_SSH_USER }}
+          PIKACI_APPLE_REMOTE_ROOT: ${{ vars.PIKACI_APPLE_REMOTE_ROOT }}
+          PIKACI_APPLE_KEEP_RUNS: ${{ vars.PIKACI_APPLE_KEEP_RUNS }}
+          PIKACI_APPLE_SSH_KEY: ${{ secrets.PIKACI_APPLE_SSH_KEY }}
+        run: |
+          if [ -z "${PIKACI_APPLE_SSH_HOST:-}" ]; then
+            echo "error: set repository variable PIKACI_APPLE_SSH_HOST for the Apple mini bundle lane" >&2
+            exit 2
+          fi
+          if [ -z "${PIKACI_APPLE_SSH_USER:-}" ]; then
+            echo "error: set repository variable PIKACI_APPLE_SSH_USER for the Apple mini bundle lane" >&2
+            exit 2
+          fi
+          if [ -z "${PIKACI_APPLE_SSH_KEY:-}" ]; then
+            echo "error: set repository secret PIKACI_APPLE_SSH_KEY for the Apple mini bundle lane" >&2
+            exit 2
+          fi
+
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+          ssh-add - <<<"$PIKACI_APPLE_SSH_KEY"
+
+          ./scripts/pikaci-apple-remote.sh run \
+            --ref "${GITHUB_SHA}" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload Apple host debug bundle
+        if: always() && steps.remote.outputs.artifact_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-host-bundle-${{ github.run_id }}
+          path: ${{ steps.remote.outputs.artifact_dir }}
+          if-no-files-found: error
+
+      - name: Summarize Apple host bundle
+        if: always()
+        run: |
+          {
+            echo "- command: \`./scripts/pikaci-apple-remote.sh run --ref ${GITHUB_SHA}\`"
+            echo "- ssh target: \`${{ vars.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ vars.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
+            echo "- remote root: \`${{ vars.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
+            echo "- run id: \`${{ steps.remote.outputs.run_id || 'none' }}\`"
+            echo "- resolved commit: \`${{ steps.remote.outputs.resolved_commit || 'none' }}\`"
+            echo "- remote run dir: \`${{ steps.remote.outputs.remote_run_dir || 'none' }}\`"
+            echo "- local artifact dir: \`${{ steps.remote.outputs.artifact_dir || 'none' }}\`"
+            echo "- remote exit: \`${{ steps.remote.outputs.remote_exit || 'unknown' }}\`"
+            echo "- artifact fetch exit: \`${{ steps.remote.outputs.artifact_fetch_exit || 'unknown' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   nightly:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly'))
-    needs: [nightly-linux, nightly-pika, nightly-pikachat, nightly-pika-ui-android, nightly-pika-ui-ios, nightly-primal-ios-interop]
+    needs: [nightly-linux, nightly-pika, nightly-pikachat, nightly-pika-ui-android, nightly-pika-ui-ios, nightly-primal-ios-interop, nightly-apple-host-bundle]
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -1578,6 +1648,10 @@ jobs:
           if [[ "${{ needs.nightly-primal-ios-interop.result }}" != "success" ]]; then
             echo "nightly-primal-ios-interop failed"
             failed="${failed}- **nightly-primal-ios-interop**: ${{ needs.nightly-primal-ios-interop.result }}\n"
+          fi
+          if [[ "${{ needs.nightly-apple-host-bundle.result }}" != "success" ]]; then
+            echo "nightly-apple-host-bundle failed"
+            failed="${failed}- **nightly-apple-host-bundle**: ${{ needs.nightly-apple-host-bundle.result }}\n"
           fi
           if [[ -n "$failed" ]]; then
             {
