@@ -10,8 +10,7 @@ set -euo pipefail
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_DIR="$("$TOOLS_DIR/xcode-dev-dir")"
 
-env_cmd=(
-  env
+unset_args=(
   -u LD
   -u CC
   -u CXX
@@ -37,18 +36,17 @@ env_cmd=(
   -u outputs
   -u phases
   -u stdenv
-  DEVELOPER_DIR="$DEV_DIR"
 )
 
 while IFS='=' read -r name _; do
   case "$name" in
     *_API_KEY|*_TOKEN|*_SECRET|*_PASSWORD)
-      env_cmd+=(-u "$name")
+      unset_args+=(-u "$name")
       ;;
     AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GH_TOKEN|GITHUB_TOKEN)
-      env_cmd+=(-u "$name")
+      unset_args+=(-u "$name")
       ;;
   esac
 done < <(env)
 
-exec "${env_cmd[@]}" "$@"
+exec env "${unset_args[@]}" DEVELOPER_DIR="$DEV_DIR" "$@"

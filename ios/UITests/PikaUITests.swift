@@ -90,6 +90,68 @@ final class PikaUITests: XCTestCase {
         return messages
     }
 
+    private func waitForLoginScreen(_ app: XCUIApplication, timeout: TimeInterval = 15) {
+        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
+        let loginSubmit = app.buttons.matching(identifier: "login_submit").firstMatch
+        let advancedButton = app.buttons["Advanced"].firstMatch
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if createAccount.exists || loginSubmit.exists || advancedButton.exists {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        XCTFail("Login screen not shown")
+    }
+
+    private func expandAdvancedLoginOptionsIfNeeded(_ app: XCUIApplication, timeout: TimeInterval = 5) {
+        let nostrConnectButton = app.buttons.matching(identifier: "login_nostr_connect_submit").firstMatch
+        if nostrConnectButton.exists {
+            return
+        }
+
+        let advancedCandidates = [
+            app.buttons["Advanced"].firstMatch,
+            app.otherElements["Advanced"].firstMatch,
+            app.staticTexts["Advanced"].firstMatch,
+        ]
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if nostrConnectButton.exists {
+                return
+            }
+
+            for candidate in advancedCandidates {
+                if candidate.exists {
+                    candidate.tap()
+                    if nostrConnectButton.waitForExistence(timeout: 1) {
+                        return
+                    }
+                }
+            }
+
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+    }
+
+    private func revealLoginAdvancedControlIfNeeded(
+        _ app: XCUIApplication,
+        control: XCUIElement,
+        maxSwipes: Int = 6
+    ) {
+        for _ in 0..<maxSwipes {
+            if control.exists && control.isHittable {
+                return
+            }
+
+            app.swipeUp()
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+    }
+
     private func openNewChatFromChatList(_ app: XCUIApplication, timeout: TimeInterval = 10) {
         let chatsNav = app.navigationBars["Chats"]
         XCTAssertTrue(chatsNav.waitForExistence(timeout: timeout))
@@ -1056,14 +1118,14 @@ final class PikaUITests: XCTestCase {
         app.launchEnvironment["PIKA_UI_TEST_CAPTURE_OPEN_URL"] = "1"
         app.launch()
 
+        waitForLoginScreen(app)
         let nostrConnectButton = app.buttons.matching(identifier: "login_nostr_connect_submit").firstMatch
-        if !nostrConnectButton.exists {
-            let advancedButton = app.buttons.matching(identifier: "Advanced").firstMatch
-            if advancedButton.waitForExistence(timeout: 5) {
-                advancedButton.tap()
-            }
-        }
-        XCTAssertTrue(nostrConnectButton.waitForExistence(timeout: 10), "Missing Nostr Connect login button")
+        expandAdvancedLoginOptionsIfNeeded(app)
+        revealLoginAdvancedControlIfNeeded(app, control: nostrConnectButton)
+        XCTAssertTrue(
+            nostrConnectButton.waitForExistence(timeout: 10),
+            "Missing Nostr Connect login button\n\(app.debugDescription)"
+        )
         nostrConnectButton.tap()
         dismissSystemOpenAppAlertIfPresent()
         // Let async bridge callbacks run; harness verifies URL emission via marker file.
