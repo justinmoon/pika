@@ -380,15 +380,16 @@ fn dm_creation_and_first_message_delivery_boundary() -> Result<()> {
 
 #[test]
 #[ignore = "deterministic messaging/profile selector"]
-fn late_joiner_group_profile_visibility_after_refresh_boundary() -> Result<()> {
+fn late_joiner_group_profile_visibility_after_explicit_refresh_boundary() -> Result<()> {
     // Keep the narrower rebroadcast/member-state semantics in `rust/tests/e2e_group_profiles.rs`;
-    // this selector owns the readable user-facing contract that a late joiner opens the group and
-    // sees member profile names after the existing members explicitly refresh them under local
-    // fixtures.
-    let mut context = TestContext::builder("late-joiner-group-profile-visibility-after-refresh")
-        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
-        .build()?;
-    support::run_late_joiner_group_profile_visibility_after_refresh(&context)?;
+    // this selector owns only the readable user-facing contract that a late joiner opens the
+    // group and sees member profile names after the existing members explicitly refresh them under
+    // local fixtures.
+    let mut context =
+        TestContext::builder("late-joiner-group-profile-visibility-after-explicit-refresh")
+            .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+            .build()?;
+    support::run_late_joiner_group_profile_visibility_after_explicit_refresh(&context)?;
     context.mark_success();
     Ok(())
 }

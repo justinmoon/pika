@@ -121,10 +121,11 @@ fn group_profile_visible_to_other_member() {
 }
 
 #[test]
-fn rebroadcasted_group_profiles_reach_late_joiner_member_state() {
-    // `pikahut` now owns the readable visibility-after-refresh contract for this area. This test
-    // stays as the narrower semantic owner for the relay-backed rebroadcast/member-state mechanics,
-    // including reciprocal existing-member propagation and Charlie eventually seeing both names.
+fn post_join_group_profile_refresh_reaches_late_joiner_member_state() {
+    // `pikahut` now owns the readable explicit-refresh contract for this area. This test stays as
+    // the narrower semantic owner for the relay-backed member-state mechanics here, including
+    // reciprocal existing-member propagation and Charlie eventually seeing both names after the
+    // refresh. It is not a true proof of already-established pre-join rebroadcast.
     let infra = support::TestInfra::start_relay();
 
     let dir_a = tempdir().unwrap();
@@ -233,9 +234,9 @@ fn rebroadcasted_group_profiles_reach_late_joiner_member_state() {
     // Give Charlie time to set up group subscriptions.
     std::thread::sleep(Duration::from_secs(2));
 
-    // Alice and Bob re-save their group profiles. In production this
-    // happens automatically via rebroadcast on commit, but in the e2e
-    // test the commit fires before Charlie subscribes to the group relay.
+    // Alice and Bob re-save their group profiles. `AddGroupMembers` rebroadcasts existing
+    // profiles immediately on the admin side, before Charlie has the group shell and relay
+    // subscription, so this test does not prove true already-established pre-join rebroadcast.
     alice.dispatch(AppAction::SaveGroupProfile {
         chat_id: chat_id.clone(),
         name: "Admin Alice".to_owned(),
