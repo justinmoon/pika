@@ -236,6 +236,7 @@ prepared_dir="${prepared_root}/${resolved_commit}"
 prepared_worktree_dir="${prepared_dir}/worktree"
 prepared_ref="refs/pikaci-apple/prepared/${resolved_commit}"
 prepared_marker="${prepared_dir}/prepared.env"
+prepared_schema_version=2
 artifacts_dir="${run_dir}/artifacts"
 logs_dir="${run_dir}/logs"
 remote_artifact_path="${run_dir}/artifact.tgz"
@@ -271,6 +272,9 @@ ensure_mirror() {
 ensure_prepared_checkout() {
   local should_prewarm=0
   local prepare_started_at
+  local marker_schema_version=""
+  local marker_resolved_commit=""
+  local marker_worktree_dir=""
   prepare_started_at="$(date +%s)"
 
   ensure_mirror
@@ -296,9 +300,28 @@ ensure_prepared_checkout() {
   # Keep reusable build outputs, but scrub run-local state before every operation.
   rm -rf .pikaci ios/build/Logs/Test
 
+  if [[ -f "$prepared_marker" ]]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        SCHEMA_VERSION) marker_schema_version="$value" ;;
+        RESOLVED_COMMIT) marker_resolved_commit="$value" ;;
+        PREPARED_WORKTREE_DIR) marker_worktree_dir="$value" ;;
+      esac
+    done < "$prepared_marker"
+  fi
+
   if [[ ! -f "$prepared_marker" ]]; then
     should_prewarm=1
-    prepare_status="prepared-new"
+    if [[ "$prepare_status" == "prepared-reused" ]]; then
+      prepare_status="prepared-invalidated"
+    fi
+  elif [[ "$marker_schema_version" != "$prepared_schema_version" ]] \
+    || [[ "$marker_resolved_commit" != "$resolved_commit" ]] \
+    || [[ "$marker_worktree_dir" != "$prepared_worktree_dir" ]]; then
+    should_prewarm=1
+    if [[ "$prepare_status" == "prepared-reused" ]]; then
+      prepare_status="prepared-invalidated"
+    fi
   fi
 
   if [[ "$should_prewarm" -eq 1 ]]; then
@@ -318,7 +341,7 @@ ensure_prepared_checkout() {
 
   mkdir -p "$prepared_dir"
   cat >"$prepared_marker" <<EOF
-SCHEMA_VERSION=1
+SCHEMA_VERSION=$prepared_schema_version
 RESOLVED_COMMIT=$resolved_commit
 PREPARE_STATUS=$prepare_status
 PREPARED_WORKTREE_DIR=$prepared_worktree_dir
