@@ -623,10 +623,10 @@ pub fn run_dm_local_profile_override_visibility(context: &TestContext) -> Result
     })
 }
 
-// CI-facing readable agent-launch contract: the app sees the launch button, kicks off
-// provisioning through the same FfiApp actions the native shells use, shows meaningful
-// provisioning phases, and lands in the direct chat once the mocked backend reports ready.
-pub fn run_agent_launch_provisioning_success(context: &TestContext) -> Result<()> {
+fn run_agent_launch_with_ready_peer(
+    context: &TestContext,
+    post_launch: impl FnOnce(&FfiApp, &FfiApp, &str, &str) -> Result<()>,
+) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     with_backend_fixture(context, |fixture| {
@@ -757,6 +757,153 @@ pub fn run_agent_launch_provisioning_success(context: &TestContext) -> Result<()
         anyhow::ensure!(
             !state.busy.starting_agent,
             "launch busy state should clear after success"
+        );
+
+        let chat_id = chat.chat_id.clone();
+        post_launch(&alice, &bob, &bob_npub, &chat_id)?;
+
+        Ok(())
+    })
+}
+
+// CI-facing readable agent-launch contract: the app sees the launch button, kicks off
+// provisioning through the same FfiApp actions the native shells use, shows meaningful
+// provisioning phases, and lands in the direct chat once the mocked backend reports ready.
+pub fn run_agent_launch_provisioning_success(context: &TestContext) -> Result<()> {
+    run_agent_launch_with_ready_peer(context, |_, _, _, _| Ok(()))
+}
+
+// CI-facing readable post-launch contract: after provisioning opens the direct chat, the
+// provisioned peer behaves like a real chat partner under the local fixture and its first reply
+// surfaces in the launched app's chat state.
+pub fn run_agent_launch_first_reply(context: &TestContext) -> Result<()> {
+    run_agent_launch_with_ready_peer(context, |alice, bob, _bob_npub, chat_id| {
+        wait_until(
+            "provisioned peer sees chat shell",
+            Duration::from_secs(20),
+            || {
+                bob.state()
+                    .chat_list
+                    .iter()
+                    .any(|chat| chat.chat_id == chat_id)
+            },
+        )?;
+
+        let prompt = "hello-agent";
+        alice.dispatch(AppAction::SendMessage {
+            chat_id: chat_id.to_owned(),
+            content: prompt.to_owned(),
+            kind: None,
+            reply_to_message_id: None,
+        });
+
+        wait_until(
+            "launched app sent first prompt",
+            Duration::from_secs(10),
+            || {
+                alice
+                    .state()
+                    .current_chat
+                    .as_ref()
+                    .and_then(|chat| chat.messages.iter().find(|msg| msg.content == prompt))
+                    .map(|msg| matches!(msg.delivery, pika_core::MessageDeliveryState::Sent))
+                    .unwrap_or(false)
+            },
+        )?;
+
+        wait_until(
+            "provisioned peer preview shows first prompt",
+            Duration::from_secs(20),
+            || {
+                bob.state()
+                    .chat_list
+                    .iter()
+                    .find(|chat| chat.chat_id == chat_id)
+                    .map(|chat| {
+                        chat.unread_count > 0 && chat.last_message.as_deref() == Some(prompt)
+                    })
+                    .unwrap_or(false)
+            },
+        )?;
+
+        bob.dispatch(AppAction::OpenChat {
+            chat_id: chat_id.to_owned(),
+        });
+        wait_until(
+            "provisioned peer opened chat has first prompt",
+            Duration::from_secs(20),
+            || {
+                bob.state()
+                    .current_chat
+                    .as_ref()
+                    .and_then(|chat| chat.messages.iter().find(|msg| msg.content == prompt))
+                    .is_some()
+            },
+        )?;
+
+        let bob_state = bob.state();
+        let received_prompt = bob_state
+            .current_chat
+            .as_ref()
+            .and_then(|chat| chat.messages.iter().find(|msg| msg.content == prompt))
+            .ok_or_else(|| anyhow!("provisioned peer missing launched app prompt"))?;
+        anyhow::ensure!(
+            !received_prompt.is_mine,
+            "launched app prompt must arrive as peer-authored for the provisioned peer"
+        );
+
+        let reply = "hello-human";
+        bob.dispatch(AppAction::SendMessage {
+            chat_id: chat_id.to_owned(),
+            content: reply.to_owned(),
+            kind: None,
+            reply_to_message_id: None,
+        });
+
+        wait_until(
+            "provisioned peer first reply sent",
+            Duration::from_secs(10),
+            || {
+                bob.state()
+                    .current_chat
+                    .as_ref()
+                    .and_then(|chat| chat.messages.iter().find(|msg| msg.content == reply))
+                    .map(|msg| matches!(msg.delivery, pika_core::MessageDeliveryState::Sent))
+                    .unwrap_or(false)
+            },
+        )?;
+
+        wait_until(
+            "launched app receives provisioned peer first reply",
+            Duration::from_secs(20),
+            || {
+                alice
+                    .state()
+                    .current_chat
+                    .as_ref()
+                    .and_then(|chat| chat.messages.iter().find(|msg| msg.content == reply))
+                    .is_some()
+            },
+        )?;
+
+        let alice_state = alice.state();
+        let received_reply = alice_state
+            .current_chat
+            .as_ref()
+            .and_then(|chat| chat.messages.iter().find(|msg| msg.content == reply))
+            .ok_or_else(|| anyhow!("launched app missing provisioned peer first reply"))?;
+        anyhow::ensure!(
+            !received_reply.is_mine,
+            "provisioned peer reply must surface as peer-authored in the launched app"
+        );
+        anyhow::ensure!(
+            alice_state
+                .current_chat
+                .as_ref()
+                .and_then(|chat| chat.messages.last())
+                .map(|msg| msg.content.as_str())
+                == Some(reply),
+            "opened chat should advance to the provisioned peer's first reply"
         );
 
         Ok(())

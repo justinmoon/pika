@@ -954,6 +954,7 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
         "integration_deterministic::agent_http_cli_new_me_recover_local",
         "integration_deterministic::agent_launch_provisioning_boundary",
         "integration_deterministic::agent_launch_provisioning_failure_boundary",
+        "integration_deterministic::agent_launch_first_reply_boundary",
     ];
     for selector in expected_host_selectors {
         assert!(

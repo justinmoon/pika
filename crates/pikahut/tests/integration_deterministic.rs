@@ -739,6 +739,53 @@ fn agent_launch_provisioning_failure_boundary() -> Result<()> {
     Ok(())
 }
 
+#[test]
+#[ignore = "deterministic app-facing post-launch agent chat selector"]
+fn agent_launch_first_reply_boundary() -> Result<()> {
+    let _env_lock = ENV_LOCK.blocking_lock();
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
+    let mut context = TestContext::builder("agent-launch-first-reply")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_scripted_mock_vm_spawner(vec![
+        MockSpawnerExchange {
+            expected_request_prefix: "POST /vms ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"running","guest_ready":false,"startup_probe_satisfied":false}"#,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"running","guest_ready":true}"#,
+        },
+    ])?;
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    support::run_agent_launch_first_reply(&context)?;
+
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if spawner_request_lines.len() != 4 {
+        bail!(
+            "expected four vm-spawner requests for post-launch first-reply coverage, got: {spawner_request_lines:?}"
+        );
+    }
+
+    context.mark_success();
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "integration scenario; run in deterministic lane"]
 async fn agent_http_ensure_local() -> Result<()> {
