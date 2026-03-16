@@ -833,7 +833,6 @@ We have at least one important Linux Rust lane where:
     - GitHub now records the fresh `pikaci` `run_id`, overall run status, wall-clock duration, and per-job durations/statuses in the shadow job summary,
     - the shadow job also uploads a compact `pikaci-shadow-<run_id>` artifact bundle containing `run.json`, `plan.json`, `prepared-outputs.json`, and the per-job host/guest logs for debugging,
     - metadata collection now keys off the pre-run baseline `created_at` timestamp rather than excluding only one old run id, so the shadow summary only accepts a run that is actually newer than the job's starting point,
-    - metadata collection now keys off the pre-run baseline `created_at` timestamp rather than excluding only one old run id, so the shadow summary only accepts a run that is actually newer than the job's starting point,
     - and if the advisory job exits before `pikaci` actually starts, the summary now reports that cleanly instead of turning the reporting step into a second failure mode,
     - a fresh local validation rerun (`20260310T223310Z-e53c83eb`) still passed end-to-end in about `212s`, and the generated summary now shows the overall run plus the two per-job durations (`54s` app-flows, `40s` messaging) alongside the uploaded debug bundle name,
   - note that the first local shadow-mode verification rerun (`20260310T220049Z-c2361db8`) still passed end-to-end in about `216s`,
@@ -1418,6 +1417,19 @@ We have at least one important Linux Rust lane where:
         - the repo already provides Android SDK/JDK inputs through Nix,
         - but it does not yet provide a vendored or Nix-managed offline Gradle plugin / Maven dependency closure for the Android build,
         - and the current Android settings still resolve plugins and dependencies from `google()`, `mavenCentral()`, `gradlePluginPortal()`, and `jitpack`,
+      - required workflow policy stays aligned with that reality:
+        - `check-pika` remains on the host-local follow-up path until the Android staging blocker is actually cleared,
+        - pre-merge trust policy now keys off approval, not PR origin:
+          - the workflow runs required Linux pre-merge under `pull_request_target` so fork PRs can receive the same remote Linux coverage after approval,
+          - the allowlisted GitHub users remain explicit in `.github/workflows/pre-merge.yml` (`justinmoon`, `futurepaul`, `AnthonyRonning`, `benthecarman`, `clarkmoody`) and auto-run the pre-merge Linux jobs that check out and execute PR-head code,
+          - every other actor goes through the `ci-approval` environment before any PR-head Linux job runs, including host-local `check-pika`,
+          - pre-merge PR-head jobs no longer share persistent cache namespaces with trusted/scheduled jobs:
+            - `pull_request_target` pre-merge jobs now write `pr-head` `stickydisk` caches for `/nix`, `.pikaci/cache`, and `~/.gradle`,
+            - nightly/trusted jobs now consume separate `trusted` cache keys instead of the old repo-wide shared keys,
+            - so an approved PR can no longer leave cache state behind for a later auto-run trusted/nightly job to consume without another approval boundary,
+          - required remote jobs no longer have fork-only skip branches in either the job `if:` logic or the final `pre-merge` summary gate,
+          - `check-pikachat-openclaw-e2e` no longer falls back to a runner-local host path when remote secrets are unavailable; it now stays a single remote-`pika-build` check contract like fixture,
+          - and the workflow now checks out the PR head explicitly with `persist-credentials: false`, so the approval-based path still evaluates the submitted code rather than silently testing the base branch,
       - path to full Linux runtime unification from here:
         - either stage a reproducible offline Android Gradle dependency closure for `:app:compileDebugAndroidTestKotlin`,
         - or narrow the required followup lane contract so it no longer depends on that unstaged online Android build step.
