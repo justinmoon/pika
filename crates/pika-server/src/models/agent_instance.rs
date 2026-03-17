@@ -32,6 +32,8 @@ pub struct AgentInstance {
     pub agent_id: String,
     pub owner_npub: String,
     pub vm_id: Option<String>,
+    pub provider: String,
+    pub provider_config: Option<String>,
     pub phase: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -43,6 +45,8 @@ pub struct NewAgentInstance<'a> {
     pub agent_id: &'a str,
     pub owner_npub: &'a str,
     pub vm_id: Option<&'a str>,
+    pub provider: &'a str,
+    pub provider_config: Option<&'a str>,
     pub phase: &'a str,
 }
 
@@ -54,11 +58,25 @@ impl AgentInstance {
         vm_id: Option<&str>,
         phase: &str,
     ) -> anyhow::Result<Self> {
+        Self::create_with_provider(conn, owner_npub, agent_id, vm_id, "microvm", None, phase)
+    }
+
+    pub fn create_with_provider(
+        conn: &mut PgConnection,
+        owner_npub: &str,
+        agent_id: &str,
+        vm_id: Option<&str>,
+        provider: &str,
+        provider_config: Option<&str>,
+        phase: &str,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(is_valid_phase(phase), "invalid agent phase: {phase}");
         let row = NewAgentInstance {
             owner_npub,
             agent_id,
             vm_id,
+            provider,
+            provider_config,
             phase,
         };
         let created = diesel::insert_into(agent_instances::table)

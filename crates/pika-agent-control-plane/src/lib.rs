@@ -17,6 +17,7 @@ pub const ERROR_SCHEMA_V1: &str = "agent.control.error.v1";
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Microvm,
+    Incus,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -61,6 +62,32 @@ pub struct MicrovmProvisionParams {
     pub kind: Option<MicrovmAgentKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<MicrovmAgentBackend>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
+pub struct IncusProvisionParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_pool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insecure_tls: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
+pub struct ManagedVmProvisionParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub microvm: Option<MicrovmProvisionParams>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incus: Option<IncusProvisionParams>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -356,7 +383,21 @@ impl GuestStartupArtifacts {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
 pub struct AgentProvisionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub microvm: Option<MicrovmProvisionParams>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incus: Option<IncusProvisionParams>,
+}
+
+impl AgentProvisionRequest {
+    pub fn managed_vm_params(&self) -> ManagedVmProvisionParams {
+        ManagedVmProvisionParams {
+            provider: self.provider,
+            microvm: self.microvm.clone(),
+            incus: self.incus.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -444,6 +485,18 @@ pub struct ProvisionCommand {
     pub bot_secret_key_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub microvm: Option<MicrovmProvisionParams>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incus: Option<IncusProvisionParams>,
+}
+
+impl ProvisionCommand {
+    pub fn managed_vm_params(&self) -> ManagedVmProvisionParams {
+        ManagedVmProvisionParams {
+            provider: Some(self.provider),
+            microvm: self.microvm.clone(),
+            incus: self.incus.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -480,6 +533,7 @@ pub struct ListRuntimesCommand {
     pub limit: Option<usize>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum AgentControlCommand {
@@ -641,6 +695,7 @@ mod tests {
                 relay_urls: vec!["wss://relay.example.com".to_string()],
                 bot_secret_key_hex: None,
                 microvm: None,
+                incus: None,
             }),
             AuthContext::default(),
         );
@@ -677,6 +732,7 @@ mod tests {
                         cwd: Some("/root/pika-agent/acp".to_string()),
                     }),
                 }),
+                incus: None,
             }),
             AgentControlCommand::ProcessWelcome(ProcessWelcomeCommand {
                 runtime_id: "rt-1".to_string(),
@@ -784,8 +840,16 @@ mod tests {
             "\"microvm\""
         );
         assert_eq!(
+            serde_json::to_string(&ProviderKind::Incus).unwrap(),
+            "\"incus\""
+        );
+        assert_eq!(
             serde_json::from_str::<ProviderKind>("\"microvm\"").unwrap(),
             ProviderKind::Microvm
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"incus\"").unwrap(),
+            ProviderKind::Incus
         );
     }
 
@@ -823,6 +887,7 @@ mod tests {
         assert!(cmd.relay_urls.is_empty());
         assert_eq!(cmd.bot_secret_key_hex, None);
         assert_eq!(cmd.microvm, None);
+        assert_eq!(cmd.incus, None);
     }
 
     #[test]
@@ -1085,6 +1150,7 @@ mod tests {
     #[test]
     fn agent_provision_request_round_trips_microvm_backend() {
         let request = AgentProvisionRequest {
+            provider: None,
             microvm: Some(MicrovmProvisionParams {
                 spawner_url: Some("http://127.0.0.1:8080".to_string()),
                 kind: Some(MicrovmAgentKind::Pi),
@@ -1093,6 +1159,7 @@ mod tests {
                     cwd: Some("/root/pika-agent/acp".to_string()),
                 }),
             }),
+            incus: None,
         };
         let encoded = serde_json::to_string(&request).expect("encode request");
         let decoded: AgentProvisionRequest =
@@ -1103,16 +1170,57 @@ mod tests {
     #[test]
     fn agent_provision_request_round_trips_native_microvm_backend() {
         let request = AgentProvisionRequest {
+            provider: None,
             microvm: Some(MicrovmProvisionParams {
                 spawner_url: Some("http://127.0.0.1:8080".to_string()),
                 kind: Some(MicrovmAgentKind::Openclaw),
                 backend: Some(MicrovmAgentBackend::Native),
+            }),
+            incus: None,
+        };
+        let encoded = serde_json::to_string(&request).expect("encode request");
+        let decoded: AgentProvisionRequest =
+            serde_json::from_str(&encoded).expect("decode request");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn agent_provision_request_round_trips_incus_backend() {
+        let request = AgentProvisionRequest {
+            provider: Some(ProviderKind::Incus),
+            microvm: None,
+            incus: Some(IncusProvisionParams {
+                endpoint: Some("https://incus.internal:8443".to_string()),
+                project: Some("managed-agents".to_string()),
+                profile: Some("pika-agent".to_string()),
+                storage_pool: Some("managed-agents-zfs".to_string()),
+                image_alias: Some("pika-agent/dev".to_string()),
+                insecure_tls: Some(true),
             }),
         };
         let encoded = serde_json::to_string(&request).expect("encode request");
         let decoded: AgentProvisionRequest =
             serde_json::from_str(&encoded).expect("decode request");
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn managed_vm_params_preserve_legacy_microvm_request_shape() {
+        let request = AgentProvisionRequest {
+            provider: None,
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: Some("http://127.0.0.1:8080".to_string()),
+                kind: Some(MicrovmAgentKind::Openclaw),
+                backend: Some(MicrovmAgentBackend::Native),
+            }),
+            incus: None,
+        };
+
+        let managed_vm = request.managed_vm_params();
+
+        assert_eq!(managed_vm.provider, None);
+        assert_eq!(managed_vm.microvm, request.microvm);
+        assert_eq!(managed_vm.incus, None);
     }
 
     #[test]

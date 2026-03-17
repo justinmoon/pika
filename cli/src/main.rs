@@ -1769,11 +1769,13 @@ fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionR
         return None;
     }
     Some(AgentProvisionRequest {
+        provider: None,
         microvm: Some(MicrovmProvisionParams {
             spawner_url: None,
             kind,
             backend,
         }),
+        incus: None,
     })
 }
 
@@ -2204,7 +2206,11 @@ async fn call_agent_api_raw(
     if method == reqwest::Method::POST {
         request = request
             .header("Content-Type", "application/json")
-            .json(body.unwrap_or(&AgentProvisionRequest { microvm: None }));
+            .json(body.unwrap_or(&AgentProvisionRequest {
+                provider: None,
+                microvm: None,
+                incus: None,
+            }));
     }
 
     let response = request

@@ -295,6 +295,17 @@ We need:
 The goal is to prevent the rest of the app from knowing whether the backing provider is
 `microvm.nix` or Incus.
 
+Current transition status:
+
+- `ProviderKind` now has both `microvm` and `incus`
+- managed-agent request/command contracts can carry provider-neutral selection plus provider-specific params
+- the server routes managed-VM lifecycle calls through a thin provider seam, with the existing microVM backend as the default implementation
+- new managed-environment rows now persist the chosen provider identity and resolved provider config so later status/recover/launch paths do not drift with process env changes
+- the first Incus dev lane is now real for create, status, delete, and startup healthcheck probing
+- the Incus dev path currently requires explicit endpoint, project, profile, storage-pool, and image-alias config, and it models each managed environment as one disposable VM root plus one attached persistent custom volume
+- Incus status currently reports a conservative not-ready guest state until the managed guest image publishes a trustworthy ready signal
+- Incus recover, restore, backup status, and OpenClaw launch/proxy behavior remain intentionally unsupported in this phase
+
 ### 2. Guest Image Pipeline
 
 We need a new image pipeline for managed agents.

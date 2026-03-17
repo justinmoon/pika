@@ -152,6 +152,7 @@ async fn ensure_agent(
     agent_kind: crate::state::AgentKind,
 ) -> Result<(), AgentFlowError> {
     let body = serde_json::to_value(AgentProvisionRequest {
+        provider: None,
         microvm: Some(MicrovmProvisionParams {
             spawner_url: None,
             kind: Some(match agent_kind {
@@ -160,6 +161,7 @@ async fn ensure_agent(
             }),
             backend: None,
         }),
+        incus: None,
     })
     .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
@@ -245,6 +247,7 @@ async fn recover_my_agent(
     agent_kind: crate::state::AgentKind,
 ) -> Result<AgentStateResponse, AgentFlowError> {
     let body = serde_json::to_value(AgentProvisionRequest {
+        provider: None,
         microvm: Some(MicrovmProvisionParams {
             spawner_url: None,
             kind: Some(match agent_kind {
@@ -253,6 +256,7 @@ async fn recover_my_agent(
             }),
             backend: None,
         }),
+        incus: None,
     })
     .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(

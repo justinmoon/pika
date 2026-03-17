@@ -168,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     agent_api_v1_contract::contract_healthcheck()?;
-    agent_api::agent_api_healthcheck()?;
+    agent_api::agent_api_healthcheck().await?;
     admin::admin_healthcheck()?;
 
     // APNs configuration (optional — logs only when not configured)

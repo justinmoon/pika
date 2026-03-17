@@ -43,6 +43,44 @@ pub fn spawn_one_shot_server(
     (format!("http://{addr}"), rx)
 }
 
+/// Spawn an HTTP mock server that accepts a fixed sequence of requests, captures each one,
+/// and responds with the corresponding `(status_line, body)` pair.
+pub fn spawn_response_sequence_server<I, S1, S2>(
+    responses: I,
+) -> (String, mpsc::Receiver<CapturedRequest>)
+where
+    I: IntoIterator<Item = (S1, S2)>,
+    S1: Into<String>,
+    S2: Into<String>,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+    let addr = listener.local_addr().expect("read mock server addr");
+    let (tx, rx) = mpsc::channel();
+    let responses: Vec<(String, String)> = responses
+        .into_iter()
+        .map(|(status_line, response_body)| (status_line.into(), response_body.into()))
+        .collect();
+
+    thread::spawn(move || {
+        for (status_line, response_body) in responses {
+            let (mut stream, _) = listener.accept().expect("accept mock request");
+            let req = read_http_request(&mut stream);
+            tx.send(req).expect("send captured request");
+
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write mock response");
+        }
+    });
+
+    (format!("http://{addr}"), rx)
+}
+
 fn read_http_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
     let mut buf = Vec::new();
     let mut header_end = None;
@@ -123,5 +161,38 @@ mod tests {
         let req = rx.recv().unwrap();
         assert_eq!(req.method, "GET");
         assert_eq!(req.path, "/test-path");
+    }
+
+    #[test]
+    fn sequence_mock_server_captures_multiple_requests() {
+        let (url, rx) = spawn_response_sequence_server(vec![
+            ("200 OK", r#"{"step":1}"#),
+            ("204 No Content", ""),
+        ]);
+        let addr = url.trim_start_matches("http://");
+
+        let mut first = TcpStream::connect(addr).unwrap();
+        first
+            .write_all(b"GET /first HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut first_resp = String::new();
+        first.read_to_string(&mut first_resp).unwrap();
+        assert!(first_resp.contains("200 OK"));
+
+        let mut second = TcpStream::connect(addr).unwrap();
+        second
+            .write_all(b"DELETE /second HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut second_resp = String::new();
+        second.read_to_string(&mut second_resp).unwrap();
+        assert!(second_resp.contains("204 No Content"));
+
+        let first_req = rx.recv().unwrap();
+        assert_eq!(first_req.method, "GET");
+        assert_eq!(first_req.path, "/first");
+
+        let second_req = rx.recv().unwrap();
+        assert_eq!(second_req.method, "DELETE");
+        assert_eq!(second_req.path, "/second");
     }
 }

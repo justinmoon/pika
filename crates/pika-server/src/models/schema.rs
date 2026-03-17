@@ -27,6 +27,8 @@ diesel::table! {
         agent_id -> Text,
         owner_npub -> Text,
         vm_id -> Nullable<Text>,
+        provider -> Text,
+        provider_config -> Nullable<Text>,
         phase -> Text,
         created_at -> Timestamp,
         updated_at -> Timestamp,

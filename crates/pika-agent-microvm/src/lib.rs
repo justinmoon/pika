@@ -63,11 +63,112 @@ pub enum ResolvedMicrovmAgentBackend {
     Acp { exec_command: String, cwd: String },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ManagedVmCreateInput<'a> {
+    pub owner_pubkey: &'a PublicKey,
+    pub relay_urls: &'a [String],
+    pub bot_secret_hex: &'a str,
+    pub bot_pubkey_hex: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub struct MicrovmSpawnerClient {
     client: reqwest::Client,
     base_url: String,
     create_vm_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct MicrovmManagedVmProvider {
+    client: MicrovmSpawnerClient,
+    resolved: ResolvedMicrovmParams,
+}
+
+impl MicrovmManagedVmProvider {
+    pub fn new(resolved: ResolvedMicrovmParams) -> Self {
+        let client = MicrovmSpawnerClient::new(resolved.spawner_url.clone());
+        Self { client, resolved }
+    }
+
+    pub fn spawner_base_url(&self) -> &str {
+        self.client.base_url()
+    }
+
+    pub fn resolved(&self) -> &ResolvedMicrovmParams {
+        &self.resolved
+    }
+
+    pub async fn create_managed_vm(
+        &self,
+        input: ManagedVmCreateInput<'_>,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<VmResponse> {
+        let request = build_create_vm_request(
+            input.owner_pubkey,
+            input.relay_urls,
+            input.bot_secret_hex,
+            input.bot_pubkey_hex,
+            &self.resolved,
+        );
+        self.client
+            .create_vm_with_request_id(&request, request_id)
+            .await
+            .map_err(|err| spawner_create_error(self.client.base_url(), err))
+    }
+
+    pub async fn get_vm_status(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<VmResponse> {
+        self.client.get_vm_with_request_id(vm_id, request_id).await
+    }
+
+    pub async fn get_vm_backup_status(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<SpawnerVmBackupStatus> {
+        self.client
+            .get_vm_backup_status_with_request_id(vm_id, request_id)
+            .await
+    }
+
+    pub async fn recover_vm(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<VmResponse> {
+        self.client
+            .recover_vm_with_request_id(vm_id, request_id)
+            .await
+    }
+
+    pub async fn restore_vm(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<VmResponse> {
+        self.client
+            .restore_vm_with_request_id(vm_id, request_id)
+            .await
+    }
+
+    pub async fn delete_vm(&self, vm_id: &str, request_id: Option<&str>) -> anyhow::Result<()> {
+        self.client
+            .delete_vm_with_request_id(vm_id, request_id)
+            .await
+    }
+
+    pub async fn get_openclaw_launch_auth(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<SpawnerOpenClawLaunchAuth> {
+        self.client
+            .get_openclaw_launch_auth_with_request_id(vm_id, request_id)
+            .await
+    }
 }
 
 impl MicrovmSpawnerClient {

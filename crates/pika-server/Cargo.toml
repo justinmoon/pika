@@ -35,6 +35,7 @@ a2 = "0.10"
 base64 = { workspace = true }
 fcm-rs = "0.2"
 tower = { version = "0.5", features = ["make", "util"] }
+url = { workspace = true }
 
 [dev-dependencies]
 pika-test-utils = { path = "../pika-test-utils" }

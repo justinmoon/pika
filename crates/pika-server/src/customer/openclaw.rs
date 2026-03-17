@@ -6,7 +6,6 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Extension;
 use futures::{SinkExt, StreamExt};
-use pika_agent_microvm::MicrovmSpawnerClient;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TungsteniteCloseCode;
@@ -14,7 +13,9 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungsteniteCloseFram
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tracing::warn;
 
-use crate::agent_api::{load_launchable_managed_environment, spawner_base_url};
+use crate::agent_api::{
+    load_launchable_managed_environment, load_openclaw_launch_auth, openclaw_proxy_base_url,
+};
 use crate::nostr_auth::expected_host_from_headers;
 
 const OPENCLAW_UI_HOST_PREFIX: &str = "openclaw.";
@@ -541,23 +542,13 @@ pub(crate) async fn openclaw_launch_exchange(
         ));
     }
 
-    let spawner_url = spawner_base_url(&request_context.request_id).map_err(map_agent_api_error)?;
-    let spawner = MicrovmSpawnerClient::new(spawner_url);
-    let launch_auth = spawner
-        .get_openclaw_launch_auth_with_request_id(&ticket.vm_id, Some(&request_context.request_id))
-        .await
-        .map_err(|err| {
-            warn!(
-                request_id = %request_context.request_id,
-                vm_id = %ticket.vm_id,
-                error = %err,
-                "failed to load managed openclaw launch auth"
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to load managed openclaw launch auth".to_string(),
-            )
-        })?;
+    let launch_auth = load_openclaw_launch_auth(
+        &launch_target.managed_vm,
+        &ticket.vm_id,
+        &request_context.request_id,
+    )
+    .await
+    .map_err(map_agent_api_error)?;
     let ui_session = issue_openclaw_ui_session(&state, &ticket)?;
     let redirect_target = launch_auth
         .gateway_auth_token
@@ -633,7 +624,8 @@ pub(crate) async fn openclaw_proxy(
     let websocket_request = request_is_websocket_upgrade(&method, &headers);
     let internal_path = uri.path();
     let upstream_path = openclaw_proxy_upstream_path(internal_path, websocket_request);
-    let spawner_url = spawner_base_url(&request_context.request_id).map_err(map_agent_api_error)?;
+    let spawner_url = openclaw_proxy_base_url(&current.managed_vm, &request_context.request_id)
+        .map_err(map_agent_api_error)?;
     let spawner_proxy_path = if websocket_request && upstream_path == "/" {
         ""
     } else {
