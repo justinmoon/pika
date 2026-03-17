@@ -11,6 +11,23 @@ in
 
   networking.hostName = "pika-agent-incus-dev";
   networking.useDHCP = lib.mkDefault true;
+  systemd.network.enable = true;
+  systemd.network.wait-online.enable = true;
+  systemd.network.networks."10-incus-uplink" = {
+    matchConfig.Name = [
+      "en*"
+      "eth*"
+    ];
+    networkConfig = {
+      DHCP = "ipv4";
+      IPv6AcceptRA = false;
+    };
+    dhcpV4Config = {
+      UseDNS = true;
+      UseRoutes = true;
+    };
+    linkConfig.RequiredForOnline = "routable";
+  };
 
   services.cloud-init.enable = true;
   virtualisation.incus.agent.enable = true;
