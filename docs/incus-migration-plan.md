@@ -304,6 +304,7 @@ Current transition status:
 - the first Incus dev lane is now real for create, status, delete, and an image-backed guest boot path
 - the Incus dev path currently requires explicit endpoint, project, profile, storage-pool, and image-alias config, and it models each managed environment as one disposable VM root plus one attached persistent custom volume mounted at `/mnt/pika-state`
 - the first managed-agent Incus guest image is Nix-built and imported as a VM image artifact rather than assembled from host-local runner directories
+- the current `pika-build-incus-dev` host shape still needs operator one-time setup for the Incus bridge, storage pool, project, and profile before request-scoped Incus provisioning can work
 - Incus readiness now comes from inside the guest via the Incus guest file API against `/workspace/pika-agent/service-ready.json`; `guest_ready=true` is only reported when that marker exists and validates
 - Incus recover, restore, backup status, and OpenClaw launch/proxy behavior remain intentionally unsupported in this phase
 - server startup should remain on the microVM default provider for now; request-scoped Incus provisioning is the current safe canary lane until the OpenClaw launch/proxy surface is migrated
@@ -464,6 +465,7 @@ What we learned from the first real dev lane:
 - the image must enable both cloud-init and the Incus guest agent or the control plane cannot inject bootstrap or fetch readiness conservatively
 - the current managed-agent bootstrap bundle can be reused in Incus, but the image must provide the runtime prerequisites that the old microVM host image used to guarantee implicitly
 - the durable-volume contract is simplest when the guest keeps the existing runtime paths and re-homes them onto `/mnt/pika-state` before the managed-agent service starts
+- the Incus guest image must install GRUB in EFI-only mode for this qcow2 lane; BIOS-style `/dev/vda` GRUB installation panics the build VM during image creation
 
 ### Phase 3: Introduce An Incus Provider Adapter
 

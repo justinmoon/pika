@@ -21,6 +21,8 @@
       https://pika-build:8443
 
     Expected manual one-time setup for the managed-agent dev lane:
+      incus network create incusbr0 ipv4.address=auto ipv4.nat=true ipv6.address=none
+      incus storage create default dir
       incus project create pika-managed-agents
       incus --project pika-managed-agents profile create pika-agent-dev
       incus --project pika-managed-agents profile device add pika-agent-dev eth0 nic network=incusbr0 name=eth0

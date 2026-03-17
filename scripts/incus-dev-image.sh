@@ -61,7 +61,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 build_image() {
-  nix build .#pika-agent-incus-dev-image
+  nix build .#packages.x86_64-linux.pika-agent-incus-dev-image
 }
 
 import_image() {

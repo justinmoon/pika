@@ -1061,7 +1061,6 @@ impl IncusManagedVmProvider {
     ) -> anyhow::Result<()> {
         let body = serde_json::json!({
             "name": volume_name,
-            "type": INCUS_PERSISTENT_VOLUME_TYPE,
             "content_type": INCUS_PERSISTENT_VOLUME_CONTENT_TYPE,
             "description": format!("Persistent managed-agent state volume for {volume_name}"),
         });
@@ -4466,11 +4465,24 @@ mod tests {
             .expect_err("incus create should fail after operation error");
         assert!(err.to_string().contains("instance failed to start"));
 
-        let _volume_create = rx.recv().expect("captured volume create");
+        let volume_create = rx.recv().expect("captured volume create");
+        let volume_body: serde_json::Value =
+            serde_json::from_str(&volume_create.body).expect("parse volume body");
+        assert_eq!(
+            volume_create.path,
+            "/1.0/storage-pools/managed-agents-zfs/volumes/custom?project=managed-agents"
+        );
+        assert_eq!(volume_body["content_type"], "filesystem");
+        assert!(volume_body.get("type").is_none());
         let instance_create = rx.recv().expect("captured instance create");
         let instance_body: serde_json::Value =
             serde_json::from_str(&instance_create.body).expect("parse instance body");
         let instance_name = instance_body["name"].as_str().expect("instance name");
+        assert_eq!(volume_body["name"], format!("{instance_name}-state"));
+        assert_eq!(
+            volume_body["description"],
+            format!("Persistent managed-agent state volume for {instance_name}-state")
+        );
         let _create_wait = rx.recv().expect("captured create wait");
         let cleanup_delete = rx.recv().expect("captured cleanup delete");
         assert_eq!(

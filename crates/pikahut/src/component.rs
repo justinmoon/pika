@@ -28,6 +28,10 @@ fn fixture_binary_override(env_key: &str) -> Result<Option<PathBuf>> {
     fixture_binary_override_value(env_key, std::env::var(env_key).ok())
 }
 
+fn canonicalize_existing_dir(path: &Path) -> Result<PathBuf> {
+    std::fs::canonicalize(path).with_context(|| format!("canonicalize {}", path.display()))
+}
+
 pub struct Postgres {
     pub pgdata: PathBuf,
     pub database_url: String,
@@ -39,6 +43,7 @@ impl Postgres {
         let db_name = "pika_server";
 
         std::fs::create_dir_all(&pgdata)?;
+        let pgdata = canonicalize_existing_dir(&pgdata)?;
 
         if !pgdata.join("PG_VERSION").exists() {
             info!("[postgres] Initializing data dir...");
@@ -554,7 +559,7 @@ pub fn kill_pid(pid: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::fixture_binary_override_value;
+    use super::{canonicalize_existing_dir, fixture_binary_override_value};
     use std::fs;
 
     #[test]
@@ -590,5 +595,24 @@ mod tests {
         )
         .expect("resolve override");
         assert_eq!(resolved.as_deref(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn canonicalize_existing_dir_returns_absolute_path() {
+        let previous_dir = std::env::current_dir().expect("current dir");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("nested");
+        fs::create_dir_all(&nested).expect("create nested dir");
+
+        std::env::set_current_dir(dir.path()).expect("set current dir");
+        let resolved = canonicalize_existing_dir(std::path::Path::new("nested"))
+            .expect("canonicalize relative dir");
+        std::env::set_current_dir(previous_dir).expect("restore current dir");
+
+        assert!(resolved.is_absolute());
+        assert_eq!(
+            resolved,
+            nested.canonicalize().expect("canonicalize expected path")
+        );
     }
 }

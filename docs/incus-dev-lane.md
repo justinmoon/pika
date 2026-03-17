@@ -64,7 +64,7 @@ The image is a NixOS VM image for the Incus dev lane. It includes:
 Deploy the dedicated Incus dev host shape:
 
 ```bash
-just build-deploy-incus-dev
+nix develop .#infra -c just -f infra/justfile build-deploy-incus-dev
 ```
 
 This uses `.#pika-build-incus-dev`, which keeps the normal builder base but swaps in the Incus dev
@@ -80,7 +80,9 @@ Expected host-side prerequisites:
 Current one-time setup is still operator-managed:
 
 ```bash
-ssh pika-build
+ssh root@pika-build
+incus network create incusbr0 ipv4.address=auto ipv4.nat=true ipv6.address=none
+incus storage create default dir
 incus project create pika-managed-agents
 incus --project pika-managed-agents profile create pika-agent-dev
 incus --project pika-managed-agents profile device add pika-agent-dev eth0 nic network=incusbr0 name=eth0
@@ -89,6 +91,8 @@ incus --project pika-managed-agents profile device add pika-agent-dev eth0 nic n
 Notes:
 
 - import the managed-agent image into the same project that `pika-server` will target
+- the dev Incus host shape does not create `incusbr0` or the `default` storage pool for you; do
+  that in the one-time setup before using the provider
 - the provider already injects the root disk and the persistent state disk, so this profile must at
   minimum provide a NIC
 - if your Incus host does not use `incusbr0`, replace it with the correct network from `incus network list`

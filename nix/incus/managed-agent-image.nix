@@ -15,7 +15,7 @@
     enable = true;
     efiSupport = true;
     efiInstallAsRemovable = true;
-    devices = [ "/dev/vda" ];
+    devices = [ "nodev" ];
   };
 
   fileSystems."/" = {
