@@ -1174,7 +1174,9 @@ start_service() {{
       echo "[microvm-agent] starting OpenClaw gateway via $openclaw_exec" >&2
       "$openclaw_exec" gateway --allow-unconfigured &
       agent_pid=$!
-      start_openclaw_private_proxy "$PIKA_VM_IP" "$gateway_port"
+      if [[ "${{PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY:-1}}" != "0" ]]; then
+        start_openclaw_private_proxy "$PIKA_VM_IP" "$gateway_port"
+      fi
       ;;
     *)
       echo "[microvm-agent] unsupported startup service kind: $service_kind" >&2

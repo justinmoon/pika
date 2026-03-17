@@ -1732,6 +1732,7 @@ fn incus_bootstrap_launcher_script(env: &BTreeMap<String, String>, command: &str
         script.push_str(&shell_single_quote(value));
         script.push('\n');
     }
+    script.push_str("export PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY=0\n");
     script.push_str(
         "if [[ -z \"${PIKA_VM_IP:-}\" ]]; then\n\
 PIKA_VM_IP=\"$(python3 - <<'PY'\n\
@@ -4551,6 +4552,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert!(launcher.contains("export PIKA_OWNER_PUBKEY="));
         assert!(launcher.contains("export PIKA_RELAY_URLS="));
         assert!(launcher.contains("export PIKA_BOT_PUBKEY="));
+        assert!(launcher.contains("export PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY=0"));
         assert!(launcher.contains("sock.connect((\"1.1.1.1\", 80))"));
         assert!(launcher.contains("exec bash /workspace/pika-agent/start-agent.sh"));
         let state_setup = cloud_init_write_file_content(user_data, INCUS_STATE_VOLUME_SETUP_PATH)
