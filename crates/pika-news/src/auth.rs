@@ -17,6 +17,7 @@ const TOKEN_TTL_DAYS: i64 = 90;
 pub struct AccessState {
     pub can_chat: bool,
     pub is_admin: bool,
+    pub can_forge_write: bool,
 }
 
 pub struct AuthState {
@@ -120,10 +121,18 @@ impl AuthState {
                 return AccessState {
                     can_chat: false,
                     is_admin: false,
+                    can_forge_write: false,
                 };
             }
         };
         let is_admin = self.bootstrap_admin_npubs.contains(&normalized);
+        let can_forge_write = is_admin
+            || self.legacy_allowed_npubs.contains(&normalized)
+            || self
+                .store
+                .is_chat_allowlist_forge_writer(&normalized)
+                .ok()
+                .unwrap_or(false);
         let can_chat = is_admin
             || self.legacy_allowed_npubs.contains(&normalized)
             || self
@@ -131,7 +140,11 @@ impl AuthState {
                 .is_chat_allowlist_active(&normalized)
                 .ok()
                 .unwrap_or(false);
-        AccessState { can_chat, is_admin }
+        AccessState {
+            can_chat,
+            is_admin,
+            can_forge_write,
+        }
     }
 
     pub fn is_admin(&self, npub: &str) -> bool {
@@ -200,6 +213,7 @@ mod tests {
 
         assert!(auth.access_for_npub(SAMPLE_NPUB).can_chat);
         assert!(!auth.is_admin(SAMPLE_NPUB));
+        assert!(auth.access_for_npub(SAMPLE_NPUB).can_forge_write);
     }
 
     #[test]
@@ -212,6 +226,7 @@ mod tests {
 
         assert!(auth.access_for_npub(SAMPLE_NPUB).can_chat);
         assert!(!auth.is_admin(SAMPLE_NPUB));
+        assert!(auth.access_for_npub(SAMPLE_NPUB).can_forge_write);
     }
 
     #[test]
@@ -237,5 +252,38 @@ mod tests {
         let access = auth.access_for_npub(SAMPLE_NPUB);
         assert!(access.is_admin);
         assert!(access.can_chat);
+        assert!(access.can_forge_write);
+    }
+
+    #[test]
+    fn managed_chat_allowlist_user_cannot_write_forge() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        store
+            .upsert_chat_allowlist_entry(SAMPLE_NPUB, true, false, Some("chat"), "npub1admin")
+            .expect("insert chat allowlist entry");
+        let auth = AuthState::new(&[], &[], store);
+
+        let access = auth.access_for_npub(SAMPLE_NPUB);
+        assert!(access.can_chat);
+        assert!(!access.is_admin);
+        assert!(!access.can_forge_write);
+    }
+
+    #[test]
+    fn managed_trusted_contributor_can_write_forge() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        store
+            .upsert_chat_allowlist_entry(SAMPLE_NPUB, true, true, Some("trusted"), "npub1admin")
+            .expect("insert trusted allowlist entry");
+        let auth = AuthState::new(&[], &[], store);
+
+        let access = auth.access_for_npub(SAMPLE_NPUB);
+        assert!(access.can_chat);
+        assert!(!access.is_admin);
+        assert!(access.can_forge_write);
     }
 }

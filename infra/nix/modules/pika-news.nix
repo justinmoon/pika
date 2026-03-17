@@ -9,6 +9,13 @@ let
   tomlFormat = pkgs.formats.toml { };
   configFile = tomlFormat.generate "pika-news.toml" {
     repos = [ "sledtools/pika" ];
+    forge_repo = {
+      repo = "sledtools/pika";
+      canonical_git_dir = "${serviceStateDir}/pika.git";
+      default_branch = "master";
+      ci_command = [ "just" "pre-merge" ];
+      hook_url = "http://127.0.0.1:${toString servicePort}/news/webhook";
+    };
     poll_interval_secs = 300;
     model = "claude-opus-4-6";
     api_key_env = "ANTHROPIC_API_KEY";
@@ -72,7 +79,7 @@ in
     after = [ "network-online.target" "sops-install-secrets.service" ];
     wants = [ "network-online.target" ];
 
-    path = [ pkgs.claude-code ];
+    path = [ pkgs.claude-code pkgs.curl pkgs.git pkgs.just pkgs.openssl ];
 
     restartTriggers = [
       config.sops.templates."pika-news-env".path

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "pika-news", about = "Generate browser-first PR tutorials")]
+#[command(name = "pika-news", about = "Generate browser-first branch tutorials")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -11,7 +11,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Run hosted mode web service for configured GitHub repositories.
+    /// Run hosted mode web service for the configured canonical forge repository.
     Serve(ServeArgs),
     /// Analyze local git changes and open an HTML tutorial.
     Local(LocalArgs),

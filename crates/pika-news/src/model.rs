@@ -43,6 +43,7 @@ impl std::fmt::Display for GenerationError {
 
 impl std::error::Error for GenerationError {}
 
+#[allow(dead_code)]
 pub struct GenerationOutput {
     pub tutorial: TutorialDoc,
     pub session_id: Option<String>,
@@ -311,7 +312,7 @@ fn build_user_prompt(input: &PromptInput) -> String {
         .unwrap_or_else(|_| "{\"error\":\"failed to encode prompt input\"}".to_string());
 
     format!(
-        "Create a PR tutorial as strict JSON with this exact schema:\n{{\n  \"executive_summary\": \"string\",\n  \"media_links\": [\"https://...\"],\n  \"steps\": [\n    {{\n      \"title\": \"string\",\n      \"intent\": \"string\",\n      \"affected_files\": [\"path\"],\n      \"evidence_snippets\": [\"@@ ... @@\"],\n      \"body_markdown\": \"markdown string\"\n    }}\n  ]\n}}\n\nRules:\n- Output JSON only (no prose, no markdown fences).\n- Include exactly one executive summary paragraph.\n- Each step must include clear intent, affected files, and evidence snippets linked to diff hunks.\n- Keep evidence snippets compact and factual.\n\nInput payload:\n{}",
+        "Create a branch tutorial as strict JSON with this exact schema:\n{{\n  \"executive_summary\": \"string\",\n  \"media_links\": [\"https://...\"],\n  \"steps\": [\n    {{\n      \"title\": \"string\",\n      \"intent\": \"string\",\n      \"affected_files\": [\"path\"],\n      \"evidence_snippets\": [\"@@ ... @@\"],\n      \"body_markdown\": \"markdown string\"\n    }}\n  ]\n}}\n\nRules:\n- Output JSON only (no prose, no markdown fences).\n- Include exactly one executive summary paragraph.\n- Each step must include clear intent, affected files, and evidence snippets linked to diff hunks.\n- Keep evidence snippets compact and factual.\n- Treat the input as a reviewable branch against its target branch, not as a pull request workflow.\n\nInput payload:\n{}",
         encoded
     )
 }
@@ -344,8 +345,7 @@ fn safe_prefix(input: &str, max: usize) -> &str {
     &input[..end]
 }
 
-const SYSTEM_PROMPT: &str =
-    "You produce high-quality engineering tutorials from pull request diffs.";
+const SYSTEM_PROMPT: &str = "You produce high-quality engineering tutorials from branch diffs.";
 
 #[cfg(test)]
 mod tests {
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn extracts_json_with_prose_prefix() {
         let payload = extract_json_payload(
-            "Here is the PR tutorial JSON:\n\n```json\n{\"executive_summary\":\"ok\"}\n```",
+            "Here is the branch tutorial JSON:\n\n```json\n{\"executive_summary\":\"ok\"}\n```",
         );
         assert_eq!(payload, "{\"executive_summary\":\"ok\"}");
     }

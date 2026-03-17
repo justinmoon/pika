@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::cmp::{max, min};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -36,6 +38,7 @@ pub struct UpsertOutcome {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct GenerationJob {
     pub artifact_id: i64,
     pub pr_id: i64,
@@ -47,6 +50,7 @@ pub struct GenerationJob {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FeedItem {
     pub pr_id: i64,
     pub repo: String,
@@ -128,6 +132,7 @@ impl Store {
         })
     }
 
+    #[allow(dead_code)]
     pub fn update_poll_markers(
         &self,
         repo: &str,
@@ -535,6 +540,7 @@ impl Store {
         })
     }
 
+    #[allow(dead_code)]
     pub fn get_pr_detail(&self, pr_id: i64) -> anyhow::Result<Option<PrDetailRecord>> {
         self.with_connection(|conn| {
             conn.query_row(
@@ -1006,6 +1012,23 @@ impl Store {
         })
     }
 
+    pub fn is_chat_allowlist_forge_writer(&self, npub: &str) -> anyhow::Result<bool> {
+        self.with_connection(|conn| {
+            let active = conn
+                .query_row(
+                    "SELECT 1
+                     FROM chat_allowlist
+                     WHERE npub = ?1 AND active = 1 AND can_forge_write = 1",
+                    params![npub],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .context("query forge writer allowlist entry")?
+                .is_some();
+            Ok(active)
+        })
+    }
+
     pub fn has_active_chat_allowlist_entries(&self) -> anyhow::Result<bool> {
         self.with_connection(|conn| {
             let active = conn
@@ -1025,7 +1048,7 @@ impl Store {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT npub, active, note, updated_by, updated_at
+                    "SELECT npub, active, can_forge_write, note, updated_by, updated_at
                      FROM chat_allowlist
                      ORDER BY npub ASC",
                 )
@@ -1036,9 +1059,10 @@ impl Store {
                     Ok(ChatAllowlistEntry {
                         npub: row.get(0)?,
                         active: row.get::<_, i64>(1)? != 0,
-                        note: row.get(2)?,
-                        updated_by: row.get(3)?,
-                        updated_at: row.get(4)?,
+                        can_forge_write: row.get::<_, i64>(2)? != 0,
+                        note: row.get(3)?,
+                        updated_by: row.get(4)?,
+                        updated_at: row.get(5)?,
                     })
                 })
                 .context("query chat allowlist list")?;
@@ -1075,7 +1099,7 @@ impl Store {
     ) -> anyhow::Result<Option<ChatAllowlistEntry>> {
         self.with_connection(|conn| {
             conn.query_row(
-                "SELECT npub, active, note, updated_by, updated_at
+                "SELECT npub, active, can_forge_write, note, updated_by, updated_at
                  FROM chat_allowlist
                  WHERE npub = ?1",
                 params![npub],
@@ -1083,9 +1107,10 @@ impl Store {
                     Ok(ChatAllowlistEntry {
                         npub: row.get(0)?,
                         active: row.get::<_, i64>(1)? != 0,
-                        note: row.get(2)?,
-                        updated_by: row.get(3)?,
-                        updated_at: row.get(4)?,
+                        can_forge_write: row.get::<_, i64>(2)? != 0,
+                        note: row.get(3)?,
+                        updated_by: row.get(4)?,
+                        updated_at: row.get(5)?,
                     })
                 },
             )
@@ -1098,6 +1123,7 @@ impl Store {
         &self,
         npub: &str,
         active: bool,
+        can_forge_write: bool,
         note: Option<&str>,
         updated_by: &str,
     ) -> anyhow::Result<ChatAllowlistEntry> {
@@ -1107,21 +1133,32 @@ impl Store {
                 .context("start chat allowlist transaction")?;
 
             tx.execute(
-                "INSERT INTO chat_allowlist(npub, active, note, updated_by, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
+                "INSERT INTO chat_allowlist(npub, active, can_forge_write, note, updated_by, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
                  ON CONFLICT(npub) DO UPDATE SET
                     active = excluded.active,
+                    can_forge_write = excluded.can_forge_write,
                     note = excluded.note,
                     updated_by = excluded.updated_by,
                     updated_at = CURRENT_TIMESTAMP",
-                params![npub, if active { 1 } else { 0 }, note, updated_by],
+                params![
+                    npub,
+                    if active { 1 } else { 0 },
+                    if can_forge_write { 1 } else { 0 },
+                    note,
+                    updated_by
+                ],
             )
             .context("upsert chat allowlist entry")?;
 
-            let action = if active {
-                "upsert_active"
+            let action = if active && can_forge_write {
+                "upsert_active_forge_writer"
+            } else if active {
+                "upsert_active_chat_only"
+            } else if can_forge_write {
+                "upsert_inactive_forge_writer"
             } else {
-                "upsert_inactive"
+                "upsert_inactive_chat_only"
             };
             tx.execute(
                 "INSERT INTO chat_allowlist_audit(actor_npub, target_npub, action, note)
@@ -1132,7 +1169,7 @@ impl Store {
 
             let entry = tx
                 .query_row(
-                    "SELECT npub, active, note, updated_by, updated_at
+                    "SELECT npub, active, can_forge_write, note, updated_by, updated_at
                      FROM chat_allowlist
                      WHERE npub = ?1",
                     params![npub],
@@ -1140,9 +1177,10 @@ impl Store {
                         Ok(ChatAllowlistEntry {
                             npub: row.get(0)?,
                             active: row.get::<_, i64>(1)? != 0,
-                            note: row.get(2)?,
-                            updated_by: row.get(3)?,
-                            updated_at: row.get(4)?,
+                            can_forge_write: row.get::<_, i64>(2)? != 0,
+                            note: row.get(3)?,
+                            updated_by: row.get(4)?,
+                            updated_at: row.get(5)?,
                         })
                     },
                 )
@@ -1341,6 +1379,7 @@ pub struct InboxReviewContext {
 pub struct ChatAllowlistEntry {
     pub npub: String,
     pub active: bool,
+    pub can_forge_write: bool,
     pub note: Option<String>,
     pub updated_by: String,
     pub updated_at: String,
@@ -1825,6 +1864,16 @@ fn migrations() -> Vec<Migration> {
             version: 8,
             name: "0008_artifact_versions",
             sql: include_str!("../migrations/0008_artifact_versions.sql"),
+        },
+        Migration {
+            version: 9,
+            name: "0009_branch_forge",
+            sql: include_str!("../migrations/0009_branch_forge.sql"),
+        },
+        Migration {
+            version: 10,
+            name: "0010_allowlist_forge_write",
+            sql: include_str!("../migrations/0010_allowlist_forge_write.sql"),
         },
     ]
 }
@@ -2406,15 +2455,19 @@ mod tests {
 
         assert!(!store.has_active_chat_allowlist_entries().unwrap());
         assert!(!store.is_chat_allowlist_active("npub1missing").unwrap());
+        assert!(!store
+            .is_chat_allowlist_forge_writer("npub1missing")
+            .unwrap());
 
         let saved = store
-            .upsert_chat_allowlist_entry("npub1alice", true, Some("friend"), "npub1admin")
+            .upsert_chat_allowlist_entry("npub1alice", true, true, Some("friend"), "npub1admin")
             .expect("upsert allowlist entry");
         assert_eq!(
             saved,
             ChatAllowlistEntry {
                 npub: "npub1alice".to_string(),
                 active: true,
+                can_forge_write: true,
                 note: Some("friend".to_string()),
                 updated_by: "npub1admin".to_string(),
                 updated_at: saved.updated_at.clone(),
@@ -2423,17 +2476,21 @@ mod tests {
 
         assert!(store.has_active_chat_allowlist_entries().unwrap());
         assert!(store.is_chat_allowlist_active("npub1alice").unwrap());
+        assert!(store.is_chat_allowlist_forge_writer("npub1alice").unwrap());
 
         let rows = store.list_chat_allowlist_entries().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].npub, "npub1alice");
+        assert!(rows[0].can_forge_write);
         assert_eq!(rows[0].note.as_deref(), Some("friend"));
 
         let updated = store
-            .upsert_chat_allowlist_entry("npub1alice", false, Some("paused"), "npub1admin")
+            .upsert_chat_allowlist_entry("npub1alice", false, false, Some("paused"), "npub1admin")
             .expect("deactivate allowlist entry");
         assert!(!updated.active);
+        assert!(!updated.can_forge_write);
         assert!(!store.is_chat_allowlist_active("npub1alice").unwrap());
+        assert!(!store.is_chat_allowlist_forge_writer("npub1alice").unwrap());
 
         let active = store.list_active_chat_allowlist_npubs().unwrap();
         assert!(active.is_empty());

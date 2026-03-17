@@ -27,10 +27,10 @@
 
 {% block body %}
     <main class="shell">
-      <h1>Chat Access</h1>
+      <h1>Contributor Access</h1>
 
       <div id="admin-auth" class="panel muted" style="display:none;">
-        <p>Sign in with a bootstrap admin Nostr key to manage chat access.</p>
+        <p>Sign in with a bootstrap admin Nostr key to manage contributor access.</p>
       </div>
 
       <div id="admin-forbidden" class="panel muted" style="display:none;">
@@ -48,7 +48,7 @@
 
         <section class="panel">
           <h2>Config Chat Access</h2>
-          <p class="muted">These keys come from `allowed_npubs` config and keep chat access until config changes. They are not editable here.</p>
+          <p class="muted">These keys come from `allowed_npubs` config and keep trusted contributor access until config changes. They are not editable here.</p>
           <div id="legacy-allowed"></div>
         </section>
 
@@ -65,7 +65,11 @@
             </label>
             <label class="checkbox-row">
               <input id="allowlist-active" name="active" type="checkbox" checked />
-              Active
+              Chat access active
+            </label>
+            <label class="checkbox-row">
+              <input id="allowlist-can-forge-write" name="can_forge_write" type="checkbox" />
+              Trusted contributor: can merge and close branches
             </label>
             <div class="btn-row">
               <button class="primary-btn" type="submit">Save</button>
@@ -82,7 +86,8 @@
             <thead>
               <tr>
                 <th>Npub</th>
-                <th>Status</th>
+                <th>Chat</th>
+                <th>Forge</th>
                 <th>Note</th>
                 <th>Updated By</th>
                 <th>Updated At</th>
@@ -110,6 +115,7 @@
         var npubEl = document.getElementById('allowlist-npub');
         var noteEl = document.getElementById('allowlist-note');
         var activeEl = document.getElementById('allowlist-active');
+        var canForgeWriteEl = document.getElementById('allowlist-can-forge-write');
         var resetEl = document.getElementById('allowlist-reset');
         var tableEl = document.getElementById('allowlist-table');
         var emptyEl = document.getElementById('allowlist-empty');
@@ -126,6 +132,7 @@
             sessionStorage.removeItem('pika_news_token');
             sessionStorage.removeItem('pika_news_npub');
             sessionStorage.removeItem('pika_news_is_admin');
+            sessionStorage.removeItem('pika_news_can_forge_write');
           }
         }
 
@@ -138,6 +145,7 @@
         function resetForm() {
           formEl.reset();
           activeEl.checked = true;
+          canForgeWriteEl.checked = false;
           statusEl.style.display = 'none';
         }
 
@@ -153,7 +161,7 @@
 
         function renderLegacyAllowed(npubs) {
           if (!npubs || npubs.length === 0) {
-            legacyAllowedEl.innerHTML = '<p class="muted">No legacy config chat users configured.</p>';
+            legacyAllowedEl.innerHTML = '<p class="muted">No legacy config trusted contributors configured.</p>';
             return;
           }
           legacyAllowedEl.innerHTML = npubs.map(function (npub) {
@@ -177,6 +185,7 @@
             tr.innerHTML =
               '<td><code>' + escapeHtml(entry.npub) + '</code></td>' +
               '<td>' + (entry.active ? 'active' : 'inactive') + '</td>' +
+              '<td>' + (entry.can_forge_write ? 'trusted' : 'chat-only') + '</td>' +
               '<td>' + escapeHtml(entry.note || '') + '</td>' +
               '<td><code>' + escapeHtml(entry.updated_by) + '</code></td>' +
               '<td>' + escapeHtml(entry.updated_at) + '</td>' +
@@ -187,7 +196,8 @@
               saveEntry({
                 npub: entry.npub,
                 note: entry.note || '',
-                active: !entry.active
+                active: !entry.active,
+                can_forge_write: !!entry.can_forge_write
               });
             });
           });
@@ -286,7 +296,8 @@
           saveEntry({
             npub: npubEl.value,
             note: noteEl.value,
-            active: !!activeEl.checked
+            active: !!activeEl.checked,
+            can_forge_write: !!canForgeWriteEl.checked
           });
         });
 

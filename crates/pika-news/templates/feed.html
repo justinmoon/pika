@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}pika-news feed{% endblock %}
+{% block title %}pika forge{% endblock %}
 
 {% block styles %}
       .shell { max-width: 1050px; margin: 0 auto; padding: 2rem 1rem; }
@@ -15,42 +15,44 @@
 
 {% block body %}
     <main class="shell">
-      <h1>pika-news</h1>
-      <p>Browser-first PR tutorial feed across configured repositories.</p>
+      <h1>pika forge</h1>
+      <p>Pika News, turned into a branch forge for the canonical <code>pika</code> repo.</p>
 
-      <h2>Open PRs</h2>
+      <h2>Open Branches</h2>
       {% if open_items.is_empty() %}
-      <p class="empty">No open PRs found.</p>
+      <p class="empty">No open branches right now.</p>
       {% else %}
       <div class="grid">
         {% for item in open_items %}
         <article class="card">
-          <div class="meta">{{ item.repo }} #{{ item.pr_number }} · {{ item.updated_at }}</div>
-          <h3><a href="/news/pr/{{ item.pr_id }}">{{ item.title }}</a></h3>
+          <div class="meta">{{ item.repo }} · branch #{{ item.branch_id }} · {{ item.updated_at }}</div>
+          <h3><a href="/news/branch/{{ item.branch_id }}">{{ item.branch_name }}</a></h3>
+          <p>{{ item.title }}</p>
           <p>
-            <span class="status">pr: {{ item.state }}</span>
-            <span class="status">gen: {{ item.generation_status }}</span>
+            <span class="status">branch: {{ item.state }}</span>
+            <span class="status">tutorial: {{ item.tutorial_status }}</span>
+            <span class="status">ci: {{ item.ci_status }}</span>
           </p>
-          <p><a href="{{ item.url }}">View on GitHub</a></p>
         </article>
         {% endfor %}
       </div>
       {% endif %}
 
-      <h2>Merged PRs</h2>
-      {% if merged_items.is_empty() %}
-      <p class="empty">No merged PRs in lookback window.</p>
+      <h2>Branch History</h2>
+      {% if history_items.is_empty() %}
+      <p class="empty">No merged or closed branches yet.</p>
       {% else %}
       <div class="grid">
-        {% for item in merged_items %}
+        {% for item in history_items %}
         <article class="card">
-          <div class="meta">{{ item.repo }} #{{ item.pr_number }} · {{ item.updated_at }}</div>
-          <h3><a href="/news/pr/{{ item.pr_id }}">{{ item.title }}</a></h3>
+          <div class="meta">{{ item.repo }} · branch #{{ item.branch_id }} · {{ item.updated_at }}</div>
+          <h3><a href="/news/branch/{{ item.branch_id }}">{{ item.branch_name }}</a></h3>
+          <p>{{ item.title }}</p>
           <p>
-            <span class="status">pr: {{ item.state }}</span>
-            <span class="status">gen: {{ item.generation_status }}</span>
+            <span class="status">branch: {{ item.state }}</span>
+            <span class="status">tutorial: {{ item.tutorial_status }}</span>
+            <span class="status">ci: {{ item.ci_status }}</span>
           </p>
-          <p><a href="{{ item.url }}">View on GitHub</a></p>
         </article>
         {% endfor %}
       </div>

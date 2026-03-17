@@ -1,15 +1,21 @@
 # pika-news
 
-`pika-news` turns pull request diffs into browser-first tutorial artifacts.
+`pika-news` turns the canonical `pika` bare repo into a browser-first branch forge with tutorial-style review pages.
 
 ## Config file (`pika-news.toml`)
 
 ```toml
 repos = ["sledtools/pika"]
+[forge_repo]
+repo = "sledtools/pika"
+canonical_git_dir = "/var/lib/pika-news/pika.git"
+default_branch = "master"
+ci_command = ["just", "pre-merge"]
+hook_url = "http://127.0.0.1:8788/news/webhook"
+
 poll_interval_secs = 60
 model = "claude-sonnet-4-5-20250929"
 api_key_env = "ANTHROPIC_API_KEY"
-github_token_env = "GITHUB_TOKEN"
 merged_lookback_hours = 72
 worker_concurrency = 2
 retry_backoff_secs = 120
@@ -18,12 +24,12 @@ bind_port = 8787
 bootstrap_admin_npubs = ["npub1..."]
 ```
 
-- `repos`: explicit `owner/repo` list for hosted polling mode.
-- `poll_interval_secs`: interval used by hosted mode ingestion loop.
+- `repos`: legacy repo slug list; keep `["sledtools/pika"]`.
+- `forge_repo`: canonical forge metadata for the single hosted `pika` bare repo.
+- `poll_interval_secs`: interval used by hosted mode repair scans of the canonical bare repo.
 - `model`: Anthropic model name for tutorial generation.
 - `api_key_env`: environment variable containing the API key.
-- `github_token_env`: environment variable containing GitHub API token.
-- `merged_lookback_hours`: merged PR lookback window used by poller.
+- `merged_lookback_hours`: retained legacy setting; forge mode does not rely on GitHub merged lookback polling.
 - `worker_concurrency`: max hosted generation jobs claimed per pass.
 - `retry_backoff_secs`: delay before retrying retry-safe generation failures.
 - `bind_address`: hosted server bind address.

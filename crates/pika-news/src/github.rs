@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Duration, Utc};
 use reqwest::blocking::Client;

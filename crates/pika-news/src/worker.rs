@@ -1,16 +1,14 @@
-use std::collections::BTreeSet;
-use std::env;
-use std::sync::Arc;
 use std::thread;
 
 use anyhow::Context;
 
-use crate::auth::normalize_npub;
+use crate::branch_store::BranchGenerationJob;
 use crate::config::Config;
-use crate::github::GitHubClient;
+use crate::forge;
 use crate::model::{self, GenerationError, PromptInput, PromptPrMetadata};
 use crate::render;
-use crate::storage::{GenerationJob, Store};
+use crate::storage::Store;
+use crate::tutorial;
 
 #[derive(Debug, Default)]
 #[allow(dead_code)]
@@ -22,47 +20,33 @@ pub struct WorkerPassResult {
 }
 
 pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<WorkerPassResult> {
+    let Some(forge_repo) = config.effective_forge_repo() else {
+        return Ok(WorkerPassResult::default());
+    };
+
     let jobs = store
-        .claim_pending_generation_jobs(config.worker_concurrency)
-        .context("claim pending generation jobs")?;
+        .claim_pending_branch_generation_jobs(config.worker_concurrency)
+        .context("claim pending branch generation jobs")?;
     if jobs.is_empty() {
         return Ok(WorkerPassResult::default());
     }
 
-    let mut configured_npubs = normalized_configured_npubs(
-        &config.effective_bootstrap_admin_npubs(),
-        "bootstrap_admin_npubs",
-    );
-    configured_npubs.extend(normalized_configured_npubs(
-        &config.allowed_npubs,
-        "allowed_npubs",
-    ));
-    let configured_npubs: Vec<String> = configured_npubs.into_iter().collect();
-
-    let github = Arc::new(
-        GitHubClient::new(env::var(&config.github_token_env).ok())
-            .context("initialize GitHub client for worker")?,
-    );
-    let shared_store = Arc::new(store.clone());
-
     let mut handles = Vec::with_capacity(jobs.len());
     for job in jobs {
-        let github = Arc::clone(&github);
-        let store = Arc::clone(&shared_store);
+        let store = store.clone();
+        let forge_repo = forge_repo.clone();
         let model = config.model.clone();
         let api_key_env = config.api_key_env.clone();
         let retry_backoff_secs = config.retry_backoff_secs;
-        let configured_npubs = configured_npubs.clone();
 
         handles.push(thread::spawn(move || {
             process_job(
                 &store,
-                &github,
+                &forge_repo,
                 &job,
                 &model,
                 &api_key_env,
                 retry_backoff_secs,
-                &configured_npubs,
             )
         }));
     }
@@ -71,7 +55,6 @@ pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<Wor
         claimed: handles.len(),
         ..WorkerPassResult::default()
     };
-
     for handle in handles {
         match handle.join() {
             Ok(Ok(JobOutcome::Ready)) => result.ready += 1,
@@ -99,22 +82,19 @@ enum JobOutcome {
 
 fn process_job(
     store: &Store,
-    github: &GitHubClient,
-    job: &GenerationJob,
+    forge_repo: &crate::config::ForgeRepoConfig,
+    job: &BranchGenerationJob,
     model_name: &str,
     api_key_env: &str,
     retry_backoff_secs: u64,
-    configured_npubs: &[String],
 ) -> anyhow::Result<JobOutcome> {
-    let diff = github
-        .fetch_pull_diff(&job.repo, job.pr_number)
-        .with_context(|| format!("fetch PR diff for {}/{}", job.repo, job.pr_number));
-
+    let diff = forge::branch_diff(forge_repo, &job.merge_base_sha, &job.head_sha)
+        .with_context(|| format!("collect branch diff for {}", job.branch_name));
     let diff = match diff {
         Ok(diff) => diff,
         Err(err) => {
             store
-                .mark_generation_failed(
+                .mark_branch_generation_failed(
                     job.artifact_id,
                     &format!("diff fetch failed: {}", err),
                     true,
@@ -128,22 +108,21 @@ fn process_job(
     let prompt_input = PromptInput {
         pr: PromptPrMetadata {
             repo: job.repo.clone(),
-            number: Some(job.pr_number as u64),
-            title: job.title.clone(),
+            number: Some(job.branch_id as u64),
+            title: format!("branch {}: {}", job.branch_name, job.title),
             head_sha: Some(job.head_sha.clone()),
-            base_ref: job.base_ref.clone(),
+            base_ref: forge_repo.default_branch.clone(),
         },
-        files: diff.files,
-        unified_diff: model::bounded_diff(&diff.unified_diff, 60_000),
+        files: tutorial::extract_files(&diff),
+        unified_diff: model::bounded_diff(&diff, 60_000),
     };
 
     let generated = model::generate_with_anthropic(model_name, api_key_env, &prompt_input);
-
     let gen_output = match generated {
         Ok(output) => output,
         Err(GenerationError::RetrySafe(message)) => {
             store
-                .mark_generation_failed(job.artifact_id, &message, true, retry_backoff_secs)
+                .mark_branch_generation_failed(job.artifact_id, &message, true, retry_backoff_secs)
                 .with_context(|| {
                     format!(
                         "persist retry-safe failure for artifact {}",
@@ -154,7 +133,7 @@ fn process_job(
         }
         Err(GenerationError::MissingApiKey { env_var }) => {
             store
-                .mark_generation_failed(
+                .mark_branch_generation_failed(
                     job.artifact_id,
                     &format!("missing API key env var {}", env_var),
                     false,
@@ -170,7 +149,7 @@ fn process_job(
         }
         Err(GenerationError::Fatal(message)) => {
             store
-                .mark_generation_failed(job.artifact_id, &message, false, retry_backoff_secs)
+                .mark_branch_generation_failed(job.artifact_id, &message, false, retry_backoff_secs)
                 .with_context(|| {
                     format!("persist fatal failure for artifact {}", job.artifact_id)
                 })?;
@@ -179,92 +158,16 @@ fn process_job(
     };
 
     let html = render::render_tutorial_html(
-        &format!("{}#{} tutorial", job.repo, job.pr_number),
-        &job.base_ref,
-        &diff.unified_diff,
+        &format!("branch #{} {}", job.branch_id, job.branch_name),
+        &forge_repo.default_branch,
+        &diff,
         &gen_output.tutorial,
     );
-
     let tutorial_json =
         serde_json::to_string(&gen_output.tutorial).context("serialize tutorial JSON")?;
-    let activated = store
-        .mark_generation_ready(
-            job.artifact_id,
-            &tutorial_json,
-            &html,
-            &job.head_sha,
-            &diff.unified_diff,
-            gen_output.session_id.as_deref(),
-        )
-        .with_context(|| format!("mark artifact {} ready", job.artifact_id))?;
-
-    let mut recipients: BTreeSet<String> = configured_npubs.iter().cloned().collect();
-    match store.list_active_chat_allowlist_npubs() {
-        Ok(npubs) => {
-            for npub in npubs {
-                recipients.insert(npub);
-            }
-        }
-        Err(err) => {
-            eprintln!(
-                "warning: failed to read active chat allowlist for pr_id {}: {}",
-                job.pr_id, err
-            );
-        }
-    }
-
-    if activated && !recipients.is_empty() {
-        let recipients: Vec<String> = recipients.into_iter().collect();
-        if let Err(err) = store.populate_inbox(job.artifact_id, &recipients) {
-            eprintln!(
-                "warning: failed to populate inbox for artifact {}: {}",
-                job.artifact_id, err
-            );
-        }
-    }
+    store
+        .mark_branch_generation_ready(job.artifact_id, &tutorial_json, &html, &job.head_sha, &diff)
+        .with_context(|| format!("mark branch artifact {} ready", job.artifact_id))?;
 
     Ok(JobOutcome::Ready)
-}
-
-pub fn normalized_configured_npubs(inputs: &[String], context: &str) -> BTreeSet<String> {
-    let mut normalized = BTreeSet::new();
-    for input in inputs {
-        match normalize_npub(input) {
-            Ok(npub) => {
-                normalized.insert(npub);
-            }
-            Err(err) => {
-                eprintln!(
-                    "warning: ignoring invalid {} entry {}: {}",
-                    context, input, err
-                );
-            }
-        }
-    }
-    normalized
-}
-
-#[cfg(test)]
-mod tests {
-    use nostr::key::PublicKey;
-
-    use super::{normalized_configured_npubs, WorkerPassResult};
-
-    #[test]
-    fn result_defaults_are_zeroed() {
-        let result = WorkerPassResult::default();
-        assert_eq!(result.claimed, 0);
-        assert_eq!(result.ready, 0);
-        assert_eq!(result.failed, 0);
-        assert_eq!(result.retry_scheduled, 0);
-    }
-
-    #[test]
-    fn configured_npubs_are_normalized_and_deduped() {
-        let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
-        let hex = PublicKey::parse(npub).expect("parse npub").to_hex();
-        let normalized = normalized_configured_npubs(&[npub.to_string(), hex], "test");
-        assert_eq!(normalized.len(), 1);
-        assert!(normalized.contains(npub));
-    }
 }

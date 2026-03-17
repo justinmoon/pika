@@ -6,7 +6,6 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" media="(prefers-color-scheme: light)" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" media="(prefers-color-scheme: dark)" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html@3.4.51/bundles/css/diff2html.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 {% endblock %}
 
 {% block nav_right_extra %}
@@ -21,114 +20,55 @@
 {% endblock %}
 
 {% block styles %}
+      .shell { max-width: 1040px; margin: 0 auto; padding: 2rem 1rem 3rem; }
       .meta { color: var(--text-secondary); font-size: 0.92rem; }
-      .status { display: inline-block; border-radius: 999px; border: 1px solid var(--border-light); padding: 0.1rem 0.55rem; margin-right: 0.4rem; font-size: 0.8rem; }
-      .panel { background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-top: 1rem; max-width: 900px; }
-      .diff-panel { max-width: none; overflow-x: auto; }
+      .status-row { display: flex; gap: 0.45rem; flex-wrap: wrap; }
+      .status { display: inline-block; border-radius: 999px; border: 1px solid var(--border-light); padding: 0.1rem 0.55rem; font-size: 0.8rem; }
+      .panel { background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-top: 1rem; }
       .steps-nav { display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: center; }
-      button { border-radius: 10px; border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--text); padding: 0.45rem 0.8rem; cursor: pointer; }
-      button:disabled { opacity: 0.55; cursor: default; }
       .step { display: none; }
       .step.active { display: block; }
       .evidence { background: var(--badge-bg-alt); border-radius: 10px; padding: 0.75rem; }
       .evidence pre { margin: 0.5rem 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
-      .evidence pre code { font-size: 0.82rem; background: none; padding: 0; }
-      pre code.hljs { border-radius: 10px; }
-      table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
-      th, td { border: 1px solid var(--border); padding: 0.4rem 0.75rem; text-align: left; font-size: 0.9rem; }
-      th { background: var(--badge-bg); font-weight: 600; }
-      tr:nth-child(even) { background: var(--badge-bg-row); }
-      .d2h-wrapper { border-radius: 10px; overflow-x: auto; }
+      .diff-panel { overflow-x: auto; }
       .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
       .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
-
-      /* Main content area (left of chat sidebar) */
-      .main-content { flex: 1; min-width: 0; padding: 2rem 1rem; overflow-x: hidden; }
-
-      /* Top section: file list sidebar + panels side-by-side */
-      .content-with-files { display: flex; gap: 1rem; }
-      .panels-column { flex: 1; min-width: 0; }
-      .file-list-sidebar { display: none; }
-      @media (min-width: 1024px) {
-        .file-list-sidebar { display: block; flex-shrink: 0; width: 280px; position: sticky; top: 4rem; max-height: calc(100vh - 5rem); overflow-y: auto; }
-        .file-list-sidebar .d2h-file-list-wrapper { border-radius: 10px; }
-      }
-      @media (max-width: 1023px) {
-        .content-with-files { display: block; }
-      }
-
-      /* Diff2html dark mode overrides */
-      @media (prefers-color-scheme: dark) {
-        .d2h-wrapper, .d2h-file-wrapper { background: var(--surface-solid); color: var(--text); }
-        .d2h-file-header { background: var(--badge-bg); color: var(--text); border-bottom-color: var(--border); }
-        .d2h-file-diff .d2h-code-linenumber, .d2h-file-diff .d2h-code-line { color: var(--text); }
-        .d2h-code-side-linenumber, .d2h-code-linenumber { background: var(--badge-bg); border-color: var(--border); color: var(--text-muted); }
-        .d2h-emptyplaceholder, .d2h-code-side-emptyplaceholder { background: var(--badge-bg-alt); border-color: var(--border); }
-        .d2h-del { background: #3c1f1f; }
-        .d2h-ins { background: #1f3c1f; }
-        .d2h-del .d2h-code-side-line del, .d2h-del .d2h-code-line del { background: #5c2f2f; }
-        .d2h-ins .d2h-code-side-line ins, .d2h-ins .d2h-code-line ins { background: #2f5c2f; }
-        .d2h-info { background: var(--badge-bg); color: var(--text-muted); border-color: var(--border); }
-        .d2h-file-list-wrapper { background: var(--surface-solid); border-color: var(--border); }
-        .d2h-file-list-line a { color: var(--link); }
-      }
-
-      /* Chat sidebar */
-      .page-layout { display: flex; gap: 1.5rem; }
-      .chat-sidebar { width: 360px; flex-shrink: 0; position: sticky; top: 4rem; height: calc(100vh - 5rem); display: flex; flex-direction: column; background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; transition: width 0.15s ease; }
-      .chat-sidebar.hidden { display: none; }
-      .chat-resize-handle { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 10; border-radius: 3px; }
-      .chat-resize-handle:hover, .chat-resize-handle.dragging { background: var(--link); opacity: 0.4; }
-      .chat-sidebar h3 { margin: 0; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.95rem; background: var(--badge-bg); }
-      #chat-main { min-height: 0; }
-      .chat-messages { flex: 1; overflow-y: auto; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; min-height: 0; }
-      .chat-msg { padding: 0.5rem 0.75rem; border-radius: 10px; font-size: 0.88rem; line-height: 1.4; max-width: 90%; word-wrap: break-word; }
-      .chat-msg.user { background: var(--chat-user-bg); color: var(--chat-user-text); align-self: flex-end; }
-      .chat-msg.assistant { background: var(--chat-assistant-bg); color: var(--chat-assistant-text); align-self: flex-start; }
-      .chat-input-row { display: flex; gap: 0.5rem; padding: 0.75rem; border-top: 1px solid var(--border); }
-      .chat-input-row input { flex: 1; border: 1px solid var(--input-border); border-radius: 8px; padding: 0.4rem 0.6rem; font-size: 0.88rem; background: var(--badge-bg); color: var(--text); }
-      .chat-input-row button { flex-shrink: 0; }
-      .chat-status { padding: 0.5rem 1rem; font-size: 0.82rem; color: var(--text-muted); text-align: center; }
-      .chat-disabled { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem; text-align: center; color: var(--text-muted); }
-      .chat-disabled svg { width: 48px; height: 48px; margin-bottom: 0.75rem; opacity: 0.4; }
-      /* Markdown in panels */
-      .panel pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; }
-      .panel code { font-size: 0.85rem; background: var(--badge-bg); padding: 0.1rem 0.3rem; border-radius: 3px; }
-      .panel pre code { background: none; padding: 0; }
-      /* Markdown in chat */
-      .chat-msg pre { overflow-x: auto; background: var(--badge-bg); border-radius: 6px; padding: 0.5rem; margin: 0.4rem 0; }
-      .chat-msg code { font-size: 0.82rem; }
-      .chat-msg p { margin: 0.3rem 0; }
-      .chat-msg p:first-child { margin-top: 0; }
-      .chat-msg p:last-child { margin-bottom: 0; }
-      .chat-msg ul, .chat-msg ol { margin: 0.3rem 0; padding-left: 1.2rem; }
-      /* Review controls in top nav */
+      .action-row { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 1rem; }
+      .action-btn, .secondary-btn { border-radius: 10px; border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--text); padding: 0.5rem 0.85rem; cursor: pointer; }
+      .merge-btn { background: var(--accent); border-color: transparent; color: #fff; }
+      .danger-btn { background: #8b1e3f; border-color: transparent; color: #fff; }
+      .ci-run { border-top: 1px solid var(--border); padding-top: 0.85rem; margin-top: 0.85rem; }
+      .ci-run:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+      .ci-run pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; font-size: 0.82rem; }
+      .muted { color: var(--text-muted); }
+      button:disabled { opacity: 0.55; cursor: default; }
       .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
       .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
       .review-dismiss-btn { background: var(--accent); color: #fff; border: none; padding: 0.35rem 0.8rem; font-size: 0.82rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
-      .review-dismiss-btn:hover { background: var(--accent-hover); }
-      /* Responsive breakpoints */
-      @media (max-width: 1024px) {
-        .chat-sidebar { width: 300px; }
-        .panel { max-width: none; }
-      }
-      @media (max-width: 640px) {
-        .page-layout { flex-direction: column; }
-        .chat-sidebar { width: 100%; position: static; height: 400px; }
-      }
 {% endblock %}
 
 {% block body %}
-    <div class="page-layout">
-    <div class="main-content">
+    <main class="shell">
       <p><a href="/news">Back to feed</a></p>
-      <h1>{{ page_title }}</h1>
-      <p class="meta">{{ repo }} #{{ pr_number }} · Updated {{ updated_at }}</p>
-      <p>
-        <span class="status">pr: {{ pr_state }}</span>
-        <span class="status">gen: {{ generation_status }}</span>
-      </p>
-      <p><a href="{{ github_url }}">Open PR on GitHub</a></p>
+      <h1>{{ branch_name }}</h1>
+      <p class="meta">{{ repo }} · branch #{{ branch_id }} · target {{ target_branch }} · updated {{ updated_at }}</p>
+      <div class="status-row">
+        <span class="status">branch: {{ branch_state }}</span>
+        <span class="status">tutorial: {{ tutorial_status }}</span>
+        <span class="status">ci: {{ ci_status }}</span>
+      </div>
+      {% match merge_commit_sha %}
+      {% when Some with (merge_commit) %}
+      <p class="meta">merge commit <code>{{ merge_commit }}</code></p>
+      {% when None %}{% endmatch %}
+
+      {% if branch_state == "open" %}
+      <div id="branch-actions" class="action-row" style="display:none;">
+        <button id="merge-branch" type="button" class="action-btn merge-btn">Merge Into {{ target_branch }}</button>
+        <button id="close-branch" type="button" class="action-btn danger-btn">Close Branch</button>
+        <span id="branch-action-status" class="muted"></span>
+      </div>
+      {% endif %}
 
       {% match error_message %}
       {% when Some with (msg) %}
@@ -138,13 +78,10 @@
       </section>
       {% when None %}{% endmatch %}
 
-      <div class="content-with-files">
-      <aside id="file-list-sidebar" class="file-list-sidebar"></aside>
-      <div class="panels-column">
       {% match executive_html %}
       {% when Some with (summary_html) %}
       <section class="panel">
-        <h2>Executive Summary</h2>
+        <h2>Summary</h2>
         <div>{{ summary_html|safe }}</div>
       </section>
 
@@ -176,7 +113,7 @@
       </section>
       {% when None %}
       <section class="panel">
-        <h2>Tutorial</h2>
+        <h2>Summary</h2>
         <p>Summary is not ready yet. Refresh shortly.</p>
       </section>
       {% endmatch %}
@@ -191,8 +128,35 @@
         </ul>
       </section>
       {% endif %}
-      </div>
-      </div>
+
+      <section class="panel">
+        <h2>CI</h2>
+        {% if ci_runs.is_empty() %}
+        <p class="muted">No CI runs yet.</p>
+        {% else %}
+        {% for run in ci_runs %}
+        <article class="ci-run">
+          <p><strong>Run #{{ run.id }}</strong> · {{ run.status }} · <code>{{ run.entrypoint }}</code></p>
+          <p class="muted">head <code>{{ run.source_head_sha }}</code> · queued {{ run.created_at }}</p>
+          {% match run.started_at %}
+          {% when Some with (started_at) %}
+          <p class="muted">started {{ started_at }}</p>
+          {% when None %}{% endmatch %}
+          {% match run.finished_at %}
+          {% when Some with (finished_at) %}
+          <p class="muted">finished {{ finished_at }}</p>
+          {% when None %}{% endmatch %}
+          {% match run.log_text %}
+          {% when Some with (log_text) %}
+          <details>
+            <summary>Logs</summary>
+            <pre><code>{{ log_text }}</code></pre>
+          </details>
+          {% when None %}{% endmatch %}
+        </article>
+        {% endfor %}
+        {% endif %}
+      </section>
 
       {% match diff_json %}
       {% when Some with (json_str) %}
@@ -206,26 +170,7 @@
         <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
       </section>
       {% when None %}{% endmatch %}
-    </div>
-
-    <aside class="chat-sidebar" id="chat-sidebar">
-      <div class="chat-resize-handle" id="chat-resize-handle"></div>
-      <h3 id="chat-header">Chat with Tutorial</h3>
-      <div id="chat-disabled" class="chat-disabled">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>
-        <p style="font-size:0.85rem;margin:0 0 0.5rem 0;">Chat is available to contributors with whitelisted pubkeys.</p>
-        <p style="font-size:0.8rem;margin:0;">Sign in with Nostr above to unlock.</p>
-      </div>
-      <div id="chat-main" style="display:none;flex:1;flex-direction:column;">
-        <div class="chat-messages" id="chat-messages"></div>
-        <div class="chat-input-row">
-          <input type="text" id="chat-input" placeholder="Ask about this PR..." autocomplete="off" />
-          <button id="chat-send" type="button">Send</button>
-        </div>
-      </div>
-      <div id="chat-status" class="chat-status" style="display:none;"></div>
-    </aside>
-    </div>
+    </main>
 {% endblock %}
 
 {% block scripts %}
@@ -233,7 +178,6 @@
     <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.51/bundles/js/diff2html.min.js"></script>
     <script>
       (function () {
-        // Step navigation
         const steps = Array.from(document.querySelectorAll('.step'));
         if (steps.length > 0) {
           const prev = document.getElementById('prev-step');
@@ -241,383 +185,207 @@
           const label = document.getElementById('step-index');
           let index = 0;
 
-          function render() {
+          function renderStep() {
             steps.forEach((step, i) => step.classList.toggle('active', i === index));
             label.textContent = `Step ${index + 1} / ${steps.length}`;
             prev.disabled = index === 0;
             next.disabled = index === steps.length - 1;
           }
 
-          prev.addEventListener('click', () => { if (index > 0) { index -= 1; render(); } });
-          next.addEventListener('click', () => { if (index < steps.length - 1) { index += 1; render(); } });
-          window.addEventListener('keydown', (event) => {
-            if (event.key === 'ArrowLeft' && index > 0) { index -= 1; render(); }
-            if (event.key === 'ArrowRight' && index < steps.length - 1) { index += 1; render(); }
-          });
-          render();
+          prev.addEventListener('click', () => { if (index > 0) { index -= 1; renderStep(); } });
+          next.addEventListener('click', () => { if (index < steps.length - 1) { index += 1; renderStep(); } });
+          renderStep();
         }
 
         hljs.highlightAll();
 
-        // Diff rendering
         const diffDataEl = document.getElementById('diff-data');
         const diffContainer = document.getElementById('diff-container');
-        if (diffDataEl && diffContainer) {
-          const diffText = JSON.parse(diffDataEl.textContent);
-          let currentStyle = 'side';
+        const toggles = Array.from(document.querySelectorAll('.diff-toggle'));
+        if (diffDataEl && diffContainer && window.Diff2Html) {
+          const diffText = JSON.parse(diffDataEl.textContent || '""');
+          let diffMode = 'side-by-side';
 
-          const fileListSidebar = document.getElementById('file-list-sidebar');
-
-          function renderDiff(style) {
-            const outputFormat = style === 'side' ? 'side-by-side' : 'line-by-line';
+          function renderDiff() {
             diffContainer.innerHTML = Diff2Html.html(diffText, {
               drawFileList: true,
               matching: 'lines',
-              outputFormat: outputFormat,
-              highlight: true,
+              outputFormat: diffMode,
             });
-            // Move file list out of diff pane into the page-level sidebar
-            const fileList = diffContainer.querySelector('.d2h-file-list-wrapper');
-            if (fileList && fileListSidebar) {
-              fileListSidebar.innerHTML = '';
-              fileListSidebar.appendChild(fileList);
-            }
+            toggles.forEach((button) => {
+              const style = button.getAttribute('data-style');
+              button.classList.toggle('active', style === (diffMode === 'side-by-side' ? 'side' : 'line'));
+            });
           }
 
-          renderDiff(currentStyle);
-
-          document.querySelectorAll('.diff-toggle').forEach(btn => {
-            btn.addEventListener('click', () => {
-              document.querySelectorAll('.diff-toggle').forEach(b => b.classList.remove('active'));
-              btn.classList.add('active');
-              currentStyle = btn.dataset.style;
-              renderDiff(currentStyle);
+          toggles.forEach((button) => {
+            button.addEventListener('click', () => {
+              diffMode = button.getAttribute('data-style') === 'line' ? 'line-by-line' : 'side-by-side';
+              renderDiff();
             });
           });
-        }
-      })();
-
-      // --- Detail page: Chat + Regenerate (reacts to auth from base) ---
-      (function () {
-        const sidebar = document.getElementById('chat-sidebar');
-        if (!sidebar) return;
-
-        const prId = (window.location.pathname.match(/\/news\/pr\/(\d+)/) || window.location.pathname.match(/\/news\/inbox\/review\/(\d+)/))?.[1];
-        if (!prId) return;
-
-        const regenBtn = document.getElementById('regen-btn');
-        const chatDisabled = document.getElementById('chat-disabled');
-        const chatMain = document.getElementById('chat-main');
-        const messagesDiv = document.getElementById('chat-messages');
-        const chatInput = document.getElementById('chat-input');
-        const chatSend = document.getElementById('chat-send');
-        const chatStatus = document.getElementById('chat-status');
-
-        function showStatus(msg) {
-          if (!chatStatus) return;
-          chatStatus.textContent = msg;
-          chatStatus.style.display = 'block';
-        }
-        function hideStatus() { if (chatStatus) chatStatus.style.display = 'none'; }
-
-        function addMessage(role, content) {
-          if (!messagesDiv) return;
-          const div = document.createElement('div');
-          div.className = 'chat-msg ' + role;
-          if (role === 'assistant' && window.marked) {
-            div.innerHTML = marked.parse(content);
-          } else {
-            div.textContent = content;
-          }
-          messagesDiv.appendChild(div);
-          messagesDiv.scrollTop = messagesDiv.scrollHeight;
+          renderDiff();
         }
 
-        function handleExpiredSession() {
-          if (window.pikaAuth && window.pikaAuth.clear) {
-            window.pikaAuth.clear();
-          } else {
-            sessionStorage.removeItem('pika_news_token');
-            sessionStorage.removeItem('pika_news_npub');
-            sessionStorage.removeItem('pika_news_is_admin');
-          }
-          if (chatMain) chatMain.style.display = 'none';
-          if (chatDisabled) chatDisabled.style.display = '';
-          if (regenBtn) regenBtn.style.display = 'none';
+        const actionWrap = document.getElementById('branch-actions');
+        const mergeBtn = document.getElementById('merge-branch');
+        const closeBtn = document.getElementById('close-branch');
+        const statusEl = document.getElementById('branch-action-status');
+        const reviewPrevBtn = document.getElementById('review-prev');
+        const reviewNextBtn = document.getElementById('review-next');
+        const reviewDismissBtn = document.getElementById('review-dismiss');
+        const reviewPosEl = document.getElementById('review-pos');
+        const branchId = {{ branch_id }};
+        const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
+
+        function authToken() {
+          return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
         }
 
-        function syncRegenerateVisibility() {
-          if (!regenBtn) return;
-          regenBtn.style.display = (window.pikaAuth && window.pikaAuth.isAdmin && window.pikaAuth.isAdmin()) ? 'inline-block' : 'none';
+        function showActions() {
+          if (!actionWrap) return;
+          const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
+          actionWrap.style.display = canForgeWrite ? 'flex' : 'none';
         }
 
-        async function loadHistory() {
-          if (!messagesDiv) return;
-          const token = window.pikaAuth && window.pikaAuth.getToken();
+        async function branchAction(path, button, busyLabel, doneLabel) {
+          const token = authToken();
           if (!token) return;
+          const originalLabel = button.textContent;
+          button.disabled = true;
+          statusEl.textContent = busyLabel;
           try {
-            const res = await fetch('/news/pr/' + prId + '/chat', {
+            const res = await fetch(path, {
+              method: 'POST',
               headers: { 'Authorization': 'Bearer ' + token }
             });
-            if (res.status === 401 || res.status === 403) { handleExpiredSession(); return; }
-            if (!res.ok) return;
             const data = await res.json();
-            messagesDiv.innerHTML = '';
-            (data.messages || []).forEach(m => addMessage(m.role, m.content));
-          } catch (e) {
-            console.error('load history error:', e);
+            if (!res.ok) throw new Error(data.error || 'request failed');
+            statusEl.textContent = doneLabel;
+            window.location.reload();
+          } catch (err) {
+            statusEl.textContent = err.message || String(err);
+            button.disabled = false;
+            button.textContent = originalLabel;
           }
         }
 
-        function onAuthed() {
-          if (chatDisabled) chatDisabled.style.display = 'none';
-          if (chatMain) chatMain.style.display = 'flex';
-          syncRegenerateVisibility();
-          loadHistory();
+        if (mergeBtn) {
+          mergeBtn.addEventListener('click', () => {
+            branchAction(`/news/branch/${branchId}/merge`, mergeBtn, 'Merging branch...', 'Branch merged.');
+          });
+        }
+        if (closeBtn) {
+          closeBtn.addEventListener('click', () => {
+            branchAction(`/news/branch/${branchId}/close`, closeBtn, 'Closing branch...', 'Branch closed.');
+          });
         }
 
-        async function doRegenerate() {
-          if (!confirm('Regenerate tutorial? This will queue a new generation pass.')) return;
-          regenBtn.disabled = true;
-          regenBtn.textContent = 'Queued...';
+        async function refreshReviewControls() {
+          if (!reviewMode || !reviewPrevBtn || !reviewNextBtn || !reviewDismissBtn || !reviewPosEl) return;
+          const token = authToken();
+          if (!token) {
+            reviewPrevBtn.disabled = true;
+            reviewNextBtn.disabled = true;
+            reviewDismissBtn.disabled = true;
+            reviewPosEl.textContent = 'Sign in to review';
+            return;
+          }
           try {
-            const res = await fetch('/news/pr/' + prId + '/regenerate', {
-              method: 'POST',
-              headers: { 'Authorization': 'Bearer ' + window.pikaAuth.getToken() },
+            const res = await fetch(`/news/api/inbox/neighbors/${branchId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
             });
-            if (res.status === 401) { handleExpiredSession(); return; }
-            if (res.status === 403) {
-              regenBtn.textContent = 'Regenerate';
-              regenBtn.disabled = false;
-              alert('Admin access required to regenerate tutorials.');
+            if (res.status === 401 || res.status === 403) {
+              reviewPrevBtn.disabled = true;
+              reviewNextBtn.disabled = true;
+              reviewDismissBtn.disabled = true;
+              reviewPosEl.textContent = 'Review access unavailable';
               return;
             }
+            if (!res.ok) throw new Error('failed to load review neighbors');
             const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Regenerate failed');
-            regenBtn.textContent = 'Queued!';
-            setTimeout(() => location.reload(), 3000);
-          } catch (e) {
-            regenBtn.textContent = 'Regenerate';
-            regenBtn.disabled = false;
-            alert('Error: ' + e.message);
+            reviewPrevBtn.disabled = !data.prev;
+            reviewNextBtn.disabled = !data.next;
+            reviewDismissBtn.disabled = false;
+            reviewPrevBtn.dataset.targetId = data.prev || '';
+            reviewNextBtn.dataset.targetId = data.next || '';
+            reviewPosEl.textContent = data.total ? `${data.position} / ${data.total}` : '';
+          } catch (err) {
+            reviewPrevBtn.disabled = true;
+            reviewNextBtn.disabled = true;
+            reviewDismissBtn.disabled = true;
+            reviewPosEl.textContent = err.message || String(err);
           }
         }
 
-        async function sendMessage() {
-          const msg = chatInput.value.trim();
-          if (!msg) return;
-          chatInput.value = '';
-          chatSend.disabled = true;
-          addMessage('user', msg);
-          showStatus('Thinking...');
-
+        async function dismissCurrentReviewItem() {
+          const token = authToken();
+          if (!token) return;
+          reviewDismissBtn.disabled = true;
           try {
-            const res = await fetch('/news/pr/' + prId + '/chat', {
+            const neighborsRes = await fetch(`/news/api/inbox/neighbors/${branchId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (!neighborsRes.ok) throw new Error('failed to load review neighbors');
+            const neighbors = await neighborsRes.json();
+            const nextTarget = neighbors.next || neighbors.prev;
+
+            const dismissRes = await fetch('/news/api/inbox/dismiss', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + window.pikaAuth.getToken(),
+                'Authorization': 'Bearer ' + token
               },
-              body: JSON.stringify({ message: msg }),
+              body: JSON.stringify({ pr_ids: [branchId] })
             });
-            hideStatus();
-            if (res.status === 401 || res.status === 403) { handleExpiredSession(); return; }
-            if (!res.ok) {
-              const err = await res.json();
-              throw new Error(err.error || 'Send failed');
+            if (!dismissRes.ok) {
+              const data = await dismissRes.json().catch(() => ({}));
+              throw new Error(data.error || 'dismiss failed');
             }
-            const data = await res.json();
-            addMessage('assistant', data.content);
-          } catch (e) {
-            showStatus('Error: ' + e.message);
-          } finally {
-            chatSend.disabled = false;
-            chatInput.focus();
+
+            if (nextTarget) {
+              window.location.href = `/news/inbox/review/${nextTarget}`;
+            } else {
+              window.location.href = '/news/inbox';
+            }
+          } catch (err) {
+            reviewDismissBtn.disabled = false;
+            reviewPosEl.textContent = err.message || String(err);
           }
         }
 
-        if (regenBtn) regenBtn.addEventListener('click', doRegenerate);
-        if (chatSend) chatSend.addEventListener('click', sendMessage);
-        if (chatInput) chatInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-        });
-
-        // React to auth event from base nav
-        window.addEventListener('pika-auth', () => onAuthed());
-        // Check if already authed
-        if (window.pikaAuth && window.pikaAuth.isAuthed()) {
-          onAuthed();
-        } else {
-          syncRegenerateVisibility();
+        function navigateReview(targetId) {
+          if (!targetId) return;
+          window.location.href = `/news/inbox/review/${targetId}`;
         }
 
-        // --- Resize handle ---
-        var handle = document.getElementById('chat-resize-handle');
-        if (handle && sidebar) {
-          var savedWidth = localStorage.getItem('pika_news_chat_width');
-          if (savedWidth) sidebar.style.width = savedWidth + 'px';
-
-          var startX, startW;
-          handle.addEventListener('mousedown', function (e) {
-            e.preventDefault();
-            startX = e.clientX;
-            startW = sidebar.offsetWidth;
-            handle.classList.add('dragging');
-            sidebar.style.transition = 'none';
-            document.addEventListener('mousemove', onDrag);
-            document.addEventListener('mouseup', onUp);
+        if (reviewMode) {
+          if (reviewPrevBtn) {
+            reviewPrevBtn.addEventListener('click', () => navigateReview(reviewPrevBtn.dataset.targetId));
+          }
+          if (reviewNextBtn) {
+            reviewNextBtn.addEventListener('click', () => navigateReview(reviewNextBtn.dataset.targetId));
+          }
+          if (reviewDismissBtn) {
+            reviewDismissBtn.addEventListener('click', dismissCurrentReviewItem);
+          }
+          window.addEventListener('keydown', (event) => {
+            if (event.key === '[' && reviewPrevBtn && reviewPrevBtn.dataset.targetId) {
+              navigateReview(reviewPrevBtn.dataset.targetId);
+            }
+            if (event.key === ']' && reviewNextBtn && reviewNextBtn.dataset.targetId) {
+              navigateReview(reviewNextBtn.dataset.targetId);
+            }
+            if ((event.key === 'd' || event.key === 'D') && reviewDismissBtn && !reviewDismissBtn.disabled) {
+              dismissCurrentReviewItem();
+            }
           });
-          function onDrag(e) {
-            var newW = startW - (e.clientX - startX);
-            if (newW < 200) newW = 200;
-            if (newW > 800) newW = 800;
-            sidebar.style.width = newW + 'px';
-          }
-          function onUp() {
-            handle.classList.remove('dragging');
-            sidebar.style.transition = '';
-            localStorage.setItem('pika_news_chat_width', sidebar.offsetWidth);
-            document.removeEventListener('mousemove', onDrag);
-            document.removeEventListener('mouseup', onUp);
-          }
+          refreshReviewControls();
         }
 
-        // --- Toggle chat: Cmd+. / Ctrl+. ---
-        var chatHeader = document.getElementById('chat-header');
-        if (chatHeader) {
-          var mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '\u2318' : 'Ctrl';
-          var kbd = document.createElement('kbd');
-          kbd.textContent = mod + '.';
-          kbd.style.cssText = 'float:right;font-size:0.7rem;opacity:0.5;font-weight:normal;';
-          chatHeader.appendChild(kbd);
-        }
-
-        if (localStorage.getItem('pika_news_chat_hidden') === '1' && sidebar) {
-          sidebar.classList.add('hidden');
-        }
-
-        window.addEventListener('keydown', function (e) {
-          if (e.key === '.' && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
-            e.preventDefault();
-            if (!sidebar) return;
-            sidebar.classList.toggle('hidden');
-            localStorage.setItem('pika_news_chat_hidden', sidebar.classList.contains('hidden') ? '1' : '0');
-          }
-        });
-      })();
-
-      // Auto-refresh while generation is in progress
-      (function () {
-        var status = '{{ generation_status }}';
-        if (status === 'generating' || status === 'pending') {
-          setTimeout(function () { location.reload(); }, 10000);
-        }
-      })();
-
-      // Review mode: inbox navigation
-      (function () {
-        var prId = window.location.pathname.match(/\/news\/inbox\/review\/(\d+)/);
-        if (!prId) return;
-        prId = prId[1];
-
-        var prevBtn = document.getElementById('review-prev');
-        var nextBtn = document.getElementById('review-next');
-        var dismissBtn = document.getElementById('review-dismiss');
-        var posEl = document.getElementById('review-pos');
-        var reviewState = null;
-
-        if (!prevBtn || !nextBtn || !dismissBtn || !posEl) return;
-
-        function getToken() {
-          return window.pikaAuth && window.pikaAuth.getToken();
-        }
-
-        function renderReviewContext(data) {
-          reviewState = data;
-          prevBtn.disabled = !data || data.prev === null;
-          nextBtn.disabled = !data || data.next === null;
-          prevBtn.onclick = data && data.prev !== null
-            ? function () { window.location.href = '/news/inbox/review/' + data.prev; }
-            : null;
-          nextBtn.onclick = data && data.next !== null
-            ? function () { window.location.href = '/news/inbox/review/' + data.next; }
-            : null;
-
-          if (!data || !data.total) {
-            posEl.textContent = '';
-            return;
-          }
-
-          var remaining = Math.max(data.total - data.position, 0);
-          posEl.textContent = data.position + ' / ' + data.total + ' · ' + remaining + ' left';
-        }
-
-        async function loadReviewContext() {
-          var token = getToken();
-          if (!token) {
-            renderReviewContext(null);
-            return null;
-          }
-          try {
-            var res = await fetch('/news/api/inbox/neighbors/' + prId, {
-              headers: { 'Authorization': 'Bearer ' + token }
-            });
-            if (!res.ok) {
-              renderReviewContext(null);
-              return null;
-            }
-            var data = await res.json();
-            renderReviewContext(data);
-            return data;
-          } catch (e) {
-            renderReviewContext(null);
-            return null;
-          }
-        }
-
-        dismissBtn.addEventListener('click', async function () {
-          if (dismissBtn.disabled) return;
-          var token = getToken();
-          if (!token) { alert('Sign in first.'); return; }
-
-          dismissBtn.disabled = true;
-          var context = await loadReviewContext();
-
-          try {
-            var res = await fetch('/news/api/inbox/dismiss', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-              body: JSON.stringify({ pr_ids: [parseInt(prId)] }),
-            });
-            if (!res.ok) throw new Error('Dismiss failed');
-            if (context && context.next !== null) {
-              window.location.href = '/news/inbox/review/' + context.next;
-              return;
-            }
-            if (context && context.prev !== null) {
-              window.location.href = '/news/inbox/review/' + context.prev;
-              return;
-            }
-            window.location.href = '/news/inbox';
-          } catch (e) {
-            dismissBtn.disabled = false;
-            alert('Error: ' + e.message);
-          }
-        });
-
-        // Keyboard shortcuts: j/k for next/prev
-        window.addEventListener('keydown', function (e) {
-          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-          if (e.key === 'j' && !nextBtn.disabled) nextBtn.click();
-          if (e.key === 'k' && !prevBtn.disabled) prevBtn.click();
-          if (e.key === 'x') dismissBtn.click();
-        });
-
-        if (window.pikaAuth && window.pikaAuth.isAuthed()) {
-          loadReviewContext();
-        } else {
-          window.addEventListener('pika-auth', function () { loadReviewContext(); });
-        }
+        window.addEventListener('pika-auth', showActions);
+        window.addEventListener('pika-auth', refreshReviewControls);
+        showActions();
       })();
     </script>
 {% endblock %}

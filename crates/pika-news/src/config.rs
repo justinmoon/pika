@@ -14,10 +14,15 @@ pub const DEFAULT_RETRY_BACKOFF_SECS: u64 = 120;
 pub const DEFAULT_WEBHOOK_SECRET_ENV: &str = "PIKA_NEWS_WEBHOOK_SECRET";
 pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 pub const DEFAULT_BIND_PORT: u16 = 8787;
+pub const DEFAULT_FORGE_REPO: &str = "sledtools/pika";
+pub const DEFAULT_DEFAULT_BRANCH: &str = "master";
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct Config {
     pub repos: Vec<String>,
+    #[serde(default)]
+    pub forge_repo: Option<ForgeRepoConfig>,
     #[serde(default = "default_poll_interval_secs")]
     pub poll_interval_secs: u64,
     #[serde(default = "default_model")]
@@ -44,9 +49,40 @@ pub struct Config {
     pub bootstrap_admin_npubs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ForgeRepoConfig {
+    #[serde(default = "default_forge_repo")]
+    pub repo: String,
+    pub canonical_git_dir: String,
+    #[serde(default = "default_default_branch")]
+    pub default_branch: String,
+    #[serde(default = "default_ci_command")]
+    pub ci_command: Vec<String>,
+    #[serde(default)]
+    pub hook_url: Option<String>,
+}
+
 impl Config {
     pub fn effective_bootstrap_admin_npubs(&self) -> Vec<String> {
         self.bootstrap_admin_npubs.clone()
+    }
+
+    pub fn effective_forge_repo(&self) -> Option<ForgeRepoConfig> {
+        self.forge_repo.clone().map(|mut forge| {
+            if forge.repo.trim().is_empty() {
+                forge.repo = DEFAULT_FORGE_REPO.to_string();
+            }
+            if forge.default_branch.trim().is_empty() {
+                forge.default_branch = DEFAULT_DEFAULT_BRANCH.to_string();
+            }
+            if forge.ci_command.is_empty() {
+                forge.ci_command = default_ci_command();
+            }
+            if forge.hook_url.is_none() {
+                forge.hook_url = Some(format!("http://127.0.0.1:{}/news/webhook", self.bind_port));
+            }
+            forge
+        })
     }
 }
 
@@ -80,6 +116,18 @@ fn default_bind_address() -> String {
 
 fn default_bind_port() -> u16 {
     DEFAULT_BIND_PORT
+}
+
+fn default_forge_repo() -> String {
+    DEFAULT_FORGE_REPO.to_string()
+}
+
+fn default_default_branch() -> String {
+    DEFAULT_DEFAULT_BRANCH.to_string()
+}
+
+fn default_ci_command() -> Vec<String> {
+    vec!["just".to_string(), "pre-merge".to_string()]
 }
 
 fn default_github_token_env() -> String {
@@ -116,6 +164,10 @@ worker_concurrency = 3
 retry_backoff_secs = 90
 bind_address = "0.0.0.0"
 bind_port = 8080
+[forge_repo]
+canonical_git_dir = "/srv/pika.git"
+default_branch = "master"
+ci_command = ["just", "pre-merge"]
 "#;
 
         let parsed: Config = toml::from_str(raw).expect("parse config TOML");
@@ -130,6 +182,11 @@ bind_port = 8080
         assert_eq!(parsed.retry_backoff_secs, 90);
         assert_eq!(parsed.bind_address, "0.0.0.0");
         assert_eq!(parsed.bind_port, 8080);
+        let forge = parsed.forge_repo.expect("forge repo configured");
+        assert_eq!(forge.repo, super::DEFAULT_FORGE_REPO);
+        assert_eq!(forge.canonical_git_dir, "/srv/pika.git");
+        assert_eq!(forge.default_branch, "master");
+        assert_eq!(forge.ci_command, vec!["just", "pre-merge"]);
     }
 
     #[test]
@@ -137,6 +194,25 @@ bind_port = 8080
         let raw = r#"repos = ["test/repo"]"#;
         let parsed: Config = toml::from_str(raw).expect("parse minimal config");
         assert_eq!(parsed.webhook_secret_env, super::DEFAULT_WEBHOOK_SECRET_ENV);
+    }
+
+    #[test]
+    fn forge_repo_defaults_hook_url_and_ci_command() {
+        let raw = r#"
+repos = ["test/repo"]
+bind_port = 9999
+[forge_repo]
+canonical_git_dir = "/srv/test.git"
+"#;
+        let parsed: Config = toml::from_str(raw).expect("parse minimal config");
+        let forge = parsed.effective_forge_repo().expect("forge repo");
+        assert_eq!(forge.repo, super::DEFAULT_FORGE_REPO);
+        assert_eq!(forge.default_branch, super::DEFAULT_DEFAULT_BRANCH);
+        assert_eq!(forge.ci_command, vec!["just", "pre-merge"]);
+        assert_eq!(
+            forge.hook_url.as_deref(),
+            Some("http://127.0.0.1:9999/news/webhook")
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{% block title %}pika-news{% endblock %}</title>
+    <title>{% block title %}pika forge{% endblock %}</title>
     {% block head_extra %}{% endblock %}
     <style>
       :root {
@@ -63,7 +63,7 @@
   </head>
   <body>
     <nav class="site-nav">
-      <a href="/news" class="nav-brand">pika-news</a>
+      <a href="/news" class="nav-brand">pika forge</a>
       <div class="nav-right">
         {% block nav_right_extra %}{% endblock %}
         <span id="auth-actions">
@@ -99,11 +99,13 @@
         let authToken = sessionStorage.getItem('pika_news_token');
         let savedNpub = sessionStorage.getItem('pika_news_npub');
         let savedIsAdmin = sessionStorage.getItem('pika_news_is_admin') === '1';
+        let savedCanForgeWrite = sessionStorage.getItem('pika_news_can_forge_write') === '1';
 
         window.pikaAuth = {
           getToken: function () { return sessionStorage.getItem('pika_news_token'); },
           getNpub: function () { return sessionStorage.getItem('pika_news_npub'); },
           isAdmin: function () { return sessionStorage.getItem('pika_news_is_admin') === '1'; },
+          canForgeWrite: function () { return sessionStorage.getItem('pika_news_can_forge_write') === '1'; },
           isAuthed: function () { return !!sessionStorage.getItem('pika_news_token'); },
           clear: clearAuth,
         };
@@ -118,6 +120,7 @@
           sessionStorage.removeItem('pika_news_token');
           sessionStorage.removeItem('pika_news_npub');
           sessionStorage.removeItem('pika_news_is_admin');
+          sessionStorage.removeItem('pika_news_can_forge_write');
           authActions.style.display = '';
           userActions.style.display = 'none';
           setAdminVisible(false);
@@ -126,7 +129,7 @@
           loginBtn.disabled = false;
         }
 
-        function showAuthed(npub, isAdmin) {
+        function showAuthed(npub, isAdmin, canForgeWrite) {
           authActions.style.display = 'none';
           userActions.style.display = 'inline';
           const short = npub && npub.length > 20 ? npub.slice(0, 10) + '...' + npub.slice(-6) : (npub || '');
@@ -134,7 +137,7 @@
           npubDisplay.title = npub || '';
           setAdminVisible(!!isAdmin);
           // Dispatch event so page-specific JS can react
-          window.dispatchEvent(new CustomEvent('pika-auth', { detail: { npub: npub, isAdmin: !!isAdmin } }));
+          window.dispatchEvent(new CustomEvent('pika-auth', { detail: { npub: npub, isAdmin: !!isAdmin, canForgeWrite: !!canForgeWrite } }));
           // Fetch inbox count for badge
           fetchInboxCount();
         }
@@ -183,7 +186,8 @@
               }
               sessionStorage.setItem('pika_news_npub', data.npub || '');
               sessionStorage.setItem('pika_news_is_admin', data.is_admin ? '1' : '0');
-              showAuthed(data.npub, data.is_admin);
+              sessionStorage.setItem('pika_news_can_forge_write', data.can_forge_write ? '1' : '0');
+              showAuthed(data.npub, data.is_admin, data.can_forge_write);
             })
             .catch(function () {});
         }
@@ -219,11 +223,12 @@
               const err = await verifyRes.json();
               throw new Error(err.error || 'Verification failed');
             }
-            const { token, npub, is_admin } = await verifyRes.json();
+            const { token, npub, is_admin, can_forge_write } = await verifyRes.json();
             sessionStorage.setItem('pika_news_token', token);
             sessionStorage.setItem('pika_news_npub', npub || pubkey);
             sessionStorage.setItem('pika_news_is_admin', is_admin ? '1' : '0');
-            showAuthed(npub || pubkey, !!is_admin);
+            sessionStorage.setItem('pika_news_can_forge_write', can_forge_write ? '1' : '0');
+            showAuthed(npub || pubkey, !!is_admin, !!can_forge_write);
           } catch (e) {
             loginBtn.textContent = 'Sign in with Nostr';
             loginBtn.disabled = false;
@@ -234,7 +239,7 @@
         loginBtn.addEventListener('click', doLogin);
 
         if (authToken && savedNpub) {
-          showAuthed(savedNpub, savedIsAdmin);
+          showAuthed(savedNpub, savedIsAdmin, savedCanForgeWrite);
           refreshSessionInfo();
         }
       })();

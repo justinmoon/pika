@@ -16,11 +16,14 @@ use sha2::Sha256;
 use tokio::sync::Notify;
 
 use crate::auth::{normalize_npub, AuthState};
+use crate::branch_store::{BranchCiRunRecord, BranchDetailRecord, BranchFeedItem};
+use crate::ci;
 use crate::config::Config;
+use crate::forge;
 use crate::model;
 use crate::poller;
 use crate::render::is_safe_http_url;
-use crate::storage::{ChatAllowlistEntry, FeedItem, InboxReviewContext, PrDetailRecord, Store};
+use crate::storage::{ChatAllowlistEntry, InboxReviewContext, Store};
 use crate::tutorial::TutorialDoc;
 use crate::worker;
 
@@ -38,7 +41,7 @@ struct AppState {
 #[template(path = "feed.html")]
 struct FeedTemplate {
     open_items: Vec<FeedItemView>,
-    merged_items: Vec<FeedItemView>,
+    history_items: Vec<FeedItemView>,
 }
 
 #[derive(Template)]
@@ -46,16 +49,20 @@ struct FeedTemplate {
 struct DetailTemplate {
     page_title: String,
     repo: String,
-    pr_number: i64,
-    github_url: String,
+    branch_id: i64,
+    branch_name: String,
+    target_branch: String,
     updated_at: String,
-    pr_state: String,
-    generation_status: String,
+    branch_state: String,
+    tutorial_status: String,
+    ci_status: String,
+    merge_commit_sha: Option<String>,
     executive_html: Option<String>,
     media_links: Vec<MediaLinkView>,
     error_message: Option<String>,
     steps: Vec<StepView>,
     diff_json: Option<String>,
+    ci_runs: Vec<CiRunView>,
     review_mode: bool,
 }
 
@@ -69,14 +76,14 @@ struct AdminTemplate {}
 
 #[derive(Clone)]
 struct FeedItemView {
-    pr_id: i64,
+    branch_id: i64,
     repo: String,
-    pr_number: i64,
+    branch_name: String,
     title: String,
-    url: String,
     state: String,
     updated_at: String,
-    generation_status: String,
+    tutorial_status: String,
+    ci_status: String,
 }
 
 #[derive(Clone)]
@@ -92,6 +99,18 @@ struct StepView {
 struct MediaLinkView {
     href: String,
     label: String,
+}
+
+#[derive(Clone)]
+struct CiRunView {
+    id: i64,
+    source_head_sha: String,
+    entrypoint: String,
+    status: String,
+    log_text: Option<String>,
+    created_at: String,
+    started_at: Option<String>,
+    finished_at: Option<String>,
 }
 
 pub async fn serve(
@@ -120,10 +139,28 @@ pub async fn serve(
 
     let poll_notify = Arc::new(Notify::new());
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
-    if webhook_secret.is_some() {
-        eprintln!("webhook: signature verification enabled");
-    } else {
-        eprintln!("webhook: no secret configured, endpoint disabled");
+    if let Some(forge_repo) = config.effective_forge_repo() {
+        let secret = webhook_secret
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("forge mode requires {}", config.webhook_secret_env))?;
+        forge::ensure_canonical_repo(&forge_repo).with_context(|| {
+            format!(
+                "ensure canonical bare repo exists at {}",
+                forge_repo.canonical_git_dir
+            )
+        })?;
+        forge::install_hooks(&forge_repo, secret).with_context(|| {
+            format!(
+                "install canonical git hooks in {}",
+                forge_repo.canonical_git_dir
+            )
+        })?;
+        eprintln!(
+            "forge: canonical_repo={} default_branch={} ci={}",
+            forge_repo.canonical_git_dir,
+            forge_repo.default_branch,
+            forge_repo.ci_command.join(" ")
+        );
     }
     let state = Arc::new(AppState {
         store,
@@ -143,22 +180,24 @@ pub async fn serve(
                 (
                     poller::poll_once_limited(&state.store, &state.config, state.max_prs),
                     worker::run_generation_pass(&state.store, &state.config),
+                    ci::run_ci_pass(&state.store, &state.config),
                 )
             })
             .await
             {
-                Ok((poll_result, worker_result)) => {
+                Ok((poll_result, worker_result, ci_result)) => {
                     match poll_result {
                         Ok(pr)
-                            if pr.prs_seen > 0
+                            if pr.branches_seen > 0
                                 || pr.queued_regenerations > 0
                                 || pr.stale_closed > 0 =>
                         {
                             eprintln!(
-                                "poll: repos={} prs_seen={} queued={} head_changes={} stale_closed={}",
+                                "poll: repos={} branches_seen={} queued_tutorials={} queued_ci={} head_changes={} stale_closed={}",
                                 pr.repos_polled,
-                                pr.prs_seen,
+                                pr.branches_seen,
                                 pr.queued_regenerations,
+                                pr.queued_ci_runs,
                                 pr.head_sha_changes,
                                 pr.stale_closed
                             );
@@ -180,6 +219,18 @@ pub async fn serve(
                             eprintln!("pika-news background worker error: {}", err);
                         }
                     }
+                    match ci_result {
+                        Ok(ci) if ci.claimed > 0 => {
+                            eprintln!(
+                                "ci: claimed={} succeeded={} failed={}",
+                                ci.claimed, ci.succeeded, ci.failed
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            eprintln!("pika-news ci runner error: {}", err);
+                        }
+                    }
                 }
                 Err(err) => {
                     eprintln!("pika-news background task join error: {}", err);
@@ -198,7 +249,10 @@ pub async fn serve(
     let app = Router::new()
         .route("/", get(feed_handler))
         .route("/news", get(feed_handler))
+        .route("/news/branch/:pr_id", get(detail_handler))
         .route("/news/pr/:pr_id", get(detail_handler))
+        .route("/news/branch/:pr_id/merge", post(merge_handler))
+        .route("/news/branch/:pr_id/close", post(close_handler))
         .route("/news/inbox", get(inbox_handler))
         .route("/news/admin", get(admin_handler))
         .route("/news/inbox/review/:pr_id", get(inbox_review_handler))
@@ -240,7 +294,7 @@ pub async fn serve(
 
 async fn feed_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let store = state.store.clone();
-    let items = match tokio::task::spawn_blocking(move || store.list_feed_items()).await {
+    let items = match tokio::task::spawn_blocking(move || store.list_branch_feed_items()).await {
         Ok(Ok(items)) => items,
         Ok(Err(err)) => {
             return (
@@ -259,20 +313,20 @@ async fn feed_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     };
 
     let mut open_items = Vec::new();
-    let mut merged_items = Vec::new();
+    let mut history_items = Vec::new();
 
     for item in items {
         let view = map_feed_item(item);
         if view.state == "open" {
             open_items.push(view);
-        } else if view.state == "merged" {
-            merged_items.push(view);
+        } else {
+            history_items.push(view);
         }
     }
 
     let template = FeedTemplate {
         open_items,
-        merged_items,
+        history_items,
     };
 
     match template.render() {
@@ -301,19 +355,28 @@ async fn inbox_review_handler(
 
 async fn detail_page(
     state: Arc<AppState>,
-    pr_id: i64,
+    branch_id: i64,
     review_mode: bool,
 ) -> axum::response::Response {
-    let store = state.store.clone();
-    let detail = match tokio::task::spawn_blocking(move || store.get_pr_detail(pr_id)).await {
+    let detail_store = state.store.clone();
+    let runs_store = state.store.clone();
+    let detail = match tokio::task::spawn_blocking(move || {
+        detail_store.get_branch_detail(branch_id)
+    })
+    .await
+    {
         Ok(Ok(Some(record))) => record,
         Ok(Ok(None)) => {
-            return (StatusCode::NOT_FOUND, format!("PR {} not found", pr_id)).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                format!("branch {} not found", branch_id),
+            )
+                .into_response();
         }
         Ok(Err(err)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to query PR detail: {}", err),
+                format!("failed to query branch detail: {}", err),
             )
                 .into_response();
         }
@@ -325,8 +388,28 @@ async fn detail_page(
                 .into_response();
         }
     };
+    let ci_runs =
+        match tokio::task::spawn_blocking(move || runs_store.list_branch_ci_runs(branch_id, 8))
+            .await
+        {
+            Ok(Ok(runs)) => runs,
+            Ok(Err(err)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to query branch ci runs: {}", err),
+                )
+                    .into_response();
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("ci worker task failed: {}", err),
+                )
+                    .into_response();
+            }
+        };
 
-    match render_detail_template(detail, review_mode) {
+    match render_detail_template(detail, ci_runs, review_mode) {
         Ok(template) => match template.render() {
             Ok(rendered) => Html(rendered).into_response(),
             Err(err) => (
@@ -343,21 +426,22 @@ async fn detail_page(
     }
 }
 
-fn map_feed_item(item: FeedItem) -> FeedItemView {
+fn map_feed_item(item: BranchFeedItem) -> FeedItemView {
     FeedItemView {
-        pr_id: item.pr_id,
+        branch_id: item.branch_id,
         repo: item.repo,
-        pr_number: item.pr_number,
+        branch_name: item.branch_name,
         title: item.title,
-        url: item.url,
         state: item.state,
         updated_at: item.updated_at,
-        generation_status: item.generation_status,
+        tutorial_status: item.tutorial_status,
+        ci_status: item.ci_status,
     }
 }
 
 fn render_detail_template(
-    record: PrDetailRecord,
+    record: BranchDetailRecord,
+    ci_runs: Vec<BranchCiRunRecord>,
     review_mode: bool,
 ) -> anyhow::Result<DetailTemplate> {
     let mut steps = Vec::new();
@@ -393,17 +477,19 @@ fn render_detail_template(
     }
 
     Ok(DetailTemplate {
-        page_title: format!("{} #{}: {}", record.repo, record.pr_number, record.title),
+        page_title: format!(
+            "{} #{}: {}",
+            record.repo, record.branch_id, record.branch_name
+        ),
         repo: record.repo,
-        pr_number: record.pr_number,
-        github_url: if is_safe_http_url(&record.url) {
-            record.url
-        } else {
-            "#".to_string()
-        },
+        branch_id: record.branch_id,
+        branch_name: record.branch_name,
+        target_branch: record.target_branch,
         updated_at: record.updated_at,
-        pr_state: record.pr_state,
-        generation_status: record.generation_status,
+        branch_state: record.branch_state,
+        tutorial_status: record.tutorial_status,
+        ci_status: record.ci_status,
+        merge_commit_sha: record.merge_commit_sha,
         executive_html,
         media_links,
         error_message: record.error_message,
@@ -417,8 +503,282 @@ fn render_detail_template(
                 .unwrap_or_default()
                 .replace("</", r"<\/")
         }),
+        ci_runs: ci_runs
+            .into_iter()
+            .map(|run| CiRunView {
+                id: run.id,
+                source_head_sha: run.source_head_sha,
+                entrypoint: run.entrypoint,
+                status: run.status,
+                log_text: run.log_text,
+                created_at: run.created_at,
+                started_at: run.started_at,
+                finished_at: run.finished_at,
+            })
+            .collect(),
         review_mode,
     })
+}
+
+async fn merge_handler(
+    State(state): State<Arc<AppState>>,
+    Path(branch_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let npub = match require_trusted_auth(&state.auth, &headers) {
+        Ok(npub) => npub,
+        Err(resp) => return resp,
+    };
+    let Some(forge_repo) = state.config.effective_forge_repo() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "forge repo is not configured"})),
+        )
+            .into_response();
+    };
+
+    let store = state.store.clone();
+    let target = match tokio::task::spawn_blocking(move || {
+        store.get_branch_action_target(branch_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(target))) => target,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "branch not found"})),
+            )
+                .into_response();
+        }
+        Ok(Err(err)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    if target.branch_state != "open" {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "only open branches can be merged"})),
+        )
+            .into_response();
+    }
+
+    let current_head = match forge::current_branch_head(&forge_repo, &target.branch_name) {
+        Ok(Some(head)) => head,
+        Ok(None) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "branch ref no longer exists"})),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    if current_head != target.head_sha {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "branch head changed; refresh before merging"})),
+        )
+            .into_response();
+    }
+
+    let merge_outcome = match tokio::task::spawn_blocking({
+        let forge_repo = forge_repo.clone();
+        let branch_name = target.branch_name.clone();
+        let expected_head = target.head_sha.clone();
+        move || forge::merge_branch(&forge_repo, &branch_name, &expected_head)
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(err)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let merge_commit_sha = merge_outcome.merge_commit_sha.clone();
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || {
+        store.mark_branch_merged(branch_id, &npub, &merge_commit_sha)
+    })
+    .await
+    {
+        Ok(Ok(())) => {
+            state.poll_notify.notify_one();
+            Json(serde_json::json!({
+                "status": "ok",
+                "branch_id": branch_id,
+                "merge_commit_sha": merge_outcome.merge_commit_sha
+            }))
+            .into_response()
+        }
+        Ok(Err(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn close_handler(
+    State(state): State<Arc<AppState>>,
+    Path(branch_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let npub = match require_trusted_auth(&state.auth, &headers) {
+        Ok(npub) => npub,
+        Err(resp) => return resp,
+    };
+    let Some(forge_repo) = state.config.effective_forge_repo() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "forge repo is not configured"})),
+        )
+            .into_response();
+    };
+
+    let store = state.store.clone();
+    let target = match tokio::task::spawn_blocking(move || {
+        store.get_branch_action_target(branch_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(target))) => target,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "branch not found"})),
+            )
+                .into_response();
+        }
+        Ok(Err(err)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    if target.branch_state != "open" {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "only open branches can be closed"})),
+        )
+            .into_response();
+    }
+
+    let current_head = match forge::current_branch_head(&forge_repo, &target.branch_name) {
+        Ok(Some(head)) => head,
+        Ok(None) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "branch ref no longer exists"})),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    if current_head != target.head_sha {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "branch head changed; refresh before closing"})),
+        )
+            .into_response();
+    }
+
+    let close_outcome = match tokio::task::spawn_blocking({
+        let forge_repo = forge_repo.clone();
+        let branch_name = target.branch_name.clone();
+        let expected_head = target.head_sha.clone();
+        move || forge::close_branch(&forge_repo, &branch_name, &expected_head)
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(err)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || store.mark_branch_closed(branch_id, &npub)).await {
+        Ok(Ok(())) => {
+            state.poll_notify.notify_one();
+            Json(serde_json::json!({
+                "status": "ok",
+                "branch_id": branch_id,
+                "deleted": close_outcome.deleted
+            }))
+            .into_response()
+        }
+        Ok(Err(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 // --- Auth handlers ---
@@ -453,8 +813,14 @@ async fn auth_verify_handler(
     }
     match state.auth.verify_event(&body.event) {
         Ok((token, npub, is_admin)) => {
-            Json(serde_json::json!({"token": token, "npub": npub, "is_admin": is_admin}))
-                .into_response()
+            let access = state.auth.access_for_npub(&npub);
+            Json(serde_json::json!({
+                "token": token,
+                "npub": npub,
+                "is_admin": is_admin,
+                "can_forge_write": access.can_forge_write
+            }))
+            .into_response()
         }
         Err(msg) => (
             StatusCode::UNAUTHORIZED,
@@ -916,9 +1282,8 @@ async fn webhook_handler(
         }
     };
 
-    // Validate X-Hub-Signature-256 header.
     let signature = match headers
-        .get("x-hub-signature-256")
+        .get("x-pika-signature-256")
         .and_then(|v| v.to_str().ok())
     {
         Some(s) => s.to_string(),
@@ -931,7 +1296,7 @@ async fn webhook_handler(
         }
     };
 
-    if !verify_github_signature(secret, &body, &signature) {
+    if !verify_signature(secret, &body, &signature) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "invalid signature"})),
@@ -939,18 +1304,17 @@ async fn webhook_handler(
             .into_response();
     }
 
-    // Signature valid — wake the poller.
     state.poll_notify.notify_one();
-    let event_type = headers
-        .get("x-github-event")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown");
-    eprintln!("webhook: received {} event", event_type);
+    let update_count = String::from_utf8_lossy(&body)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    eprintln!("webhook: received {} ref updates", update_count);
 
     Json(serde_json::json!({"status": "ok"})).into_response()
 }
 
-fn verify_github_signature(secret: &str, payload: &[u8], signature_header: &str) -> bool {
+fn verify_signature(secret: &str, payload: &[u8], signature_header: &str) -> bool {
     let hex_sig = match signature_header.strip_prefix("sha256=") {
         Some(h) => h,
         None => return false,
@@ -1030,6 +1394,23 @@ fn require_chat_auth(
 }
 
 #[allow(clippy::result_large_err)]
+fn require_trusted_auth(
+    auth: &AuthState,
+    headers: &axum::http::HeaderMap,
+) -> Result<String, axum::response::Response> {
+    let npub = require_auth(auth, headers)?;
+    if auth.access_for_npub(&npub).can_forge_write {
+        Ok(npub)
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "trusted contributor access required"})),
+        )
+            .into_response())
+    }
+}
+
+#[allow(clippy::result_large_err)]
 fn require_admin_auth(
     auth: &AuthState,
     headers: &axum::http::HeaderMap,
@@ -1059,6 +1440,7 @@ async fn api_me_handler(
         "npub": npub,
         "is_admin": access.is_admin,
         "can_chat": access.can_chat,
+        "can_forge_write": access.can_forge_write,
     }))
     .into_response()
 }
@@ -1068,6 +1450,8 @@ struct AdminAllowlistUpsertRequest {
     npub: String,
     note: Option<String>,
     active: bool,
+    #[serde(default)]
+    can_forge_write: bool,
 }
 
 async fn api_admin_allowlist_handler(
@@ -1145,11 +1529,17 @@ async fn api_admin_allowlist_upsert_handler(
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     let active = body.active;
+    let can_forge_write = body.can_forge_write;
     let store = state.store.clone();
     match tokio::task::spawn_blocking(move || {
         let existing = store.get_chat_allowlist_entry(&npub)?;
-        let entry =
-            store.upsert_chat_allowlist_entry(&npub, active, note.as_deref(), &admin_npub)?;
+        let entry = store.upsert_chat_allowlist_entry(
+            &npub,
+            active,
+            can_forge_write,
+            note.as_deref(),
+            &admin_npub,
+        )?;
         let backfilled = if should_backfill_managed_allowlist_entry(existing.as_ref(), active) {
             store.backfill_inbox_for_npub(&npub)?
         } else {
@@ -1341,10 +1731,36 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    use askama::Template;
+
     use super::{
-        markdown_to_safe_html, should_backfill_managed_allowlist_entry, verify_github_signature,
+        markdown_to_safe_html, render_detail_template, should_backfill_managed_allowlist_entry,
+        verify_signature,
     };
+    use crate::ci;
+    use crate::config::{Config, ForgeRepoConfig};
+    use crate::forge;
+    use crate::poller;
     use crate::storage::ChatAllowlistEntry;
+    use crate::storage::Store;
+
+    fn git<P: AsRef<std::path::Path>>(cwd: P, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd.as_ref())
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn sanitizes_markdown_html_output() {
@@ -1354,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_github_signature_accepted() {
+    fn valid_signature_accepted() {
         let secret = "test-secret";
         let payload = b"hello world";
 
@@ -1366,7 +1782,7 @@ mod tests {
         let sig = hex::encode(mac.finalize().into_bytes());
         let header = format!("sha256={}", sig);
 
-        assert!(verify_github_signature(secret, payload, &header));
+        assert!(verify_signature(secret, payload, &header));
     }
 
     #[test]
@@ -1380,17 +1796,17 @@ mod tests {
         let sig = hex::encode(mac.finalize().into_bytes());
         let header = format!("sha256={}", sig);
 
-        assert!(!verify_github_signature("wrong-secret", payload, &header));
+        assert!(!verify_signature("wrong-secret", payload, &header));
     }
 
     #[test]
     fn missing_prefix_rejected() {
-        assert!(!verify_github_signature("secret", b"body", "bad-header"));
+        assert!(!verify_signature("secret", b"body", "bad-header"));
     }
 
     #[test]
     fn invalid_hex_rejected() {
-        assert!(!verify_github_signature("secret", b"body", "sha256=zzzz"));
+        assert!(!verify_signature("secret", b"body", "sha256=zzzz"));
     }
 
     #[test]
@@ -1401,6 +1817,7 @@ mod tests {
         let existing_active = ChatAllowlistEntry {
             npub: "npub1existing".to_string(),
             active: true,
+            can_forge_write: false,
             note: Some("note".to_string()),
             updated_by: "npub1admin".to_string(),
             updated_at: "2026-03-08 00:00:00".to_string(),
@@ -1422,5 +1839,137 @@ mod tests {
             Some(&existing_inactive),
             true
         ));
+    }
+
+    #[test]
+    fn merged_branch_page_renders_after_source_branch_deletion() {
+        let root = tempfile::tempdir().expect("create temp root");
+        let bare = root.path().join("pika.git");
+        let seed = root.path().join("seed");
+        let db_path = root.path().join("pika-news.db");
+
+        git(
+            root.path(),
+            &["init", "--bare", bare.to_str().expect("bare path")],
+        );
+        git(root.path(), &["init", seed.to_str().expect("seed path")]);
+        git(&seed, &["config", "user.name", "Test User"]);
+        git(&seed, &["config", "user.email", "test@example.com"]);
+        fs::write(seed.join("README.md"), "hello\n").expect("write readme");
+        fs::write(
+            seed.join("ci.sh"),
+            "#!/usr/bin/env bash\nset -euo pipefail\necho branch-ci-ok\n",
+        )
+        .expect("write ci script");
+        let mut perms = fs::metadata(seed.join("ci.sh"))
+            .expect("ci metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(seed.join("ci.sh"), perms).expect("chmod ci script");
+        git(&seed, &["add", "README.md", "ci.sh"]);
+        git(&seed, &["commit", "-m", "initial"]);
+        git(&seed, &["branch", "-M", "master"]);
+        git(
+            &seed,
+            &["remote", "add", "origin", bare.to_str().expect("bare path")],
+        );
+        git(&seed, &["push", "origin", "master"]);
+        git(&seed, &["checkout", "-b", "feature/render-history"]);
+        fs::write(seed.join("feature.txt"), "branch work\n").expect("write feature file");
+        git(&seed, &["add", "feature.txt"]);
+        git(&seed, &["commit", "-m", "branch render history"]);
+        git(&seed, &["push", "origin", "feature/render-history"]);
+
+        let store = Store::open(&db_path).expect("open store");
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: bare.to_str().expect("bare path").to_string(),
+                default_branch: "master".to_string(),
+                ci_command: vec!["./ci.sh".to_string()],
+                hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+
+        poller::poll_once_limited(&store, &config, 0).expect("sync branch from bare repo");
+        let branch = store
+            .list_branch_feed_items()
+            .expect("feed items")
+            .into_iter()
+            .find(|item| item.branch_name == "feature/render-history")
+            .expect("branch item");
+        let ci_pass = ci::run_ci_pass(&store, &config).expect("run ci pass");
+        assert_eq!(ci_pass.succeeded, 1);
+
+        let artifact_id: i64 = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("branch artifact id");
+        store
+            .mark_branch_generation_ready(
+                artifact_id,
+                r#"{"executive_summary":"ok","media_links":[],"steps":[{"title":"Step","intent":"Intent","affected_files":["feature.txt"],"evidence_snippets":["@@ -0,0 +1 @@"],"body_markdown":"body"}]}"#,
+                "<p>ok</p>",
+                &branch.head_sha,
+                "@@ -0,0 +1 @@",
+            )
+            .expect("mark artifact ready");
+
+        let forge_repo = config.effective_forge_repo().expect("forge repo");
+        let branch_target = store
+            .get_branch_action_target(branch.branch_id)
+            .expect("branch target")
+            .expect("existing branch target");
+        let merge = forge::merge_branch(
+            &forge_repo,
+            &branch_target.branch_name,
+            &branch_target.head_sha,
+        )
+        .expect("merge branch");
+        store
+            .mark_branch_merged(branch.branch_id, "npub1trusted", &merge.merge_commit_sha)
+            .expect("mark merged");
+        assert!(
+            forge::current_branch_head(&forge_repo, &branch_target.branch_name)
+                .expect("resolve branch")
+                .is_none()
+        );
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail exists");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 4)
+            .expect("ci runs");
+        let template =
+            render_detail_template(detail, ci_runs, false).expect("render detail template");
+        let rendered = template.render().expect("render html");
+        assert!(rendered.contains("feature/render-history"));
+        assert!(rendered.contains("branch-ci-ok"));
+        assert!(rendered.contains("merge commit"));
     }
 }
