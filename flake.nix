@@ -757,19 +757,21 @@ EOF
             # Point git at the repo's shared hooks directory.
             git config --local core.hooksPath .githooks 2>/dev/null || true
 
-            echo ""
-            echo "Pika dev environment ready"
-            echo "  Rust:         $(rustc --version)"
-            ${if withAndroid then ''
-            echo "  Android:      $ANDROID_HOME"
-            echo "  NDK:          $ANDROID_NDK_HOME"
-            '' else ""}
-            echo "  DATABASE_URL: $DATABASE_URL"
-            echo "  Postgres:     run 'cargo run -p pikahut -- up --profile postgres' when needed"
-            if [ "$(uname -s)" = "Darwin" ]; then
-              echo "  Xcode:        ''${DEVELOPER_DIR:-not found}"
+            if [ "''${PIKA_SHELL_QUIET:-0}" != "1" ]; then
+              echo ""
+              echo "Pika dev environment ready"
+              echo "  Rust:         $(rustc --version)"
+              ${if withAndroid then ''
+              echo "  Android:      $ANDROID_HOME"
+              echo "  NDK:          $ANDROID_NDK_HOME"
+              '' else ""}
+              echo "  DATABASE_URL: $DATABASE_URL"
+              echo "  Postgres:     run 'cargo run -p pikahut -- up --profile postgres' when needed"
+              if [ "$(uname -s)" = "Darwin" ]; then
+                echo "  Xcode:        ''${DEVELOPER_DIR:-not found}"
+              fi
+              echo ""
             fi
-            echo ""
           '';
         };
       in {

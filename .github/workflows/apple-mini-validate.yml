@@ -30,6 +30,7 @@ jobs:
       - name: Load Apple mini CI env
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          PIKA_SHELL_QUIET: "1"
         run: nix develop .#default -c ./scripts/write-pikaci-apple-github-env >> "$GITHUB_ENV"
 
       - name: Resolve Apple lane
