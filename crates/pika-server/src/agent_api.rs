@@ -1741,13 +1741,9 @@ PIKA_VM_IP=\"$(python3 - <<'PY'\n\
 import socket\n\
 \n\
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n\
-try:\n\
-    sock.connect((\"1.1.1.1\", 80))\n\
-    print(sock.getsockname()[0])\n\
-except OSError:\n\
-    pass\n\
-finally:\n\
-    sock.close()\n\
+try:\n    sock.connect((\"1.1.1.1\", 80))\n    print(sock.getsockname()[0])\n\
+except OSError:\n    pass\n\
+finally:\n    sock.close()\n\
 PY\n\
 )\"\n\
 fi\n\
