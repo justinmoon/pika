@@ -248,11 +248,6 @@ fn render_list<'a>(
     let mut items = column!().spacing(4);
 
     for (index, &child_id) in node.child_ids.iter().enumerate() {
-        let bullet = if ordered {
-            format!("{}.", index + 1)
-        } else {
-            "•".to_string()
-        };
         let child = document.nodes.get(child_id as usize);
         items = items.push(match child {
             Some(child) => render_list_item(
@@ -261,7 +256,13 @@ fn render_list<'a>(
                 message_id,
                 selected_action,
                 child,
-                Some(bullet),
+                if child.checked.is_some() {
+                    None
+                } else if ordered {
+                    Some(format!("{}.", index + 1))
+                } else {
+                    Some("•".to_string())
+                },
             ),
             None => empty_element(),
         });

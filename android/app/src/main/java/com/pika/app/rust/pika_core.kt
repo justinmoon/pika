@@ -5789,6 +5789,7 @@ enum class HypernoteAttributeValueType {
     
     STRING,
     NUMBER,
+    INVALID_NUMBER,
     BOOLEAN,
     EXPRESSION;
 

@@ -190,7 +190,7 @@ impl<'a> HypernoteDocumentBuilder<'a> {
         let node = self.ast.nodes[node_idx as usize];
         let node_type = map_node_type(node.tag);
         let is_unsupported = matches!(node_type, HypernoteNodeType::Unsupported);
-        let mut child_ids = self.child_ids(node_idx);
+        let mut child_ids = None;
         let mut value = None;
         let mut level = None;
         let mut url = None;
@@ -219,34 +219,37 @@ impl<'a> HypernoteDocumentBuilder<'a> {
             }
             NodeTag::Link => {
                 if let Some(info) = self.ast.link_view(node_idx) {
-                    child_ids = info
-                        .label_children
-                        .iter()
-                        .copied()
-                        .map(|child| self.convert_node(child))
-                        .collect();
+                    child_ids = Some(
+                        info.label_children
+                            .iter()
+                            .copied()
+                            .map(|child| self.convert_node(child))
+                            .collect(),
+                    );
                     url = Some(info.url.to_string());
                 }
             }
             NodeTag::Image => {
                 if let Some(info) = self.ast.image_view(node_idx) {
-                    child_ids = info
-                        .alt_children
-                        .iter()
-                        .copied()
-                        .map(|child| self.convert_node(child))
-                        .collect();
+                    child_ids = Some(
+                        info.alt_children
+                            .iter()
+                            .copied()
+                            .map(|child| self.convert_node(child))
+                            .collect(),
+                    );
                     url = Some(info.url.to_string());
                 }
             }
             NodeTag::MdxJsxElement | NodeTag::MdxJsxSelfClosing => {
                 if let Some(info) = self.ast.jsx_element_view(node_idx) {
-                    child_ids = info
-                        .children
-                        .iter()
-                        .copied()
-                        .map(|child| self.convert_node(child))
-                        .collect();
+                    child_ids = Some(
+                        info.children
+                            .iter()
+                            .copied()
+                            .map(|child| self.convert_node(child))
+                            .collect(),
+                    );
                     name = Some(info.name.to_string());
                     attributes = info.attrs.into_iter().map(convert_attribute).collect();
                 }
@@ -284,6 +287,8 @@ impl<'a> HypernoteDocumentBuilder<'a> {
             | NodeTag::MdxEsmExport
             | NodeTag::Document => {}
         }
+
+        let child_ids = child_ids.unwrap_or_else(|| self.child_ids(node_idx));
 
         HypernoteNode {
             id,
@@ -521,5 +526,19 @@ mod tests {
         };
 
         assert_eq!(extract_submit_actions(&document), vec!["yes"]);
+    }
+
+    #[test]
+    fn parse_hypernote_preserves_unsupported_node_metadata() {
+        let parsed = parse_hypernote("~~gone~~");
+        let unsupported = parsed
+            .document
+            .nodes
+            .iter()
+            .find(|node| node.node_type == HypernoteNodeType::Unsupported)
+            .expect("unsupported node exists");
+
+        assert_eq!(unsupported.raw_type_name.as_deref(), Some("strikethrough"));
+        assert!(!unsupported.child_ids.is_empty());
     }
 }

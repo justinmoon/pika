@@ -136,7 +136,8 @@ pub fn message_bubble<'a>(
             bubble_content =
                 push_message_content(bubble_content, &msg.segments, &msg.display_content, true);
         }
-        bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, true));
+        bubble_content =
+            bubble_content.push(timestamp_row(timestamp, &msg.delivery, !is_hypernote));
         let bubble: Element<'a, Message, Theme> = if is_hypernote {
             container(bubble_content).max_width(500).into()
         } else {

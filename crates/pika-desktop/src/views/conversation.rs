@@ -774,7 +774,49 @@ fn chat_title(chat: &ChatViewState) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Event, Message, State};
+    use pika_core::{
+        ChatMessage, ChatViewState, HypernoteData, HypernoteDocument, MessageDeliveryState,
+        MessageSegment,
+    };
     use std::collections::HashMap;
+
+    fn make_message(id: &str) -> ChatMessage {
+        ChatMessage {
+            id: id.to_string(),
+            sender_pubkey: "sender".to_string(),
+            sender_name: None,
+            content: "hello".to_string(),
+            display_content: "hello".to_string(),
+            reply_to_message_id: None,
+            mentions: vec![],
+            timestamp: 0,
+            display_timestamp: "now".to_string(),
+            is_mine: false,
+            delivery: MessageDeliveryState::Sent,
+            reactions: vec![],
+            media: vec![],
+            segments: vec![MessageSegment::Markdown {
+                text: "hello".to_string(),
+            }],
+            html_state: None,
+            hypernote: None,
+        }
+    }
+
+    fn make_chat(messages: Vec<ChatMessage>) -> ChatViewState {
+        ChatViewState {
+            chat_id: "chat-1".to_string(),
+            is_group: false,
+            group_name: None,
+            members: vec![],
+            is_admin: false,
+            messages,
+            first_unread_message_id: None,
+            can_load_older: false,
+            typing_members: vec![],
+            my_group_profile: None,
+        }
+    }
 
     #[test]
     fn hypernote_action_bubbles_up_as_event() {
@@ -808,5 +850,63 @@ mod tests {
             }
             _ => panic!("expected hypernote action event"),
         }
+    }
+
+    #[test]
+    fn clean_reply_target_removes_missing_message_submissions() {
+        let mut state = State::new();
+        state.update(Message::HypernoteAction {
+            message_id: "msg-1".to_string(),
+            action_name: "vote".to_string(),
+            form: HashMap::new(),
+        });
+
+        state.clean_reply_target(Some(&make_chat(vec![make_message("msg-2")])));
+
+        assert!(state.submitted_hypernote_actions.is_empty());
+    }
+
+    #[test]
+    fn clean_reply_target_clears_submissions_when_chat_disappears() {
+        let mut state = State::new();
+        state.update(Message::HypernoteAction {
+            message_id: "msg-1".to_string(),
+            action_name: "vote".to_string(),
+            form: HashMap::new(),
+        });
+
+        state.clean_reply_target(None);
+
+        assert!(state.submitted_hypernote_actions.is_empty());
+    }
+
+    #[test]
+    fn clean_reply_target_drops_optimistic_entry_after_authoritative_response() {
+        let mut state = State::new();
+        state.update(Message::HypernoteAction {
+            message_id: "msg-1".to_string(),
+            action_name: "vote".to_string(),
+            form: HashMap::new(),
+        });
+
+        let mut message = make_message("msg-1");
+        message.hypernote = Some(HypernoteData {
+            ast_json: "{}".to_string(),
+            document: HypernoteDocument {
+                root_node_ids: vec![],
+                nodes: vec![],
+            },
+            declared_actions: vec!["vote".to_string()],
+            title: None,
+            default_state: None,
+            default_form_state: vec![],
+            my_response: Some("vote".to_string()),
+            response_tallies: vec![],
+            responders: vec![],
+        });
+
+        state.clean_reply_target(Some(&make_chat(vec![message])));
+
+        assert!(state.submitted_hypernote_actions.is_empty());
     }
 }

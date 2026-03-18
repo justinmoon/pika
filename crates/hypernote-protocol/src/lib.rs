@@ -422,6 +422,18 @@ mod tests {
     }
 
     #[test]
+    fn extract_submit_actions_ast_json_matches_typed_document() {
+        let parsed = parse_hypernote(
+            "# Poll\n\n<SubmitButton action=\"yes\">Yes</SubmitButton>\n<SubmitButton action=\"no\" />",
+        );
+
+        assert_eq!(
+            extract_submit_actions_from_ast_json(&parsed.ast_json),
+            extract_submit_actions(&parsed.document),
+        );
+    }
+
+    #[test]
     fn build_poll_hypernote_rejects_invalid_input() {
         assert!(build_poll_hypernote("", &["yes".into(), "no".into()]).is_none());
         assert!(build_poll_hypernote("Question", &["yes".into()]).is_none());

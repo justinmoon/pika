@@ -124,7 +124,7 @@ fn convert_attribute_value(
             (HypernoteAttributeValueType::Number, Some(value.to_string()))
         }
         hn::HypernoteAttributeValue::InvalidNumber(value) => {
-            (HypernoteAttributeValueType::Number, Some(value))
+            (HypernoteAttributeValueType::InvalidNumber, Some(value))
         }
         hn::HypernoteAttributeValue::Boolean(value) => (
             HypernoteAttributeValueType::Boolean,

@@ -116,19 +116,19 @@ Already done:
 Remaining work:
 
 1. Update
-   [HypernoteRenderer.swift](/Users/futurepaul/dev/sec/other-peoples-code/pika/ios/Sources/Views/HypernoteRenderer.swift)
+   [HypernoteRenderer.swift](../ios/Sources/Views/HypernoteRenderer.swift)
    to render from `hypernote.document` and seed local form state from
    `hypernote.defaultFormState`.
 2. Update
-   [HypernoteRenderer.kt](/Users/futurepaul/dev/sec/other-peoples-code/pika/android/app/src/main/java/com/pika/app/ui/screens/HypernoteRenderer.kt)
+   [HypernoteRenderer.kt](../android/app/src/main/java/com/pika/app/ui/screens/HypernoteRenderer.kt)
    to render from the typed document and typed default form state instead of
    local JSON parsing.
 3. Remove `ast_json` and `default_state` from
-   [state.rs](/Users/futurepaul/dev/sec/other-peoples-code/pika/rust/src/state.rs).
+   [state.rs](../rust/src/state.rs).
 4. Remove the remaining legacy JSON plumbing in
-   [hypernote.rs](/Users/futurepaul/dev/sec/other-peoples-code/pika/rust/src/hypernote.rs)
+   [hypernote.rs](../rust/src/hypernote.rs)
    and
-   [storage.rs](/Users/futurepaul/dev/sec/other-peoples-code/pika/rust/src/core/storage.rs).
+   [storage.rs](../rust/src/core/storage.rs).
 5. Regenerate bindings after the field removal.
 
 Verification:

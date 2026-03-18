@@ -451,6 +451,7 @@ pub struct HypernoteAttribute {
 pub enum HypernoteAttributeValueType {
     String,
     Number,
+    InvalidNumber,
     Boolean,
     Expression,
 }
