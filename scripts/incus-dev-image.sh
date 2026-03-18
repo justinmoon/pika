@@ -93,8 +93,12 @@ import_image() {
   scp_remote "$metadata_path" "$disk_path" "$remote_host:$remote_tmp/"
   ssh_remote "
     set -euo pipefail
-    incus image delete --project '$project_name' '$alias_name' >/dev/null 2>&1 || true
-    incus image import --project '$project_name' '$remote_tmp/$(basename "$metadata_path")' '$remote_tmp/$(basename "$disk_path")' --alias '$alias_name'
+    incus_cmd='incus'
+    if [[ \$(id -u) -ne 0 ]]; then
+      incus_cmd='sudo incus'
+    fi
+    \${incus_cmd} image delete --project '$project_name' '$alias_name' >/dev/null 2>&1 || true
+    \${incus_cmd} image import --project '$project_name' '$remote_tmp/$(basename "$metadata_path")' '$remote_tmp/$(basename "$disk_path")' --alias '$alias_name'
     rm -rf '$remote_tmp'
   "
 }
@@ -111,8 +115,12 @@ build_and_import_on_remote() {
     set -euo pipefail
     cd '$remote_tmp'
     nix build .#packages.x86_64-linux.pika-agent-incus-dev-image --out-link result
-    incus image delete --project '$project_name' '$alias_name' >/dev/null 2>&1 || true
-    incus image import --project '$project_name' result/metadata.tar.xz result/disk.qcow2 --alias '$alias_name'
+    incus_cmd='incus'
+    if [[ \$(id -u) -ne 0 ]]; then
+      incus_cmd='sudo incus'
+    fi
+    \${incus_cmd} image delete --project '$project_name' '$alias_name' >/dev/null 2>&1 || true
+    \${incus_cmd} image import --project '$project_name' result/metadata.tar.xz result/disk.qcow2 --alias '$alias_name'
   "
 }
 
