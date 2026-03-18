@@ -1434,7 +1434,7 @@ impl IncusManagedVmProvider {
         let response = self
             .request(
                 reqwest::Method::GET,
-                &["1.0", "instances", vm_id, "file"],
+                &["1.0", "instances", vm_id, "files"],
                 true,
                 request_id,
             )?
@@ -4602,7 +4602,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert_eq!(
             ready_request.path,
             format!(
-                "/1.0/instances/{instance_name}/file?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
+                "/1.0/instances/{instance_name}/files?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
             )
         );
     }
@@ -4656,7 +4656,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert_eq!(
             ready_request.path,
             format!(
-                "/1.0/instances/{vm_id}/file?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
+                "/1.0/instances/{vm_id}/files?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
             )
         );
     }
@@ -4906,7 +4906,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
         let ready_request = rx.recv().expect("captured row ready-marker request");
         assert_eq!(
             ready_request.path,
-            "/1.0/instances/vm-incus-row/file?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
+            "/1.0/instances/vm-incus-row/files?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
         );
     }
 
