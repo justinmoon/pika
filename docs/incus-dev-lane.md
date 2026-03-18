@@ -227,7 +227,7 @@ Recommended server env for canarying:
 - `PIKA_AGENT_INCUS_INSECURE_TLS=true` only if the dev endpoint uses self-signed TLS
 
 The normal repo-managed `pika-server` Nix module now supports the same canary env through host
-config plus sops-managed file secrets:
+config plus either direct file paths or sops-managed file secrets:
 
 - `incusEndpoint`
 - `incusProject`
@@ -235,11 +235,18 @@ config plus sops-managed file secrets:
 - `incusStoragePool`
 - `incusImageAlias`
 - `incusInsecureTls`
+- `incusClientCertPath`
+- `incusClientKeyPath`
+- `incusServerCertPath`
 - `incusClientCertSecret`
 - `incusClientKeySecret`
 - `incusServerCertSecret`
 
 Use that path for a real deployed canary instead of only running a local process.
+
+For the current `pika-server -> pika-build` canary, the deployed server must use an Incus endpoint
+that is reachable from `pika-server` itself. In practice that means the private tailnet address on
+`pika-build` rather than `https://pika-build:8443`, unless the server host can resolve that name.
 
 This lets operators verify:
 

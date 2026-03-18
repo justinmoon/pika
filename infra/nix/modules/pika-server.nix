@@ -7,6 +7,9 @@
 , incusStoragePool ? null
 , incusImageAlias ? null
 , incusInsecureTls ? false
+, incusClientCertPath ? null
+, incusClientKeyPath ? null
+, incusServerCertPath ? null
 , incusClientCertSecret ? null
 , incusClientKeySecret ? null
 , incusServerCertSecret ? null
@@ -30,11 +33,26 @@ let
     || incusProfile != null
     || incusStoragePool != null
     || incusImageAlias != null
+    || incusClientCertPath != null
+    || incusClientKeyPath != null
+    || incusServerCertPath != null
     || incusClientCertSecret != null
     || incusClientKeySecret != null
     || incusServerCertSecret != null
     || incusInsecureTls;
   incusTlsEnabled = incusEndpoint != null && lib.hasPrefix "https://" incusEndpoint;
+  resolvedIncusClientCertPath =
+    if incusClientCertPath != null then incusClientCertPath
+    else if incusClientCertSecret != null then config.sops.secrets.${incusClientCertSecret}.path
+    else null;
+  resolvedIncusClientKeyPath =
+    if incusClientKeyPath != null then incusClientKeyPath
+    else if incusClientKeySecret != null then config.sops.secrets.${incusClientKeySecret}.path
+    else null;
+  resolvedIncusServerCertPath =
+    if incusServerCertPath != null then incusServerCertPath
+    else if incusServerCertSecret != null then config.sops.secrets.${incusServerCertSecret}.path
+    else null;
   startPikaServer = pkgs.writeShellScript "start-pika-server" ''
     set -euo pipefail
     if [ -z "''${PIKA_ADMIN_SESSION_SECRET:-}" ]; then
@@ -72,16 +90,32 @@ in
       message = "Incus canary config on pika-server requires endpoint, project, profile, storage pool, and image alias together.";
     }
     {
+      assertion = !(incusClientCertPath != null && incusClientCertSecret != null);
+      message = "Set only one of incusClientCertPath or incusClientCertSecret.";
+    }
+    {
+      assertion = !(incusClientKeyPath != null && incusClientKeySecret != null);
+      message = "Set only one of incusClientKeyPath or incusClientKeySecret.";
+    }
+    {
+      assertion = !(incusServerCertPath != null && incusServerCertSecret != null);
+      message = "Set only one of incusServerCertPath or incusServerCertSecret.";
+    }
+    {
       assertion = (incusClientCertSecret == null) == (incusClientKeySecret == null);
       message = "Incus mTLS on pika-server requires both incusClientCertSecret and incusClientKeySecret together.";
     }
     {
-      assertion = (!incusTlsEnabled) || (incusClientCertSecret != null && incusClientKeySecret != null);
-      message = "HTTPS Incus canaries on pika-server require both incusClientCertSecret and incusClientKeySecret.";
+      assertion = (incusClientCertPath == null) == (incusClientKeyPath == null);
+      message = "Incus mTLS on pika-server requires both incusClientCertPath and incusClientKeyPath together.";
     }
     {
-      assertion = (!incusTlsEnabled) || incusInsecureTls || (incusServerCertSecret != null);
-      message = "HTTPS Incus canaries on pika-server require either incusServerCertSecret or incusInsecureTls = true.";
+      assertion = (!incusTlsEnabled) || (resolvedIncusClientCertPath != null && resolvedIncusClientKeyPath != null);
+      message = "HTTPS Incus canaries on pika-server require both a client certificate path and client key path.";
+    }
+    {
+      assertion = (!incusTlsEnabled) || incusInsecureTls || (resolvedIncusServerCertPath != null);
+      message = "HTTPS Incus canaries on pika-server require either a server certificate path or incusInsecureTls = true.";
     }
   ];
 
@@ -216,9 +250,9 @@ in
       PIKA_AGENT_INCUS_STORAGE_POOL=${incusStoragePool}
       PIKA_AGENT_INCUS_IMAGE_ALIAS=${incusImageAlias}
       ${lib.optionalString incusInsecureTls "PIKA_AGENT_INCUS_INSECURE_TLS=true"}
-      ${lib.optionalString (incusClientCertSecret != null) "PIKA_AGENT_INCUS_CLIENT_CERT_PATH=${config.sops.secrets.${incusClientCertSecret}.path}"}
-      ${lib.optionalString (incusClientKeySecret != null) "PIKA_AGENT_INCUS_CLIENT_KEY_PATH=${config.sops.secrets.${incusClientKeySecret}.path}"}
-      ${lib.optionalString (incusServerCertSecret != null) "PIKA_AGENT_INCUS_SERVER_CERT_PATH=${config.sops.secrets.${incusServerCertSecret}.path}"}
+      ${lib.optionalString (resolvedIncusClientCertPath != null) "PIKA_AGENT_INCUS_CLIENT_CERT_PATH=${resolvedIncusClientCertPath}"}
+      ${lib.optionalString (resolvedIncusClientKeyPath != null) "PIKA_AGENT_INCUS_CLIENT_KEY_PATH=${resolvedIncusClientKeyPath}"}
+      ${lib.optionalString (resolvedIncusServerCertPath != null) "PIKA_AGENT_INCUS_SERVER_CERT_PATH=${resolvedIncusServerCertPath}"}
       ''}
       # The customer managed-environment dashboard is OpenClaw-only for now.
       PIKA_AGENT_MICROVM_KIND=openclaw
