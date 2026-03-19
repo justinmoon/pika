@@ -470,11 +470,11 @@ struct AgentMicrovmArgs {
     #[arg(long, env = "PIKA_AGENT_VM_PROVIDER")]
     provider: Option<AgentVmProviderCli>,
 
-    /// Select the agent product/runtime deployed in the microVM guest.
+    /// Select the agent product/runtime deployed in the managed guest.
     #[arg(long, env = "PIKA_AGENT_MICROVM_KIND")]
     microvm_kind: Option<AgentMicrovmKindCli>,
 
-    /// Override the microVM guest backend used for agent replies.
+    /// Override the managed guest backend used for agent replies.
     /// When omitted, the backend defaults from --microvm-kind.
     #[arg(long, env = "PIKA_AGENT_MICROVM_BACKEND")]
     microvm_backend: Option<AgentMicrovmBackendCli>,
@@ -1972,7 +1972,7 @@ fn agent_startup_status_message(
 ) -> &'static str {
     match (kind, phase) {
         (_, AgentStartupPhase::Requested) => "Requesting agent...",
-        (_, AgentStartupPhase::ProvisioningVm) => "Provisioning microVM...",
+        (_, AgentStartupPhase::ProvisioningVm) => "Provisioning managed environment...",
         (_, AgentStartupPhase::BootingGuest) => "Booting guest...",
         (Some(MicrovmAgentKind::Pi), AgentStartupPhase::WaitingForServiceReady) => {
             "Starting Pi daemon and waiting for ACP service..."

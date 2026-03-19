@@ -11,15 +11,7 @@ load_local_env "$ROOT"
 # explicitly point PIKA_AGENT_API_BASE_URL or PIKA_SERVER_URL elsewhere.
 set_agent_api_base_url_default remote-demo
 require_agent_api_nsec
-export PIKA_AGENT_MICROVM_KIND="${PIKA_AGENT_MICROVM_KIND:-pi}"
-case "$PIKA_AGENT_MICROVM_KIND" in
-  openclaw)
-    set_agent_microvm_backend_default native
-    ;;
-  *)
-    set_agent_microvm_backend_default acp
-    ;;
-esac
+set_agent_runtime_defaults pi
 
 STATE_DIR="${PIKA_AGENT_DEMO_STATE_DIR:-$ROOT/.tmp/agent-cli-e2e}"
 LISTEN_TIMEOUT="${PIKA_AGENT_DEMO_LISTEN_TIMEOUT:-90}"

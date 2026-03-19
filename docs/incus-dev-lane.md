@@ -343,6 +343,39 @@ This lets operators verify:
 - existing microVM-backed rows still route to the microVM backend
 - the smoke helper is provisioning a fresh Incus environment, not just re-reading an existing owner state
 
+## CLI Incus Demo Flow
+
+The internal Incus lane is no longer dashboard-only.
+
+For a thin hosted ensure flow:
+
+```bash
+just agent-incus
+```
+
+For a real message-path demo against the hosted server:
+
+```bash
+just agent-incus-chat "hello from the Incus lane"
+```
+
+These wrappers:
+
+- default to `https://api.pikachat.org` unless `PIKA_AGENT_API_BASE_URL` or `PIKA_SERVER_URL` is set
+- request `provider=incus` explicitly
+- default to the hosted Incus lane on `pika-build`
+- use normal `pika-server` ensure or recover semantics instead of direct `vm-spawner` deletion
+
+The default demo runtime is still the Pi ACP path because it gives the shortest repeatable
+Marmot message loop. Override it with the existing runtime-selection env vars if you want to
+exercise a different managed guest:
+
+```bash
+PIKA_AGENT_MICROVM_KIND=openclaw \
+PIKA_AGENT_MICROVM_BACKEND=native \
+just agent-incus-chat "hello from OpenClaw on Incus"
+```
+
 ## Deletion Validation
 
 There is still no public v1 delete endpoint.

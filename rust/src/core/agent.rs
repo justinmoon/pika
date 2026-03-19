@@ -3,7 +3,8 @@ use std::time::Duration;
 use base64::Engine;
 use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, TagKind};
 use pika_agent_control_plane::{
-    AgentProvisionRequest, AgentStartupPhase, MicrovmAgentKind, MicrovmProvisionParams,
+    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, MicrovmAgentKind,
+    MicrovmProvisionParams, ProviderKind,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -151,19 +152,8 @@ async fn ensure_agent(
     base_url: &str,
     agent_kind: crate::state::AgentKind,
 ) -> Result<(), AgentFlowError> {
-    let body = serde_json::to_value(AgentProvisionRequest {
-        provider: None,
-        microvm: Some(MicrovmProvisionParams {
-            spawner_url: None,
-            kind: Some(match agent_kind {
-                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
-                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
-            }),
-            backend: None,
-        }),
-        incus: None,
-    })
-    .map_err(|_| AgentFlowError::InvalidResponse)?;
+    let body = serde_json::to_value(internal_managed_agent_request(agent_kind))
+        .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
         keys,
@@ -246,19 +236,8 @@ async fn recover_my_agent(
     base_url: &str,
     agent_kind: crate::state::AgentKind,
 ) -> Result<AgentStateResponse, AgentFlowError> {
-    let body = serde_json::to_value(AgentProvisionRequest {
-        provider: None,
-        microvm: Some(MicrovmProvisionParams {
-            spawner_url: None,
-            kind: Some(match agent_kind {
-                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
-                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
-            }),
-            backend: None,
-        }),
-        incus: None,
-    })
-    .map_err(|_| AgentFlowError::InvalidResponse)?;
+    let body = serde_json::to_value(internal_managed_agent_request(agent_kind))
+        .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
         keys,
@@ -329,6 +308,23 @@ fn send_progress(
             agent_npub,
         },
     )));
+}
+
+fn internal_managed_agent_request(agent_kind: crate::state::AgentKind) -> AgentProvisionRequest {
+    AgentProvisionRequest {
+        provider: Some(ProviderKind::Incus),
+        microvm: Some(MicrovmProvisionParams {
+            spawner_url: None,
+            kind: Some(match agent_kind {
+                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
+                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
+            }),
+            backend: None,
+        }),
+        // Keep the transitional runtime-selection payload explicit while making
+        // the VM substrate choice unambiguous for the shared internal flow.
+        incus: Some(IncusProvisionParams::default()),
+    }
 }
 
 fn provisioning_phase_from_startup(
@@ -421,7 +417,7 @@ pub(super) fn provisioning_status_message(phase: &crate::state::AgentProvisionin
         crate::state::AgentProvisioningPhase::Ensuring => "Requesting agent...".to_string(),
         crate::state::AgentProvisioningPhase::Requested => "Request received...".to_string(),
         crate::state::AgentProvisioningPhase::ProvisioningVm => {
-            "Provisioning microVM...".to_string()
+            "Provisioning managed environment...".to_string()
         }
         crate::state::AgentProvisioningPhase::BootingGuest => "Booting guest...".to_string(),
         crate::state::AgentProvisioningPhase::WaitingForServiceReady => {
@@ -925,7 +921,7 @@ mod tests {
     fn provisioning_status_message_uses_typed_startup_messages() {
         assert_eq!(
             provisioning_status_message(&crate::state::AgentProvisioningPhase::ProvisioningVm),
-            "Provisioning microVM..."
+            "Provisioning managed environment..."
         );
         assert_eq!(
             provisioning_status_message(&crate::state::AgentProvisioningPhase::BootingGuest),
@@ -982,6 +978,8 @@ mod tests {
         assert!(captured[1].0.starts_with("GET /v1/agents/me "));
         assert!(captured[0].1.starts_with("Nostr "));
         assert!(captured[1].1.starts_with("Nostr "));
+        assert!(captured[0].2.contains("\"provider\":\"incus\""));
+        assert!(captured[0].2.contains("\"incus\":{}"));
         assert!(captured[0].2.contains("\"kind\":\"openclaw\""));
     }
 
@@ -1072,6 +1070,8 @@ mod tests {
             .iter()
             .find(|(request_line, _, _)| request_line.starts_with("POST /v1/agents/me/recover "))
             .expect("recover request");
+        assert!(recover.2.contains("\"provider\":\"incus\""));
+        assert!(recover.2.contains("\"incus\":{}"));
         assert!(recover.2.contains("\"kind\":\"pi\""));
     }
 }

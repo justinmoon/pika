@@ -84,3 +84,30 @@ set_agent_microvm_backend_default() {
   local default_backend="${1:-acp}"
   set_default "PIKA_AGENT_MICROVM_BACKEND" "$default_backend"
 }
+
+set_agent_vm_provider_default() {
+  local provider="${1:-incus}"
+  set_default "PIKA_AGENT_VM_PROVIDER" "$provider"
+}
+
+set_agent_runtime_defaults() {
+  local default_kind="${1:-pi}"
+  set_default "PIKA_AGENT_MICROVM_KIND" "$default_kind"
+  case "${PIKA_AGENT_MICROVM_KIND}" in
+    openclaw)
+      set_agent_microvm_backend_default native
+      ;;
+    *)
+      set_agent_microvm_backend_default acp
+      ;;
+  esac
+}
+
+set_agent_incus_lane_defaults() {
+  set_agent_vm_provider_default incus
+  set_default "PIKA_AGENT_INCUS_ENDPOINT" "https://pika-build:8443"
+  set_default "PIKA_AGENT_INCUS_PROJECT" "pika-managed-agents"
+  set_default "PIKA_AGENT_INCUS_PROFILE" "pika-agent-dev"
+  set_default "PIKA_AGENT_INCUS_STORAGE_POOL" "default"
+  set_default "PIKA_AGENT_INCUS_IMAGE_ALIAS" "pika-agent/dev"
+}

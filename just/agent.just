@@ -4,6 +4,10 @@ set working-directory := '..'
 agent-microvm *ARGS="":
     ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
+# Run the hosted Incus internal-lane ensure demo (`pikachat agent new --provider incus ...`).
+agent-incus *ARGS="":
+    ./scripts/demo-agent-incus.sh {{ ARGS }}
+
 # Run the HTTP agent ensure demo with ACP microVM guest bootstrap.
 agent-microvm-acp *ARGS="":
     PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/demo-agent-microvm.sh {{ ARGS }}
@@ -19,6 +23,10 @@ agent-claw-ensure *ARGS="":
 # Ensure/reuse agent, send one message, then optionally listen for reply.
 agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
     ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
+
+# Ensure/reuse an Incus-backed agent, send one message, then optionally listen for reply.
+agent-incus-chat MESSAGE="CLI Incus demo check: reply with ACK and one short sentence." *ARGS="":
+    ./scripts/agent-demo-incus.sh "{{ MESSAGE }}" {{ ARGS }}
 
 # Tail local pika-server logs from the pikahut backend state dir.
 agent-microvm-server-logs STATE_DIR=".pikahut":

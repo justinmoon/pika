@@ -345,6 +345,8 @@ Current transition status:
   still mutates per-instance proxy devices on demand and should likely be simplified later
 - guest secret injection exists today for the internal lane and currently rides the guest bootstrap
   path; it needs a more deliberate long-term model for provenance, rotation, and auditability
+- the shared app/core path and the human CLI demo path should now select `provider=incus`
+  explicitly rather than relying on `provider: None` plus a runtime-only `microvm` payload
 - the customer dashboard path is now Incus-only internally, but the broader platform still carries
   transitional contract debt for old microVM rows and compatibility-oriented API shapes
 

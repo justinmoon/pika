@@ -76,8 +76,10 @@ info:
     @echo "  Agent HTTP demo:"
     @echo "    just agent-microvm"
     @echo "    just agent-microvm-acp         # guest daemon boots with --acp-exec"
+    @echo "    just agent-incus               # hosted Incus ensure demo"
     @echo "  Agent chat demo (ensure/reuse + send + listen):"
     @echo "    just agent-microvm-chat \"hello\""
+    @echo "    just agent-incus-chat \"hello\""
     @echo "    just agent-demo-acp \"hello\"   # full ACP-backed microVM demo"
     @echo "  Unified pikachat wrapper:"
     @echo "    just cli --help"
@@ -264,10 +266,12 @@ alias device := labs::device
 alias android-manual-qa := labs::android-manual-qa
 alias ios-manual-qa := labs::ios-manual-qa
 alias agent-microvm := agent::agent-microvm
+alias agent-incus := agent::agent-incus
 alias agent-microvm-acp := agent::agent-microvm-acp
 alias agent-pi-ensure := agent::agent-pi-ensure
 alias agent-claw-ensure := agent::agent-claw-ensure
 alias agent-microvm-chat := agent::agent-microvm-chat
+alias agent-incus-chat := agent::agent-incus-chat
 alias agent-microvm-server-logs := agent::agent-microvm-server-logs
 alias agent-microvm-vmspawner-logs := agent::agent-microvm-vmspawner-logs
 alias agent-microvm-guest-logs := agent::agent-microvm-guest-logs
