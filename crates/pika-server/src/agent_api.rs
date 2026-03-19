@@ -280,6 +280,22 @@ struct IncusOperationMetadata {
     err: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct IncusExecOperationMetadata {
+    #[serde(default)]
+    err: String,
+    #[serde(default)]
+    metadata: IncusExecOperationResult,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct IncusExecOperationResult {
+    #[serde(default, rename = "return")]
+    return_code: Option<i64>,
+    #[serde(default)]
+    output: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct IncusInstanceState {
     status: String,
@@ -2262,15 +2278,15 @@ impl IncusManagedVmProvider {
             }
         };
         let current_boot_id = match self
-            .get_instance_file(
+            .exec_instance_stdout(
                 vm_id,
-                INCUS_GUEST_BOOT_ID_PATH,
+                &["cat", INCUS_GUEST_BOOT_ID_PATH],
                 request_id,
                 "load incus guest boot id",
             )
             .await
         {
-            Ok(Some(bytes)) => match String::from_utf8(bytes) {
+            Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(value) => value.trim().to_string(),
                 Err(err) => {
                     tracing::warn!(
@@ -2281,13 +2297,6 @@ impl IncusManagedVmProvider {
                     return false;
                 }
             },
-            Ok(None) => {
-                tracing::warn!(
-                    vm_id = %vm_id,
-                    "incus guest boot id file was missing; reporting guest as not ready"
-                );
-                return false;
-            }
             Err(err) => {
                 tracing::warn!(
                     vm_id = %vm_id,
@@ -2392,6 +2401,101 @@ impl IncusManagedVmProvider {
             reqwest::StatusCode::NOT_FOUND => Ok(None),
             _ => Ok(None),
         }
+    }
+
+    async fn exec_instance_stdout(
+        &self,
+        vm_id: &str,
+        command: &[&str],
+        request_id: Option<&str>,
+        context: &str,
+    ) -> anyhow::Result<Vec<u8>> {
+        let body = serde_json::json!({
+            "command": command,
+            "interactive": false,
+            "wait-for-websocket": false,
+            "record-output": true,
+        });
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &["1.0", "instances", vm_id, "exec"],
+                true,
+                request_id,
+            )?
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("{context}: start Incus exec"))?;
+        if !response.status().is_success() {
+            return Err(self.error_from_response(response, context).await);
+        }
+        let envelope: IncusResponseEnvelope<serde_json::Value> = response
+            .json()
+            .await
+            .with_context(|| format!("{context}: decode Incus exec operation envelope"))?;
+        let operation_path = envelope
+            .operation
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .with_context(|| format!("{context}: missing Incus exec operation handle"))?;
+        let operation_url = self.operation_wait_url(operation_path)?;
+        let mut wait_request = self
+            .client
+            .get(operation_url)
+            .header(axum::http::header::ACCEPT, "application/json");
+        if let Some(request_id) = request_id {
+            wait_request = wait_request.header("x-request-id", request_id);
+        }
+        let wait_response = wait_request
+            .send()
+            .await
+            .with_context(|| format!("{context}: wait for Incus exec operation"))?;
+        if !wait_response.status().is_success() {
+            return Err(self.error_from_response(wait_response, context).await);
+        }
+        let wait_envelope: IncusResponseEnvelope<IncusExecOperationMetadata> = wait_response
+            .json()
+            .await
+            .with_context(|| format!("{context}: decode waited Incus exec operation"))?;
+        let waited = wait_envelope
+            .metadata
+            .with_context(|| format!("{context}: missing waited Incus exec metadata"))?;
+        if let Some(err) = Some(waited.err.trim()).filter(|err| !err.is_empty()) {
+            anyhow::bail!("{context}: Incus exec failed: {err}");
+        }
+        match waited.metadata.return_code {
+            Some(0) => {}
+            Some(code) => anyhow::bail!("{context}: Incus exec returned non-zero exit code {code}"),
+            None => anyhow::bail!("{context}: Incus exec omitted return code"),
+        }
+        let stdout_path = waited
+            .metadata
+            .output
+            .get("1")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .with_context(|| format!("{context}: Incus exec omitted stdout log path"))?;
+        let stdout_segments = stdout_path
+            .trim_start_matches('/')
+            .split('/')
+            .collect::<Vec<_>>();
+        let stdout_response = self
+            .request(reqwest::Method::GET, &stdout_segments, true, request_id)?
+            .header(axum::http::header::ACCEPT, "*/*")
+            .send()
+            .await
+            .with_context(|| format!("{context}: load Incus exec stdout log"))?;
+        if !stdout_response.status().is_success() {
+            return Err(self.error_from_response(stdout_response, context).await);
+        }
+        stdout_response
+            .bytes()
+            .await
+            .with_context(|| format!("{context}: read Incus exec stdout log"))
+            .map(|bytes| bytes.to_vec())
     }
 
     async fn post_expect_sync_or_operation(
@@ -6000,6 +6104,16 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 r#"{"type":"sync","metadata":{"status":"Running"}}"#,
             ),
             ("200 OK", &ready_marker.to_string()),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-boot-ready"}"#,
+            ),
+            (
+                "200 OK",
+                &format!(
+                    r#"{{"type":"sync","metadata":{{"err":"","metadata":{{"return":0,"output":{{"1":"/1.0/instances/{vm_id}/logs/exec-output/exec_op-boot-ready.stdout"}}}}}}}}"#
+                ),
+            ),
             ("200 OK", "boot-ready-1\n"),
         ]);
         let requested = ManagedVmProvisionParams {
@@ -6045,11 +6159,21 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 "/1.0/instances/{vm_id}/files?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
             )
         );
-        let boot_id_request = rx.recv().expect("captured boot-id request");
+        let boot_id_request = rx.recv().expect("captured boot-id exec request");
         assert_eq!(
             boot_id_request.path,
+            format!("/1.0/instances/{vm_id}/exec?project=managed-agents")
+        );
+        let boot_id_wait_request = rx.recv().expect("captured boot-id wait request");
+        assert_eq!(
+            boot_id_wait_request.path,
+            "/1.0/operations/op-boot-ready/wait?timeout=60"
+        );
+        let boot_id_output_request = rx.recv().expect("captured boot-id output request");
+        assert_eq!(
+            boot_id_output_request.path,
             format!(
-                "/1.0/instances/{vm_id}/files?project=managed-agents&path=%2Fproc%2Fsys%2Fkernel%2Frandom%2Fboot_id"
+                "/1.0/instances/{vm_id}/logs/exec-output/exec_op-boot-ready.stdout?project=managed-agents"
             )
         );
     }
@@ -6347,6 +6471,16 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 r#"{"type":"sync","metadata":{"status":"Running"}}"#,
             ),
             ("200 OK", &ready_marker.to_string()),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-boot-stale"}"#,
+            ),
+            (
+                "200 OK",
+                &format!(
+                    r#"{{"type":"sync","metadata":{{"err":"","metadata":{{"return":0,"output":{{"1":"/1.0/instances/{vm_id}/logs/exec-output/exec_op-boot-stale.stdout"}}}}}}}}"#
+                ),
+            ),
             ("200 OK", "boot-current\n"),
         ]);
         let requested = ManagedVmProvisionParams {
@@ -6473,6 +6607,16 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 r#"{"type":"sync","metadata":{"status":"Running"}}"#,
             ),
             ("200 OK", &ready_marker.to_string()),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-boot-recover"}"#,
+            ),
+            (
+                "200 OK",
+                &format!(
+                    r#"{{"type":"sync","metadata":{{"err":"","metadata":{{"return":0,"output":{{"1":"/1.0/instances/{vm_id}/logs/exec-output/exec_op-boot-recover.stdout"}}}}}}}}"#
+                ),
+            ),
             ("200 OK", "boot-recover-1\n"),
         ]);
         let requested = ManagedVmProvisionParams {
@@ -6535,11 +6679,21 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 "/1.0/instances/{vm_id}/files?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
             )
         );
-        let boot_id_request = rx.recv().expect("captured guest boot id request");
+        let boot_id_request = rx.recv().expect("captured guest boot id exec request");
         assert_eq!(
             boot_id_request.path,
+            format!("/1.0/instances/{vm_id}/exec?project=managed-agents")
+        );
+        let boot_id_wait_request = rx.recv().expect("captured guest boot id wait request");
+        assert_eq!(
+            boot_id_wait_request.path,
+            "/1.0/operations/op-boot-recover/wait?timeout=60"
+        );
+        let boot_id_output_request = rx.recv().expect("captured guest boot id output request");
+        assert_eq!(
+            boot_id_output_request.path,
             format!(
-                "/1.0/instances/{vm_id}/files?project=managed-agents&path=%2Fproc%2Fsys%2Fkernel%2Frandom%2Fboot_id"
+                "/1.0/instances/{vm_id}/logs/exec-output/exec_op-boot-recover.stdout?project=managed-agents"
             )
         );
     }
@@ -6579,6 +6733,16 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 r#"{"type":"sync","metadata":{"status":"Running"}}"#,
             ),
             ("200 OK", &ready_marker.to_string()),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-boot-restore"}"#,
+            ),
+            (
+                "200 OK",
+                &format!(
+                    r#"{{"type":"sync","metadata":{{"err":"","metadata":{{"return":0,"output":{{"1":"/1.0/instances/{vm_id}/logs/exec-output/exec_op-boot-restore.stdout"}}}}}}}}"#
+                ),
+            ),
             ("200 OK", "boot-restore-1\n"),
         ]);
         let requested = ManagedVmProvisionParams {
@@ -6663,11 +6827,21 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 "/1.0/instances/{vm_id}/files?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
             )
         );
-        let boot_id_request = rx.recv().expect("captured guest boot id request");
+        let boot_id_request = rx.recv().expect("captured guest boot id exec request");
         assert_eq!(
             boot_id_request.path,
+            format!("/1.0/instances/{vm_id}/exec?project=managed-agents")
+        );
+        let boot_id_wait_request = rx.recv().expect("captured guest boot id wait request");
+        assert_eq!(
+            boot_id_wait_request.path,
+            "/1.0/operations/op-boot-restore/wait?timeout=60"
+        );
+        let boot_id_output_request = rx.recv().expect("captured guest boot id output request");
+        assert_eq!(
+            boot_id_output_request.path,
             format!(
-                "/1.0/instances/{vm_id}/files?project=managed-agents&path=%2Fproc%2Fsys%2Fkernel%2Frandom%2Fboot_id"
+                "/1.0/instances/{vm_id}/logs/exec-output/exec_op-boot-restore.stdout?project=managed-agents"
             )
         );
     }
