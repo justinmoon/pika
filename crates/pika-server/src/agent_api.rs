@@ -47,6 +47,7 @@ use pika_relay_profiles::default_message_relays;
 const AGENT_OWNER_ACTIVE_INDEX: &str = "agent_instances_owner_active_idx";
 const VM_PROVIDER_ENV: &str = "PIKA_AGENT_VM_PROVIDER";
 const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
+const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 const INCUS_ENDPOINT_ENV: &str = "PIKA_AGENT_INCUS_ENDPOINT";
 const INCUS_PROJECT_ENV: &str = "PIKA_AGENT_INCUS_PROJECT";
 const INCUS_PROFILE_ENV: &str = "PIKA_AGENT_INCUS_PROFILE";
@@ -1926,6 +1927,12 @@ impl IncusManagedVmProvider {
             },
         );
         let guest_autostart = bootstrap_request.guest_autostart;
+        let mut launcher_env = guest_autostart.env.clone();
+        if let Ok(value) = std::env::var(ANTHROPIC_API_KEY_ENV) {
+            if !value.trim().is_empty() {
+                launcher_env.insert(ANTHROPIC_API_KEY_ENV.to_string(), value);
+            }
+        }
         let mut files = BTreeMap::new();
         for (path, content) in guest_autostart.files {
             files.insert(
@@ -1937,7 +1944,7 @@ impl IncusManagedVmProvider {
             INCUS_BOOTSTRAP_LAUNCHER_PATH.to_string(),
             (
                 "0755",
-                incus_bootstrap_launcher_script(&guest_autostart.env, &guest_autostart.command),
+                incus_bootstrap_launcher_script(&launcher_env, &guest_autostart.command),
             ),
         );
         files.insert(
@@ -4377,6 +4384,40 @@ mod tests {
         result
     }
 
+    async fn with_env_overrides_async<T, F, Fut>(vars: &[(&str, Option<&str>)], f: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let _guard = serial_test_guard();
+        let prior = vars
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), std::env::var(name).ok()))
+            .collect::<Vec<_>>();
+        for (name, value) in vars {
+            match value {
+                Some(value) => unsafe {
+                    std::env::set_var(name, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(name);
+                },
+            }
+        }
+        let result = f().await;
+        for (name, value) in prior {
+            match value {
+                Some(value) => unsafe {
+                    std::env::set_var(&name, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(&name);
+                },
+            }
+        }
+        result
+    }
+
     fn requested_microvm_params(params: MicrovmProvisionParams) -> ManagedVmProvisionParams {
         ManagedVmProvisionParams {
             provider: Some(ProviderKind::Microvm),
@@ -5321,21 +5362,28 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 insecure_tls: Some(true),
             }),
         };
-        let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
         let owner_keys = Keys::generate();
         let bot_keys = Keys::generate();
-        let created = provider
-            .create_managed_vm(
-                ManagedVmCreateInput {
-                    owner_pubkey: &owner_keys.public_key(),
-                    relay_urls: &default_message_relays(),
-                    bot_secret_hex: &bot_keys.secret_key().to_secret_hex(),
-                    bot_pubkey_hex: &bot_keys.public_key().to_hex(),
-                },
-                Some("req-incus-create"),
-            )
-            .await
-            .expect("incus create should succeed");
+        let created = with_env_overrides_async(
+            &[(ANTHROPIC_API_KEY_ENV, Some("sk-ant-test-incus"))],
+            || async {
+                let provider =
+                    managed_vm_provider(Some(&requested)).expect("resolve incus provider");
+                provider
+                    .create_managed_vm(
+                        ManagedVmCreateInput {
+                            owner_pubkey: &owner_keys.public_key(),
+                            relay_urls: &default_message_relays(),
+                            bot_secret_hex: &bot_keys.secret_key().to_secret_hex(),
+                            bot_pubkey_hex: &bot_keys.public_key().to_hex(),
+                        },
+                        Some("req-incus-create"),
+                    )
+                    .await
+                    .expect("incus create should succeed")
+            },
+        )
+        .await;
         assert_eq!(created.status, "running");
         assert_eq!(created.agent_kind, Some(MicrovmAgentKind::Openclaw));
         assert!(!created.guest_ready);
@@ -5424,6 +5472,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert!(launcher.contains("export PIKA_OWNER_PUBKEY="));
         assert!(launcher.contains("export PIKA_RELAY_URLS="));
         assert!(launcher.contains("export PIKA_BOT_PUBKEY="));
+        assert!(launcher.contains("export ANTHROPIC_API_KEY='sk-ant-test-incus'"));
         assert!(launcher.contains("export PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY=1"));
         assert!(launcher.contains("export PIKACHAT_SKIP_RELAY_READY_CHECK=1"));
         assert!(launcher.contains("sock.connect((\"1.1.1.1\", 80))"));

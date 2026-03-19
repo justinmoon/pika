@@ -6,6 +6,7 @@
       hostname = "pika-server";
       domain = "api.pikachat.org";
       microvmSpawnerUrl = "http://100.81.250.67:8080";
+      anthropicApiKeyPath = "/var/lib/pika-server/anthropic-api-key";
       incusEndpoint = "https://100.81.250.67:8443";
       incusProject = "pika-managed-agents";
       incusProfile = "pika-agent-dev";

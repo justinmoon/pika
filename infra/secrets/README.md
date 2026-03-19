@@ -14,6 +14,7 @@ Optional keys for an Incus mTLS canary on the normal `pika-server` deploy path:
 - `incus_client_cert` -- PEM client certificate trusted by the remote Incus daemon
 - `incus_client_key` -- PEM private key for `incus_client_cert`
 - `incus_server_cert` -- PEM server certificate for the remote Incus daemon when not using `PIKA_AGENT_INCUS_INSECURE_TLS=true`
+- `anthropic_api_key` -- Anthropic API key injected into managed OpenClaw guests provisioned by `pika-server`
 
 `PIKA_ADMIN_SESSION_SECRET` is derived at runtime from the APNS private key hash, so no
 separate admin session secret key is required in `pika-server.yaml`.

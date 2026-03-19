@@ -1,6 +1,8 @@
 { hostname
 , domain
 , microvmSpawnerUrl ? null
+, anthropicApiKeyPath ? null
+, anthropicApiKeySecret ? null
 , incusEndpoint ? null
 , incusProject ? null
 , incusProfile ? null
@@ -55,6 +57,10 @@ let
     if incusServerCertPath != null then incusServerCertPath
     else if incusServerCertSecret != null then config.sops.secrets.${incusServerCertSecret}.path
     else null;
+  resolvedAnthropicApiKeyPath =
+    if anthropicApiKeyPath != null then anthropicApiKeyPath
+    else if anthropicApiKeySecret != null then config.sops.secrets.${anthropicApiKeySecret}.path
+    else null;
   startPikaServer = pkgs.writeShellScript "start-pika-server" ''
     set -euo pipefail
     if [ -z "''${PIKA_ADMIN_SESSION_SECRET:-}" ]; then
@@ -64,6 +70,9 @@ let
         ${pkgs.coreutils}/bin/mv "${adminSessionSecretPath}.tmp" "${adminSessionSecretPath}"
       fi
       export PIKA_ADMIN_SESSION_SECRET="$(${pkgs.coreutils}/bin/tr -d '\n' < "${adminSessionSecretPath}")"
+    fi
+    if [ -z "''${ANTHROPIC_API_KEY:-}" ] && [ -n "''${ANTHROPIC_API_KEY_FILE:-}" ] && [ -r "''${ANTHROPIC_API_KEY_FILE}" ]; then
+      export ANTHROPIC_API_KEY="$(${pkgs.coreutils}/bin/tr -d '\n' < "''${ANTHROPIC_API_KEY_FILE}")"
     fi
     exec ${pikaServerPkg}/bin/pika-server
   '';
@@ -91,6 +100,10 @@ in
           incusOpenclawGuestIpv4Cidr
         ];
       message = "Incus canary config on pika-server requires endpoint, project, profile, storage pool, image alias, and openclaw guest IPv4 CIDR together.";
+    }
+    {
+      assertion = !(anthropicApiKeyPath != null && anthropicApiKeySecret != null);
+      message = "Set only one of anthropicApiKeyPath or anthropicApiKeySecret.";
     }
     {
       assertion = !(incusClientCertPath != null && incusClientCertSecret != null);
@@ -196,6 +209,15 @@ in
         path = "${serviceStateDir}/fcm-credentials.json";
       };
     }
+    (lib.optionalAttrs (anthropicApiKeySecret != null) {
+      "${anthropicApiKeySecret}" = {
+        format = "yaml";
+        owner = serviceUser;
+        group = serviceGroup;
+        mode = "0400";
+        path = "${serviceStateDir}/anthropic-api-key";
+      };
+    })
     (lib.optionalAttrs (incusClientCertSecret != null) {
       "${incusClientCertSecret}" = {
         format = "yaml";
@@ -238,6 +260,7 @@ in
       APNS_TEAM_ID=${config.sops.placeholder."apns_team_id"}
       APNS_TOPIC=org.pikachat.pika
       FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
+      ${lib.optionalString (resolvedAnthropicApiKeyPath != null) "ANTHROPIC_API_KEY_FILE=${resolvedAnthropicApiKeyPath}"}
       ${lib.optionalString (microvmSpawnerUrl != null) ''
       # vm-spawner is reached over a private network; inject the host-specific URL
       # from the machine import instead of hardcoding it in the shared module.
