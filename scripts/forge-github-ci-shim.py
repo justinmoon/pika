@@ -104,8 +104,12 @@ def glob_to_regex(pattern: str) -> str:
         ch = pattern[i]
         if ch == "*":
             if i + 1 < len(pattern) and pattern[i + 1] == "*":
-                parts.append(".*")
-                i += 2
+                if i + 2 < len(pattern) and pattern[i + 2] == "/":
+                    parts.append("(?:.*/)?")
+                    i += 3
+                else:
+                    parts.append(".*")
+                    i += 2
             else:
                 parts.append("[^/]*")
                 i += 1

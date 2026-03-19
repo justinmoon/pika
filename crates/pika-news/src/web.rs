@@ -44,7 +44,7 @@ struct AppState {
     forge_health: Arc<Mutex<ForgeHealthState>>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 struct ForgeHealthIssue {
     severity: String,
     code: String,
@@ -505,6 +505,16 @@ fn collect_forge_startup_issues(
     issues
 }
 
+fn current_forge_runtime_issues(
+    config: &Config,
+    webhook_secret: Option<&str>,
+) -> Vec<ForgeHealthIssue> {
+    let Some(forge_repo) = config.effective_forge_repo() else {
+        return Vec::new();
+    };
+    collect_forge_startup_issues(config, &forge_repo, webhook_secret)
+}
+
 fn push_page_notice(
     notices: &mut Vec<PageNoticeView>,
     seen: &mut BTreeSet<String>,
@@ -637,8 +647,7 @@ pub async fn serve(
     let forge_mode = config.effective_forge_repo().is_some();
     let forge_health = Arc::new(Mutex::new(ForgeHealthState::new(forge_mode)));
     if let Some(forge_repo) = config.effective_forge_repo() {
-        let startup_issues =
-            collect_forge_startup_issues(&config, &forge_repo, webhook_secret.as_deref());
+        let startup_issues = current_forge_runtime_issues(&config, webhook_secret.as_deref());
         if let Ok(mut health) = forge_health.lock() {
             health.replace_issues(startup_issues.clone());
         }
@@ -683,6 +692,7 @@ pub async fn serve(
             let state = Arc::clone(&background_state);
             match tokio::task::spawn_blocking(move || {
                 (
+                    current_forge_runtime_issues(&state.config, state.webhook_secret.as_deref()),
                     poller::poll_once_limited(&state.store, &state.config, state.max_prs),
                     worker::run_generation_pass(&state.store, &state.config),
                     ci::run_ci_pass(&state.store, &state.config),
@@ -691,7 +701,10 @@ pub async fn serve(
             })
             .await
             {
-                Ok((poll_result, worker_result, ci_result, mirror_result)) => {
+                Ok((issues, poll_result, worker_result, ci_result, mirror_result)) => {
+                    if let Ok(mut health) = background_state.forge_health.lock() {
+                        health.replace_issues(issues);
+                    }
                     match poll_result {
                         Ok(pr) => {
                             if pr.branches_seen > 0
@@ -2770,9 +2783,9 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{
-        build_mirror_health_status, collect_forge_startup_issues, inbox_review_handler,
-        markdown_to_safe_html, render_detail_template, render_nightly_template,
-        rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
+        build_mirror_health_status, collect_forge_startup_issues, current_forge_runtime_issues,
+        inbox_review_handler, markdown_to_safe_html, render_detail_template,
+        render_nightly_template, rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
         should_backfill_managed_allowlist_entry, verify_signature, AppState, ForgeHealthState,
     };
     use crate::auth::AuthState;
@@ -2905,6 +2918,64 @@ mod tests {
         assert!(codes.contains(&"webhook_secret_missing"));
         assert!(codes.contains(&"mirror_remote_missing"));
         assert!(!codes.contains(&"canonical_repo_unavailable"));
+    }
+
+    #[test]
+    fn forge_runtime_issues_clear_after_hook_install_recovery() {
+        let root = tempfile::tempdir().expect("create temp root");
+        let canonical = root.path().join("recovered.git");
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: canonical.display().to_string(),
+                default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: Some("http://127.0.0.1:8788/news/webhook".to_string()),
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+
+        let output = Command::new("git")
+            .args([
+                "init",
+                "--bare",
+                canonical.to_str().expect("canonical path"),
+            ])
+            .output()
+            .expect("init bare repo");
+        assert!(
+            output.status.success(),
+            "git init --bare failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(canonical.join("hooks")).expect("remove hooks dir");
+        fs::write(canonical.join("hooks"), "blocked").expect("create blocking hooks file");
+
+        let issues = current_forge_runtime_issues(&config, Some("secret"));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "hook_install_failed"));
+
+        fs::remove_file(canonical.join("hooks")).expect("remove blocking hooks file");
+
+        let issues = current_forge_runtime_issues(&config, Some("secret"));
+        assert!(!issues
+            .iter()
+            .any(|issue| issue.code == "hook_install_failed"));
     }
 
     #[test]

@@ -214,6 +214,65 @@ command = ["python3", "-c", "print('nightly')"]
             self.assertEqual(payload["changed_paths"], [".github/workflows/pre-merge.yml"])
             self.assertEqual([lane["id"] for lane in payload["include"]], ["workflow"])
 
+    def test_branch_selection_matches_root_files_for_double_star_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git(repo, "init")
+            git(repo, "config", "user.name", "Test User")
+            git(repo, "config", "user.email", "test@example.com")
+            (repo / "ci").mkdir()
+            (repo / "foo.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (repo / "ci" / "forge-lanes.toml").write_text(
+                """
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "root_rust"
+title = "root-rust"
+entrypoint = "printf root-rust"
+command = ["python3", "-c", "print('root-rust')"]
+paths = ["**/*.rs"]
+
+[[nightly.lanes]]
+id = "nightly"
+title = "nightly"
+entrypoint = "printf nightly"
+command = ["python3", "-c", "print('nightly')"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            git(repo, "add", "foo.rs", "ci/forge-lanes.toml")
+            git(repo, "commit", "-m", "base")
+            base = git(repo, "rev-parse", "HEAD")
+
+            (repo / "foo.rs").write_text("fn main() { println!(\"hi\"); }\n", encoding="utf-8")
+            git(repo, "add", "foo.rs")
+            git(repo, "commit", "-m", "root rust change")
+            head = git(repo, "rev-parse", "HEAD")
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "select",
+                    "--mode",
+                    "branch",
+                    "--base",
+                    base,
+                    "--head",
+                    head,
+                ],
+                cwd=repo,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["changed_paths"], ["foo.rs"])
+            self.assertEqual([lane["id"] for lane in payload["include"]], ["root_rust"])
+
     def test_branch_selection_uses_branch_head_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
