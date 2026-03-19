@@ -191,6 +191,7 @@ pub fn run_primal_nostrconnect_smoke() -> Result<ScenarioRunOutput> {
             .args(["-derivedDataPath"])
             .arg(derived_dir.to_string_lossy().to_string())
             .arg("build")
+            .arg("-skipMacroValidation")
             .arg("CODE_SIGNING_ALLOWED=NO")
             .capture_name("primal-xcodebuild"),
     )?;
@@ -339,6 +340,7 @@ pub fn run_primal_nostrconnect_smoke() -> Result<ScenarioRunOutput> {
             .args(["-destination"])
             .arg(format!("id={udid}"))
             .arg("test")
+            .arg("-skipMacroValidation")
             .arg("ARCHS=arm64")
             .arg("ONLY_ACTIVE_ARCH=YES")
             .arg("CODE_SIGNING_ALLOWED=NO")
