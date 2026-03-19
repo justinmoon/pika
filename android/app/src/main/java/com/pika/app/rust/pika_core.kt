@@ -1194,6 +1194,29 @@ private class JavaLangRefCleanable(
 /**
  * @suppress
  */
+public object FfiConverterUByte: FfiConverter<UByte, Byte> {
+    override fun lift(value: Byte): UByte {
+        return value.toUByte()
+    }
+
+    override fun read(buf: ByteBuffer): UByte {
+        return lift(buf.get())
+    }
+
+    override fun lower(value: UByte): Byte {
+        return value.toByte()
+    }
+
+    override fun allocationSize(value: UByte) = 1UL
+
+    override fun write(value: UByte, buf: ByteBuffer) {
+        buf.put(value.toByte())
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterUShort: FfiConverter<UShort, Short> {
     override fun lift(value: Short): UShort {
         return value.toUShort()
@@ -2757,14 +2780,61 @@ public object FfiConverterTypeFollowListEntry: FfiConverterRustBuffer<FollowList
 
 
 
+data class HypernoteAttribute (
+    var `name`: kotlin.String
+    , 
+    var `valueType`: HypernoteAttributeValueType
+    , 
+    var `value`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHypernoteAttribute: FfiConverterRustBuffer<HypernoteAttribute> {
+    override fun read(buf: ByteBuffer): HypernoteAttribute {
+        return HypernoteAttribute(
+            FfiConverterString.read(buf),
+            FfiConverterTypeHypernoteAttributeValueType.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HypernoteAttribute) = (
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterTypeHypernoteAttributeValueType.allocationSize(value.`valueType`) +
+            FfiConverterOptionalString.allocationSize(value.`value`)
+    )
+
+    override fun write(value: HypernoteAttribute, buf: ByteBuffer) {
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterTypeHypernoteAttributeValueType.write(value.`valueType`, buf)
+            FfiConverterOptionalString.write(value.`value`, buf)
+    }
+}
+
+
+
 data class HypernoteData (
     var `astJson`: kotlin.String
+    , 
+    var `document`: HypernoteDocument
     , 
     var `declaredActions`: List<kotlin.String>
     , 
     var `title`: kotlin.String?
     , 
     var `defaultState`: kotlin.String?
+    , 
+    var `defaultFormState`: List<HypernoteFormField>
     , 
     var `myResponse`: kotlin.String?
     , 
@@ -2788,9 +2858,11 @@ public object FfiConverterTypeHypernoteData: FfiConverterRustBuffer<HypernoteDat
     override fun read(buf: ByteBuffer): HypernoteData {
         return HypernoteData(
             FfiConverterString.read(buf),
+            FfiConverterTypeHypernoteDocument.read(buf),
             FfiConverterSequenceString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterSequenceTypeHypernoteFormField.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterSequenceTypeHypernoteResponseTally.read(buf),
             FfiConverterSequenceTypeHypernoteResponder.read(buf),
@@ -2799,9 +2871,11 @@ public object FfiConverterTypeHypernoteData: FfiConverterRustBuffer<HypernoteDat
 
     override fun allocationSize(value: HypernoteData) = (
             FfiConverterString.allocationSize(value.`astJson`) +
+            FfiConverterTypeHypernoteDocument.allocationSize(value.`document`) +
             FfiConverterSequenceString.allocationSize(value.`declaredActions`) +
             FfiConverterOptionalString.allocationSize(value.`title`) +
             FfiConverterOptionalString.allocationSize(value.`defaultState`) +
+            FfiConverterSequenceTypeHypernoteFormField.allocationSize(value.`defaultFormState`) +
             FfiConverterOptionalString.allocationSize(value.`myResponse`) +
             FfiConverterSequenceTypeHypernoteResponseTally.allocationSize(value.`responseTallies`) +
             FfiConverterSequenceTypeHypernoteResponder.allocationSize(value.`responders`)
@@ -2809,12 +2883,173 @@ public object FfiConverterTypeHypernoteData: FfiConverterRustBuffer<HypernoteDat
 
     override fun write(value: HypernoteData, buf: ByteBuffer) {
             FfiConverterString.write(value.`astJson`, buf)
+            FfiConverterTypeHypernoteDocument.write(value.`document`, buf)
             FfiConverterSequenceString.write(value.`declaredActions`, buf)
             FfiConverterOptionalString.write(value.`title`, buf)
             FfiConverterOptionalString.write(value.`defaultState`, buf)
+            FfiConverterSequenceTypeHypernoteFormField.write(value.`defaultFormState`, buf)
             FfiConverterOptionalString.write(value.`myResponse`, buf)
             FfiConverterSequenceTypeHypernoteResponseTally.write(value.`responseTallies`, buf)
             FfiConverterSequenceTypeHypernoteResponder.write(value.`responders`, buf)
+    }
+}
+
+
+
+data class HypernoteDocument (
+    var `rootNodeIds`: List<kotlin.UInt>
+    , 
+    var `nodes`: List<HypernoteNode>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHypernoteDocument: FfiConverterRustBuffer<HypernoteDocument> {
+    override fun read(buf: ByteBuffer): HypernoteDocument {
+        return HypernoteDocument(
+            FfiConverterSequenceUInt.read(buf),
+            FfiConverterSequenceTypeHypernoteNode.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HypernoteDocument) = (
+            FfiConverterSequenceUInt.allocationSize(value.`rootNodeIds`) +
+            FfiConverterSequenceTypeHypernoteNode.allocationSize(value.`nodes`)
+    )
+
+    override fun write(value: HypernoteDocument, buf: ByteBuffer) {
+            FfiConverterSequenceUInt.write(value.`rootNodeIds`, buf)
+            FfiConverterSequenceTypeHypernoteNode.write(value.`nodes`, buf)
+    }
+}
+
+
+
+data class HypernoteFormField (
+    var `name`: kotlin.String
+    , 
+    var `value`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHypernoteFormField: FfiConverterRustBuffer<HypernoteFormField> {
+    override fun read(buf: ByteBuffer): HypernoteFormField {
+        return HypernoteFormField(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HypernoteFormField) = (
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`value`)
+    )
+
+    override fun write(value: HypernoteFormField, buf: ByteBuffer) {
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`value`, buf)
+    }
+}
+
+
+
+data class HypernoteNode (
+    var `id`: kotlin.UInt
+    , 
+    var `nodeType`: HypernoteNodeType
+    , 
+    var `childIds`: List<kotlin.UInt>
+    , 
+    var `value`: kotlin.String?
+    , 
+    var `level`: kotlin.UByte?
+    , 
+    var `url`: kotlin.String?
+    , 
+    var `lang`: kotlin.String?
+    , 
+    var `name`: kotlin.String?
+    , 
+    var `rawTypeName`: kotlin.String?
+    , 
+    var `checked`: kotlin.Boolean?
+    , 
+    var `attributes`: List<HypernoteAttribute>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHypernoteNode: FfiConverterRustBuffer<HypernoteNode> {
+    override fun read(buf: ByteBuffer): HypernoteNode {
+        return HypernoteNode(
+            FfiConverterUInt.read(buf),
+            FfiConverterTypeHypernoteNodeType.read(buf),
+            FfiConverterSequenceUInt.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalUByte.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalBoolean.read(buf),
+            FfiConverterSequenceTypeHypernoteAttribute.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HypernoteNode) = (
+            FfiConverterUInt.allocationSize(value.`id`) +
+            FfiConverterTypeHypernoteNodeType.allocationSize(value.`nodeType`) +
+            FfiConverterSequenceUInt.allocationSize(value.`childIds`) +
+            FfiConverterOptionalString.allocationSize(value.`value`) +
+            FfiConverterOptionalUByte.allocationSize(value.`level`) +
+            FfiConverterOptionalString.allocationSize(value.`url`) +
+            FfiConverterOptionalString.allocationSize(value.`lang`) +
+            FfiConverterOptionalString.allocationSize(value.`name`) +
+            FfiConverterOptionalString.allocationSize(value.`rawTypeName`) +
+            FfiConverterOptionalBoolean.allocationSize(value.`checked`) +
+            FfiConverterSequenceTypeHypernoteAttribute.allocationSize(value.`attributes`)
+    )
+
+    override fun write(value: HypernoteNode, buf: ByteBuffer) {
+            FfiConverterUInt.write(value.`id`, buf)
+            FfiConverterTypeHypernoteNodeType.write(value.`nodeType`, buf)
+            FfiConverterSequenceUInt.write(value.`childIds`, buf)
+            FfiConverterOptionalString.write(value.`value`, buf)
+            FfiConverterOptionalUByte.write(value.`level`, buf)
+            FfiConverterOptionalString.write(value.`url`, buf)
+            FfiConverterOptionalString.write(value.`lang`, buf)
+            FfiConverterOptionalString.write(value.`name`, buf)
+            FfiConverterOptionalString.write(value.`rawTypeName`, buf)
+            FfiConverterOptionalBoolean.write(value.`checked`, buf)
+            FfiConverterSequenceTypeHypernoteAttribute.write(value.`attributes`, buf)
     }
 }
 
@@ -5549,6 +5784,93 @@ public object FfiConverterTypeExternalSignerErrorKind: FfiConverterRustBuffer<Ex
 
 
 
+
+enum class HypernoteAttributeValueType {
+    
+    STRING,
+    NUMBER,
+    INVALID_NUMBER,
+    BOOLEAN,
+    EXPRESSION;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHypernoteAttributeValueType: FfiConverterRustBuffer<HypernoteAttributeValueType> {
+    override fun read(buf: ByteBuffer) = try {
+        HypernoteAttributeValueType.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: HypernoteAttributeValueType) = 4UL
+
+    override fun write(value: HypernoteAttributeValueType, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class HypernoteNodeType {
+    
+    HEADING,
+    PARAGRAPH,
+    STRONG,
+    EMPHASIS,
+    CODE_INLINE,
+    CODE_BLOCK,
+    LINK,
+    IMAGE,
+    LIST_UNORDERED,
+    LIST_ORDERED,
+    LIST_ITEM,
+    BLOCKQUOTE,
+    HR,
+    HARD_BREAK,
+    TEXT,
+    MDX_JSX_ELEMENT,
+    MDX_JSX_SELF_CLOSING,
+    UNSUPPORTED;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHypernoteNodeType: FfiConverterRustBuffer<HypernoteNodeType> {
+    override fun read(buf: ByteBuffer) = try {
+        HypernoteNodeType.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: HypernoteNodeType) = 4UL
+
+    override fun write(value: HypernoteNodeType, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
 sealed class MessageDeliveryState {
     
     object Pending : MessageDeliveryState()
@@ -6229,6 +6551,38 @@ public object FfiConverterTypeVideoFrameReceiver: FfiConverterCallbackInterface<
 /**
  * @suppress
  */
+public object FfiConverterOptionalUByte: FfiConverterRustBuffer<kotlin.UByte?> {
+    override fun read(buf: ByteBuffer): kotlin.UByte? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUByte.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UByte?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUByte.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UByte?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUByte.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalUShort: FfiConverterRustBuffer<kotlin.UShort?> {
     override fun read(buf: ByteBuffer): kotlin.UShort? {
         if (buf.get().toInt() == 0) {
@@ -6347,6 +6701,38 @@ public object FfiConverterOptionalFloat: FfiConverterRustBuffer<kotlin.Float?> {
         } else {
             buf.put(1)
             FfiConverterFloat.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalBoolean: FfiConverterRustBuffer<kotlin.Boolean?> {
+    override fun read(buf: ByteBuffer): kotlin.Boolean? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterBoolean.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Boolean?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterBoolean.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Boolean?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterBoolean.write(value, buf)
         }
     }
 }
@@ -6741,6 +7127,34 @@ public object FfiConverterOptionalTypeExternalSignerErrorKind: FfiConverterRustB
 /**
  * @suppress
  */
+public object FfiConverterSequenceUInt: FfiConverterRustBuffer<List<kotlin.UInt>> {
+    override fun read(buf: ByteBuffer): List<kotlin.UInt> {
+        val len = buf.getInt()
+        return List<kotlin.UInt>(len) {
+            FfiConverterUInt.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.UInt>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterUInt.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.UInt>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterUInt.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceFloat: FfiConverterRustBuffer<List<kotlin.Float>> {
     override fun read(buf: ByteBuffer): List<kotlin.Float> {
         val len = buf.getInt()
@@ -6927,6 +7341,90 @@ public object FfiConverterSequenceTypeFollowListEntry: FfiConverterRustBuffer<Li
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeFollowListEntry.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeHypernoteAttribute: FfiConverterRustBuffer<List<HypernoteAttribute>> {
+    override fun read(buf: ByteBuffer): List<HypernoteAttribute> {
+        val len = buf.getInt()
+        return List<HypernoteAttribute>(len) {
+            FfiConverterTypeHypernoteAttribute.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<HypernoteAttribute>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeHypernoteAttribute.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<HypernoteAttribute>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeHypernoteAttribute.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeHypernoteFormField: FfiConverterRustBuffer<List<HypernoteFormField>> {
+    override fun read(buf: ByteBuffer): List<HypernoteFormField> {
+        val len = buf.getInt()
+        return List<HypernoteFormField>(len) {
+            FfiConverterTypeHypernoteFormField.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<HypernoteFormField>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeHypernoteFormField.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<HypernoteFormField>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeHypernoteFormField.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeHypernoteNode: FfiConverterRustBuffer<List<HypernoteNode>> {
+    override fun read(buf: ByteBuffer): List<HypernoteNode> {
+        val len = buf.getInt()
+        return List<HypernoteNode>(len) {
+            FfiConverterTypeHypernoteNode.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<HypernoteNode>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeHypernoteNode.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<HypernoteNode>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeHypernoteNode.write(it, buf)
         }
     }
 }

@@ -10,7 +10,13 @@ fmt:
 
 # Lint with clippy.
 clippy *ARGS:
-    cargo clippy --all-targets {{ ARGS }} -- -D warnings
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      ./tools/cargo-with-xcode clippy --all-targets {{ ARGS }} -- -D warnings
+    else
+      cargo clippy --all-targets {{ ARGS }} -- -D warnings
+    fi
 
 # Canonical fast local smoke: formatting, workspace clippy, and just/docs contract drift.
 pre-commit:
@@ -18,15 +24,15 @@ pre-commit:
     just --fmt --check --unstable
     ./scripts/agent-tools check-docs
     ./scripts/agent-tools check-justfile
-    cargo clippy --all-targets -- -D warnings
+    just clippy
 
 # Optional richer local follow-up when you want extra package-specific clippy coverage.
 pre-commit-full: pre-commit
     ./scripts/check-cargo-machete
-    cargo clippy -p pikachat --tests -- -D warnings
-    cargo clippy -p pikachat-sidecar --tests -- -D warnings
-    cargo clippy -p pika-server --tests -- -D warnings
-    cargo clippy -p pikahut -- -D warnings
+    just clippy -p pikachat --tests
+    just clippy -p pikachat-sidecar --tests
+    just clippy -p pika-server --tests
+    just clippy -p pikahut
 
 # CI-safe pre-merge for the Pika app lane.
 pre-merge-pika: fmt clippy

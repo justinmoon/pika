@@ -3355,7 +3355,7 @@ dependencies = [
 [[package]]
 name = "hypernote-mdx"
 version = "0.3.0"
-source = "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f"
+source = "git+https://github.com/futurepaul/hypernote-mdx?rev=db23b3d72e81389247716c5a59174cc4f4d55a34#db23b3d72e81389247716c5a59174cc4f4d55a34"
 dependencies = [
  "serde_json",
 ]
@@ -3364,6 +3364,7 @@ dependencies = [
 name = "hypernote-protocol"
 version = "0.1.0"
 dependencies = [
+ "hypernote-mdx",
  "serde",
  "serde_json",
 ]
@@ -6134,7 +6135,6 @@ dependencies = [
  "flume",
  "futures-util",
  "hex",
- "hypernote-mdx",
  "hypernote-protocol",
  "image",
  "jni",

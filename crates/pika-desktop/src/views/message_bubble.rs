@@ -6,6 +6,7 @@ use pika_core::{
 
 use super::avatar::{avatar_circle, AvatarCache};
 use super::conversation::Message;
+use super::hypernote;
 use super::markdown;
 use crate::design::{self, BubblePosition};
 use crate::icons;
@@ -50,10 +51,12 @@ pub fn message_bubble<'a>(
     hovered: bool,
     position: BubblePosition,
     sender_picture_url: Option<&'a str>,
+    optimistic_hypernote_action: Option<&'a str>,
     avatar_cache: &mut AvatarCache,
 ) -> Element<'a, Message, Theme> {
     let timestamp = theme::relative_time(msg.timestamp);
     let msg_id = msg.id.clone();
+    let is_hypernote = msg.hypernote.is_some();
 
     // Show action icons when hovered or picker is open
     let show_icons = hovered || emoji_picker_open;
@@ -122,13 +125,28 @@ pub fn message_bubble<'a>(
         for attachment in &msg.media {
             bubble_content = bubble_content.push(media_attachment_view(attachment, &msg_id, true));
         }
+        if let Some(hypernote) = msg.hypernote.as_ref() {
+            bubble_content = bubble_content.push(hypernote::render_hypernote(
+                &msg.id,
+                hypernote,
+                optimistic_hypernote_action,
+                avatar_cache,
+            ));
+        } else {
+            bubble_content =
+                push_message_content(bubble_content, &msg.segments, &msg.display_content, true);
+        }
         bubble_content =
-            push_message_content(bubble_content, &msg.segments, &msg.display_content, true);
-        bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, true));
-        let bubble = container(bubble_content)
-            .padding([10, 14])
-            .max_width(500)
-            .style(move |_theme: &Theme| design::current().bubble_sent_grouped(position));
+            bubble_content.push(timestamp_row(timestamp, &msg.delivery, !is_hypernote));
+        let bubble: Element<'a, Message, Theme> = if is_hypernote {
+            container(bubble_content).max_width(500).into()
+        } else {
+            container(bubble_content)
+                .padding([10, 14])
+                .max_width(500)
+                .style(move |_theme: &Theme| design::current().bubble_sent_grouped(position))
+                .into()
+        };
 
         let mut bubble_row = row![Space::new().width(Fill)]
             .spacing(6)
@@ -186,14 +204,28 @@ pub fn message_bubble<'a>(
         for attachment in &msg.media {
             bubble_content = bubble_content.push(media_attachment_view(attachment, &msg_id, false));
         }
-        bubble_content =
-            push_message_content(bubble_content, &msg.segments, &msg.display_content, false);
+        if let Some(hypernote) = msg.hypernote.as_ref() {
+            bubble_content = bubble_content.push(hypernote::render_hypernote(
+                &msg.id,
+                hypernote,
+                optimistic_hypernote_action,
+                avatar_cache,
+            ));
+        } else {
+            bubble_content =
+                push_message_content(bubble_content, &msg.segments, &msg.display_content, false);
+        }
         bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, false));
 
-        let bubble = container(bubble_content)
-            .padding([10, 14])
-            .max_width(500)
-            .style(move |_theme: &Theme| design::current().bubble_received_grouped(position));
+        let bubble: Element<'a, Message, Theme> = if is_hypernote {
+            container(bubble_content).max_width(500).into()
+        } else {
+            container(bubble_content)
+                .padding([10, 14])
+                .max_width(500)
+                .style(move |_theme: &Theme| design::current().bubble_received_grouped(position))
+                .into()
+        };
 
         // Build the row: [avatar gutter] [bubble] [icons] [spacer]
         let mut bubble_row = row![].spacing(6).align_y(Alignment::End).width(Fill);

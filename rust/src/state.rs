@@ -397,12 +397,79 @@ pub struct HypernoteResponder {
     pub picture_url: Option<String>,
 }
 
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct HypernoteDocument {
+    pub root_node_ids: Vec<u32>,
+    pub nodes: Vec<HypernoteNode>,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct HypernoteNode {
+    pub id: u32,
+    pub node_type: HypernoteNodeType,
+    pub child_ids: Vec<u32>,
+    pub value: Option<String>,
+    pub level: Option<u8>,
+    pub url: Option<String>,
+    pub lang: Option<String>,
+    pub name: Option<String>,
+    pub raw_type_name: Option<String>,
+    pub checked: Option<bool>,
+    pub attributes: Vec<HypernoteAttribute>,
+}
+
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum HypernoteNodeType {
+    Heading,
+    Paragraph,
+    Strong,
+    Emphasis,
+    CodeInline,
+    CodeBlock,
+    Link,
+    Image,
+    ListUnordered,
+    ListOrdered,
+    ListItem,
+    Blockquote,
+    Hr,
+    HardBreak,
+    Text,
+    MdxJsxElement,
+    MdxJsxSelfClosing,
+    Unsupported,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct HypernoteAttribute {
+    pub name: String,
+    pub value_type: HypernoteAttributeValueType,
+    pub value: Option<String>,
+}
+
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum HypernoteAttributeValueType {
+    String,
+    Number,
+    InvalidNumber,
+    Boolean,
+    Expression,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct HypernoteFormField {
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct HypernoteData {
     pub ast_json: String,
+    pub document: HypernoteDocument,
     pub declared_actions: Vec<String>,
     pub title: Option<String>,
     pub default_state: Option<String>,
+    pub default_form_state: Vec<HypernoteFormField>,
     pub my_response: Option<String>,
     pub response_tallies: Vec<HypernoteResponseTally>,
     pub responders: Vec<HypernoteResponder>,

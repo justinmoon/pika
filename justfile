@@ -141,10 +141,12 @@ cli *ARGS="":
     @just build::cli {{ ARGS }}
 
 # Start local backend (postgres, pika-relay, pika-server with agent control).
-pikahut-up: infra::pikahut-up
+pikahut-up:
+    @just infra::pikahut-up
 
 # Check formatting (cargo fmt).
-fmt: checks::fmt
+fmt:
+    @just checks::fmt
 
 # Lint with clippy.
 clippy *ARGS:
@@ -155,13 +157,16 @@ test *ARGS:
     @just checks::test {{ ARGS }}
 
 # Full QA: fmt, clippy, test, android build, iOS sim build.
-qa: checks::qa
+qa:
+    @just checks::qa
 
 # Single CI entrypoint for the whole repo.
-pre-merge: checks::pre-merge
+pre-merge:
+    @just checks::pre-merge
 
 # Nightly root task.
-nightly: checks::nightly
+nightly:
+    @just checks::nightly
 
 # Create + push version tag (pika/vX.Y.Z) after validating VERSION and clean tree.
 release VERSION:
@@ -171,19 +176,12 @@ release VERSION:
 rmp *ARGS:
     @just rmp_tools::rmp {{ ARGS }}
 
-# Build, bindgen, and platform helper commands.
 mod build 'just/build.just'
-# QA aggregates, CI lanes, and test selectors.
 mod checks 'just/checks.just'
-# Visible lab entrypoints; manual prompts and niche helpers stay available via hidden aliases.
 mod labs 'just/labs.just'
-# Agent demos and microVM debugging helpers.
 mod agent 'just/agent.just'
-# Local runtime entrypoints; remote/news plumbing stays available via hidden aliases.
 mod infra 'just/infra.just'
-# Release, versioning, and Zapstore helpers.
 mod ship 'just/ship.just'
-# RMP CI/nightly entrypoints; local scaffold QA helpers stay available via hidden aliases.
 mod rmp_tools 'just/rmp_tools.just'
 
 # Hidden root aliases preserve existing docs/CI entrypoints without crowding `just --list`.

@@ -25,6 +25,7 @@ pub struct State {
     pub hovered_message_id: Option<String>,
     /// True while a file is being dragged over the conversation area.
     pub file_hover: bool,
+    submitted_hypernote_actions: HashMap<String, String>,
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
@@ -55,6 +56,11 @@ pub enum Message {
         message_id: String,
         original_hash_hex: String,
     },
+    HypernoteAction {
+        message_id: String,
+        action_name: String,
+        form: HashMap<String, String>,
+    },
     // These originate from the conversation header but bubble up as events
     ShowGroupInfo,
     StartCall,
@@ -84,6 +90,11 @@ pub enum Event {
         message_id: String,
         original_hash_hex: String,
     },
+    HypernoteAction {
+        message_id: String,
+        action_name: String,
+        form: HashMap<String, String>,
+    },
     /// Scroll to a specific message (returns a Task for the parent)
     JumpToMessage(String),
     /// A reaction was sent
@@ -110,6 +121,7 @@ impl State {
             emoji_picker_message_id: None,
             hovered_message_id: None,
             file_hover: false,
+            submitted_hypernote_actions: HashMap::new(),
         }
     }
 
@@ -220,6 +232,22 @@ impl State {
                 }),
                 None,
             ),
+            Message::HypernoteAction {
+                message_id,
+                action_name,
+                form,
+            } => {
+                self.submitted_hypernote_actions
+                    .insert(message_id.clone(), action_name.clone());
+                (
+                    Some(Event::HypernoteAction {
+                        message_id,
+                        action_name,
+                        form,
+                    }),
+                    None,
+                )
+            }
             Message::ShowGroupInfo => (Some(Event::ShowGroupInfo), None),
             Message::StartCall => (Some(Event::StartCall), None),
             Message::StartVideoCall => (Some(Event::StartVideoCall), None),
@@ -236,6 +264,27 @@ impl State {
                 .unwrap_or(false);
             if !still_present {
                 self.reply_to_message_id = None;
+            }
+        }
+
+        let Some(chat) = chat else {
+            self.submitted_hypernote_actions.clear();
+            return;
+        };
+
+        let live_message_ids: std::collections::HashSet<&str> =
+            chat.messages.iter().map(|msg| msg.id.as_str()).collect();
+        self.submitted_hypernote_actions
+            .retain(|message_id, _| live_message_ids.contains(message_id.as_str()));
+
+        for msg in &chat.messages {
+            if msg
+                .hypernote
+                .as_ref()
+                .and_then(|hypernote| hypernote.my_response.as_deref())
+                .is_some()
+            {
+                self.submitted_hypernote_actions.remove(&msg.id);
             }
         }
     }
@@ -415,6 +464,10 @@ impl State {
                     .and_then(|id| messages_by_id.get(id).copied());
                 let picker_open = self.emoji_picker_message_id.as_deref() == Some(msg.id.as_str());
                 let hovered = self.hovered_message_id.as_deref() == Some(msg.id.as_str());
+                let optimistic_hypernote_action = self
+                    .submitted_hypernote_actions
+                    .get(msg.id.as_str())
+                    .map(String::as_str);
                 let sender_pic = member_pics
                     .get(msg.sender_pubkey.as_str())
                     .copied()
@@ -427,6 +480,7 @@ impl State {
                     hovered,
                     position,
                     sender_pic,
+                    optimistic_hypernote_action,
                     avatar_cache,
                 ));
             }
@@ -715,4 +769,144 @@ fn chat_title(chat: &ChatViewState) -> String {
         .first()
         .and_then(|m| m.name.clone())
         .unwrap_or_else(|| "Conversation".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Event, Message, State};
+    use pika_core::{
+        ChatMessage, ChatViewState, HypernoteData, HypernoteDocument, MessageDeliveryState,
+        MessageSegment,
+    };
+    use std::collections::HashMap;
+
+    fn make_message(id: &str) -> ChatMessage {
+        ChatMessage {
+            id: id.to_string(),
+            sender_pubkey: "sender".to_string(),
+            sender_name: None,
+            content: "hello".to_string(),
+            display_content: "hello".to_string(),
+            reply_to_message_id: None,
+            mentions: vec![],
+            timestamp: 0,
+            display_timestamp: "now".to_string(),
+            is_mine: false,
+            delivery: MessageDeliveryState::Sent,
+            reactions: vec![],
+            media: vec![],
+            segments: vec![MessageSegment::Markdown {
+                text: "hello".to_string(),
+            }],
+            html_state: None,
+            hypernote: None,
+        }
+    }
+
+    fn make_chat(messages: Vec<ChatMessage>) -> ChatViewState {
+        ChatViewState {
+            chat_id: "chat-1".to_string(),
+            is_group: false,
+            group_name: None,
+            members: vec![],
+            is_admin: false,
+            messages,
+            first_unread_message_id: None,
+            can_load_older: false,
+            typing_members: vec![],
+            my_group_profile: None,
+        }
+    }
+
+    #[test]
+    fn hypernote_action_bubbles_up_as_event() {
+        let mut state = State::new();
+        let mut form = HashMap::new();
+        form.insert("choice".to_string(), "looks-good".to_string());
+
+        let (event, task) = state.update(Message::HypernoteAction {
+            message_id: "msg-1".to_string(),
+            action_name: "vote".to_string(),
+            form: form.clone(),
+        });
+
+        assert!(task.is_none());
+        assert_eq!(
+            state
+                .submitted_hypernote_actions
+                .get("msg-1")
+                .map(String::as_str),
+            Some("vote")
+        );
+        match event {
+            Some(Event::HypernoteAction {
+                message_id,
+                action_name,
+                form: emitted_form,
+            }) => {
+                assert_eq!(message_id, "msg-1");
+                assert_eq!(action_name, "vote");
+                assert_eq!(emitted_form, form);
+            }
+            _ => panic!("expected hypernote action event"),
+        }
+    }
+
+    #[test]
+    fn clean_reply_target_removes_missing_message_submissions() {
+        let mut state = State::new();
+        state.update(Message::HypernoteAction {
+            message_id: "msg-1".to_string(),
+            action_name: "vote".to_string(),
+            form: HashMap::new(),
+        });
+
+        state.clean_reply_target(Some(&make_chat(vec![make_message("msg-2")])));
+
+        assert!(state.submitted_hypernote_actions.is_empty());
+    }
+
+    #[test]
+    fn clean_reply_target_clears_submissions_when_chat_disappears() {
+        let mut state = State::new();
+        state.update(Message::HypernoteAction {
+            message_id: "msg-1".to_string(),
+            action_name: "vote".to_string(),
+            form: HashMap::new(),
+        });
+
+        state.clean_reply_target(None);
+
+        assert!(state.submitted_hypernote_actions.is_empty());
+    }
+
+    #[test]
+    fn clean_reply_target_drops_optimistic_entry_after_authoritative_response() {
+        let mut state = State::new();
+        state.update(Message::HypernoteAction {
+            message_id: "msg-1".to_string(),
+            action_name: "vote".to_string(),
+            form: HashMap::new(),
+        });
+
+        let mut message = make_message("msg-1");
+        message.hypernote = Some(HypernoteData {
+            ast_json: "{}".to_string(),
+            document: HypernoteDocument {
+                root_node_ids: vec![],
+                nodes: vec![],
+            },
+            declared_actions: vec!["vote".to_string()],
+            title: None,
+            default_state: None,
+            default_form_state: vec![],
+            my_response: Some("vote".to_string()),
+            response_tallies: vec![],
+            responders: vec![],
+        });
+
+        state.clean_reply_target(Some(&make_chat(vec![message])));
+
+        assert!(state.submitted_hypernote_actions.is_empty());
+    }
 }

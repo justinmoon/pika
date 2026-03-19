@@ -43,7 +43,6 @@ tracing-subscriber = { workspace = true, features = ["registry"] }
 uniffi = { workspace = true }
 uuid = { workspace = true }
 cpal = "0.16"
-hypernote-mdx = { workspace = true }
 hypernote-protocol = { workspace = true }
 chrono = { workspace = true }
 regex = "1"

@@ -2,6 +2,7 @@ mod actions;
 mod bunker_signer;
 mod core;
 mod external_signer;
+mod hypernote;
 mod logging;
 mod mdk_support;
 mod route_projection;

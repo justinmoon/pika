@@ -1,6 +1,7 @@
 // Storage-derived state refresh + paging.
 
 use super::*;
+use crate::hypernote::build_hypernote_data;
 use crate::state::{
     resolve_mentions, HypernoteResponder, HypernoteResponseTally, MemberInfo, MessageSegment,
 };
@@ -1151,8 +1152,6 @@ fn build_chat_message(
     };
 
     let hypernote = if m.kind == super::HYPERNOTE_KIND {
-        let ast_json = hypernote_mdx::serialize_tree(&hypernote_mdx::parse(&m.content));
-        let declared_actions = hn::extract_submit_actions_from_ast_json(&ast_json);
         let title = m
             .tags
             .iter()
@@ -1163,15 +1162,7 @@ fn build_chat_message(
             .iter()
             .find(|t| t.kind() == TagKind::custom("state"))
             .and_then(|t| t.content().map(|s| s.to_string()));
-        Some(crate::state::HypernoteData {
-            ast_json,
-            declared_actions,
-            title,
-            default_state,
-            my_response: None,
-            response_tallies: vec![],
-            responders: vec![],
-        })
+        Some(build_hypernote_data(&m.content, title, default_state))
     } else {
         None
     };
@@ -1723,9 +1714,14 @@ mod tests {
         let mut msg = make_msg(id, "# Note", 100);
         msg.hypernote = Some(crate::state::HypernoteData {
             ast_json: "{}".to_string(),
+            document: crate::state::HypernoteDocument {
+                root_node_ids: vec![],
+                nodes: vec![],
+            },
             declared_actions: declared_actions.iter().map(|a| a.to_string()).collect(),
             title: None,
             default_state: None,
+            default_form_state: vec![],
             my_response: None,
             response_tallies: vec![],
             responders: vec![],
@@ -2042,8 +2038,11 @@ mod tests {
         let msg = make_stored_msg(
             1,
             Kind::Custom(hypernote_protocol::HYPERNOTE_KIND),
-            "# My Poll\n\nVote!",
-            Tags::new(),
+            "<SubmitButton action=\"vote\">Vote!</SubmitButton>",
+            Tags::from_iter([Tag::custom(
+                TagKind::custom("state"),
+                [r#"{"choice":"yes"}"#],
+            )]),
             100,
         );
         let sender_names = HashMap::new();
@@ -2054,6 +2053,11 @@ mod tests {
         assert!(cm.hypernote.is_some());
         let hn = cm.hypernote.unwrap();
         assert!(!hn.ast_json.is_empty());
+        assert!(!hn.document.root_node_ids.is_empty());
+        assert_eq!(hn.declared_actions, vec!["vote"]);
+        assert_eq!(hn.default_form_state.len(), 1);
+        assert_eq!(hn.default_form_state[0].name, "choice");
+        assert_eq!(hn.default_form_state[0].value, "yes");
     }
 
     // --- truncated_npub tests ---

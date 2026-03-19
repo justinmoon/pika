@@ -1,6 +1,13 @@
+mod document;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeSet, HashMap};
+
+pub use document::{
+    HypernoteAttribute, HypernoteAttributeValue, HypernoteDocument, HypernoteNode,
+    HypernoteNodeType, ParsedHypernote, extract_submit_actions, parse_hypernote,
+};
 
 pub const HYPERNOTE_KIND: u16 = 9467;
 pub const HYPERNOTE_ACTION_RESPONSE_KIND: u16 = 9468;
@@ -412,6 +419,18 @@ mod tests {
         });
         let out = extract_submit_actions_from_ast_json(&ast.to_string());
         assert_eq!(out, vec!["yes".to_string(), "no".to_string()]);
+    }
+
+    #[test]
+    fn extract_submit_actions_ast_json_matches_typed_document() {
+        let parsed = parse_hypernote(
+            "# Poll\n\n<SubmitButton action=\"yes\">Yes</SubmitButton>\n<SubmitButton action=\"no\" />",
+        );
+
+        assert_eq!(
+            extract_submit_actions_from_ast_json(&parsed.ast_json),
+            extract_submit_actions(&parsed.document),
+        );
     }
 
     #[test]
