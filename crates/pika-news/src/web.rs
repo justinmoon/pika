@@ -222,6 +222,17 @@ pub async fn serve(
             forge_repo.default_branch,
             ci::FORGE_LANE_MANIFEST_PATH
         );
+        if let Some(remote_name) = forge_repo.mirror_remote.as_deref() {
+            let interval = forge_repo.mirror_poll_interval_secs.unwrap_or(0);
+            eprintln!(
+                "forge: mirror_remote={} background_enabled={} background_interval_secs={}",
+                remote_name,
+                interval > 0,
+                interval
+            );
+        } else {
+            eprintln!("forge: mirror_remote=disabled");
+        }
     }
     let state = Arc::new(AppState {
         store,
@@ -242,7 +253,7 @@ pub async fn serve(
                     poller::poll_once_limited(&state.store, &state.config, state.max_prs),
                     worker::run_generation_pass(&state.store, &state.config),
                     ci::run_ci_pass(&state.store, &state.config),
-                    mirror::run_mirror_pass(&state.store, &state.config, "background"),
+                    mirror::run_background_mirror_pass(&state.store, &state.config),
                 )
             })
             .await
@@ -1045,7 +1056,9 @@ async fn rerun_branch_ci_lane_handler(
         return resp;
     }
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.rerun_branch_ci_lane(lane_run_id)).await {
+    match tokio::task::spawn_blocking(move || store.rerun_branch_ci_lane(branch_id, lane_run_id))
+        .await
+    {
         Ok(Ok(Some(rerun_suite_id))) => {
             state.poll_notify.notify_one();
             Json(serde_json::json!({
@@ -1082,7 +1095,9 @@ async fn rerun_nightly_lane_handler(
         return resp;
     }
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.rerun_nightly_lane(lane_run_id)).await {
+    match tokio::task::spawn_blocking(move || store.rerun_nightly_lane(nightly_run_id, lane_run_id))
+        .await
+    {
         Ok(Ok(Some(rerun_run_id))) => {
             state.poll_notify.notify_one();
             Json(serde_json::json!({
@@ -1852,16 +1867,23 @@ async fn api_admin_forge_status_handler(
     let store = state.store.clone();
     let config = state.config.clone();
     match tokio::task::spawn_blocking(move || mirror::get_mirror_status(&store, &config)).await {
-        Ok(Ok(Some((mirror_status, mirror_history)))) => Json(serde_json::json!({
-            "mirror_status": mirror_status,
-            "mirror_history": mirror_history,
-        }))
-        .into_response(),
-        Ok(Ok(None)) => Json(serde_json::json!({
-            "mirror_status": null,
-            "mirror_history": [],
-        }))
-        .into_response(),
+        Ok(Ok(mirror_admin)) => {
+            let mirror_runtime = mirror_admin.runtime;
+            match mirror_admin.detail {
+                Some((mirror_status, mirror_history)) => Json(serde_json::json!({
+                    "mirror_runtime": mirror_runtime,
+                    "mirror_status": mirror_status,
+                    "mirror_history": mirror_history,
+                }))
+                .into_response(),
+                None => Json(serde_json::json!({
+                    "mirror_runtime": mirror_runtime,
+                    "mirror_status": null,
+                    "mirror_history": [],
+                }))
+                .into_response(),
+            }
+        }
         Ok(Err(err)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": err.to_string()})),
@@ -1889,7 +1911,7 @@ async fn api_admin_mirror_sync_handler(
     match tokio::task::spawn_blocking(move || mirror::run_mirror_pass(&store, &config, "manual"))
         .await
     {
-        Ok(Ok(result)) => {
+        Ok(Ok(result)) if result.attempted => {
             state.poll_notify.notify_one();
             Json(serde_json::json!({
                 "attempted": result.attempted,
@@ -1898,6 +1920,13 @@ async fn api_admin_mirror_sync_handler(
             }))
             .into_response()
         }
+        Ok(Ok(_)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "mirror sync is unavailable; configure forge_repo.mirror_remote to enable mirroring"
+            })),
+        )
+            .into_response(),
         Ok(Err(err)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": err.to_string()})),
@@ -2206,12 +2235,13 @@ mod tests {
 
     use askama::Template;
     use axum::extract::{Path, State};
-    use axum::http::StatusCode;
+    use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue, StatusCode};
     use axum::response::IntoResponse;
     use tokio::sync::Notify;
 
     use super::{
         inbox_review_handler, markdown_to_safe_html, render_detail_template,
+        rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
         should_backfill_managed_allowlist_entry, verify_signature, AppState,
     };
     use crate::auth::AuthState;
@@ -2222,6 +2252,8 @@ mod tests {
     use crate::poller;
     use crate::storage::ChatAllowlistEntry;
     use crate::storage::Store;
+
+    const TRUSTED_NPUB: &str = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
 
     fn git<P: AsRef<std::path::Path>>(cwd: P, args: &[&str]) {
         let output = Command::new("git")
@@ -2268,6 +2300,19 @@ mod tests {
             poll_notify: Arc::new(Notify::new()),
             webhook_secret: None,
         })
+    }
+
+    fn trusted_headers(store: &Store, npub: &str) -> HeaderMap {
+        let token = "test-token";
+        store
+            .insert_auth_token(token, npub)
+            .expect("insert auth token");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("auth header"),
+        );
+        headers
     }
 
     #[test]
@@ -2391,6 +2436,7 @@ mod tests {
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
                 mirror_remote: None,
+                mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -2449,6 +2495,7 @@ mod tests {
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
                 mirror_remote: None,
+                mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -2478,6 +2525,166 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("/news/inbox")
         );
+    }
+
+    #[tokio::test]
+    async fn rerun_branch_handler_rejects_lane_from_another_branch() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let first = store
+            .upsert_branch_record(&branch_upsert_input("feature/one", "head-1"))
+            .expect("insert first branch");
+        let second = store
+            .upsert_branch_record(&branch_upsert_input("feature/two", "head-2"))
+            .expect("insert second branch");
+        store
+            .queue_branch_ci_run_for_head(
+                first.branch_id,
+                "head-1",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pika".to_string(),
+                    title: "check-pika".to_string(),
+                    entrypoint: "just checks::pre-merge-pika".to_string(),
+                    command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
+                    paths: vec![],
+                }],
+            )
+            .expect("queue branch ci");
+        let job = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim branch job")
+            .into_iter()
+            .next()
+            .expect("job");
+        store
+            .finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .expect("finish lane");
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![TRUSTED_NPUB.to_string()],
+        };
+        let headers = trusted_headers(&store, TRUSTED_NPUB);
+        let state = test_state(store, config);
+        let response = rerun_branch_ci_lane_handler(
+            State(state),
+            Path((second.branch_id, job.lane_run_id)),
+            headers,
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn rerun_nightly_handler_rejects_lane_from_another_run() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        let lane = crate::ci_manifest::ForgeLane {
+            id: "nightly_pika".to_string(),
+            title: "nightly-pika".to_string(),
+            entrypoint: "just checks::nightly-pika-e2e".to_string(),
+            command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
+            paths: vec![],
+        };
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "head-a",
+                "2026-03-17T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue first nightly");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "head-b",
+                "2026-03-18T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue second nightly");
+        let job = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly job")
+            .into_iter()
+            .next()
+            .expect("job");
+        store
+            .finish_nightly_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .expect("finish lane");
+        let wrong_nightly = store
+            .list_recent_nightly_runs(8)
+            .expect("list nightly runs")
+            .into_iter()
+            .find(|run| run.nightly_run_id != job.nightly_run_id)
+            .expect("other nightly");
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![TRUSTED_NPUB.to_string()],
+        };
+        let headers = trusted_headers(&store, TRUSTED_NPUB);
+        let state = test_state(store, config);
+        let response = rerun_nightly_lane_handler(
+            State(state),
+            Path((wrong_nightly.nightly_run_id, job.lane_run_id)),
+            headers,
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -2543,6 +2750,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 canonical_git_dir: bare.to_str().expect("bare path").to_string(),
                 default_branch: "master".to_string(),
                 mirror_remote: None,
+                mirror_poll_interval_secs: None,
                 ci_command: vec!["./ci.sh".to_string()],
                 hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
             }),

@@ -227,32 +227,61 @@
           return div.innerHTML;
         }
 
-        function formatMirrorStatus(status) {
-          if (!status) {
+        function formatMirrorStatus(runtime, status) {
+          if (!runtime || !runtime.configured) {
             return {
-              html: 'Mirror not configured.',
+              html: 'Mirror not configured. Set <code>forge_repo.mirror_remote</code> to enable GitHub mirroring.',
               className: 'status muted'
             };
           }
-          var stateClass = status.status === 'failed'
+          if (!runtime.background_enabled) {
+            return {
+              html:
+                'Mirror remote <code>' + escapeHtml(runtime.remote_name || 'unknown') + '</code> is configured, but background sync is disabled. ' +
+                'Manual sync is still available. Set <code>forge_repo.mirror_poll_interval_secs</code> to a value above 0 to re-enable background sync.',
+              className: 'status warning'
+            };
+          }
+          if (!status || !status.last_attempt) {
+            return {
+              html:
+                'Mirror remote <code>' + escapeHtml(runtime.remote_name || 'unknown') + '</code> is configured. ' +
+                'No sync attempts recorded yet. Background interval: <strong>' + escapeHtml(String(runtime.background_interval_secs || 0)) + 's</strong>.',
+              className: 'status muted'
+            };
+          }
+
+          var lastAttempt = status.last_attempt;
+          var stateClass = status.current_failure_kind === 'config'
             ? 'error'
-            : ((status.lagging_ref_count || 0) > 0 ? 'warning' : 'success');
-          var remoteHead = status.remote_default_head || 'missing';
-          var localHead = status.local_default_head || 'missing';
+            : (lastAttempt.status === 'failed'
+              ? 'error'
+              : ((status.current_lagging_ref_count || 0) > 0 ? 'warning' : 'success'));
+          var remoteHead = lastAttempt.remote_default_head || 'missing';
+          var localHead = lastAttempt.local_default_head || 'missing';
+          var lagText = (status.current_lagging_ref_count || 0) > 0
+            ? ('lagging on <strong>' + escapeHtml(String(status.current_lagging_ref_count || 0)) + '</strong> ref(s)')
+            : 'in sync';
+          var configHelp = status.current_failure_kind === 'config'
+            ? ('<br />Check mirror remote configuration and credentials in <code>' + escapeHtml(runtime.github_token_env) + '</code>.')
+            : '';
           return {
             className: 'status ' + stateClass,
             html:
               'remote <code>' + escapeHtml(status.remote_name) + '</code> · ' +
-              'status <strong>' + escapeHtml(status.status) + '</strong> · ' +
-              'lagging refs <strong>' + escapeHtml(String(status.lagging_ref_count || 0)) + '</strong> · ' +
-              'synced refs <strong>' + escapeHtml(String(status.synced_ref_count || 0)) + '</strong><br />' +
+              'last attempt <strong>' + escapeHtml(lastAttempt.status) + '</strong> at ' + escapeHtml(lastAttempt.finished_at || lastAttempt.created_at || 'unknown') + ' · ' +
+              lagText + '<br />' +
+              'last success ' + escapeHtml(status.last_success_at || 'never') + ' · ' +
+              'last failure ' + escapeHtml(status.last_failure_at || 'none') + ' · ' +
+              'consecutive failures <strong>' + escapeHtml(String(status.consecutive_failure_count || 0)) + '</strong><br />' +
               'canonical ' + escapeHtml(localHead) + ' · mirror ' + escapeHtml(remoteHead) +
-              (status.last_successful_sync_at ? ' · last success ' + escapeHtml(status.last_successful_sync_at) : '')
+              configHelp
           };
         }
 
-        function renderMirrorStatus(status, history) {
-          var rendered = formatMirrorStatus(status);
+        function renderMirrorStatus(runtime, status, history) {
+          mirrorSyncBtn.disabled = !runtime || !runtime.configured;
+          var rendered = formatMirrorStatus(runtime, status);
           mirrorStatusEl.className = rendered.className;
           mirrorStatusEl.innerHTML = rendered.html;
 
@@ -262,11 +291,16 @@
           }
 
           mirrorHistoryEl.innerHTML = history.map(function (run) {
-            var stateClass = run.status === 'failed'
+            var stateClass = run.failure_kind === 'config'
               ? 'error'
-              : ((run.lagging_ref_count || 0) > 0 ? 'warning' : 'success');
+              : (run.status === 'failed'
+              ? 'error'
+              : ((run.lagging_ref_count || 0) > 0 ? 'warning' : 'success'));
             var errorBlock = run.error_text
               ? '<div class="mirror-error ' + stateClass + '">' + escapeHtml(run.error_text) + '</div>'
+              : '';
+            var failureMeta = run.failure_kind
+              ? '<span>failure kind ' + escapeHtml(run.failure_kind) + '</span>'
               : '';
             return '' +
               '<div class="mirror-event">' +
@@ -276,6 +310,7 @@
                   '<span>finished ' + escapeHtml(run.finished_at || '') + '</span>' +
                   '<span>lagging refs ' + escapeHtml(String(run.lagging_ref_count || 0)) + '</span>' +
                   '<span>synced refs ' + escapeHtml(String(run.synced_ref_count || 0)) + '</span>' +
+                  failureMeta +
                 '</div>' +
                 '<div class="mirror-meta">' +
                   '<span>canonical ' + escapeHtml(run.local_default_head || 'missing') + '</span>' +
@@ -306,7 +341,7 @@
             }
             var data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to load mirror status');
-            renderMirrorStatus(data.mirror_status, data.mirror_history);
+            renderMirrorStatus(data.mirror_runtime, data.mirror_status, data.mirror_history);
           } catch (e) {
             mirrorStatusEl.className = 'status error';
             mirrorStatusEl.textContent = e.message;

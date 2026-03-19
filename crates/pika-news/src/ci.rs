@@ -439,6 +439,7 @@ command = ["./nightly.sh"]
             canonical_git_dir: bare.to_str().expect("bare path").to_string(),
             default_branch: "master".to_string(),
             mirror_remote: None,
+            mirror_poll_interval_secs: None,
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
         };
@@ -535,6 +536,7 @@ nightly_schedule_utc = "08:00"
             canonical_git_dir: bare.to_str().expect("bare path").to_string(),
             default_branch: "master".to_string(),
             mirror_remote: None,
+            mirror_poll_interval_secs: None,
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
         };
@@ -668,6 +670,7 @@ nightly_schedule_utc = "08:00"
             canonical_git_dir: bare.to_str().expect("bare path").to_string(),
             default_branch: "master".to_string(),
             mirror_remote: None,
+            mirror_poll_interval_secs: None,
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
         };
@@ -811,6 +814,7 @@ command = ["./nightly.sh"]
             canonical_git_dir: bare.to_str().expect("bare path").to_string(),
             default_branch: "master".to_string(),
             mirror_remote: None,
+            mirror_poll_interval_secs: None,
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
         };

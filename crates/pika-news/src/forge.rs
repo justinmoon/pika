@@ -753,6 +753,7 @@ mod tests {
             canonical_git_dir: bare.to_str().expect("bare path").to_string(),
             default_branch: "master".to_string(),
             mirror_remote: None,
+            mirror_poll_interval_secs: None,
             ci_command: vec!["./ci.sh".to_string()],
             hook_url: Some("http://127.0.0.1:9/news/webhook".to_string()),
         };
