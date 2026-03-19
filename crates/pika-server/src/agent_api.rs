@@ -45,6 +45,7 @@ use pika_relay_profiles::default_message_relays;
 
 const AGENT_OWNER_ACTIVE_INDEX: &str = "agent_instances_owner_active_idx";
 const VM_PROVIDER_ENV: &str = "PIKA_AGENT_VM_PROVIDER";
+const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
 const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 const INCUS_ENDPOINT_ENV: &str = "PIKA_AGENT_INCUS_ENDPOINT";
 const INCUS_PROJECT_ENV: &str = "PIKA_AGENT_INCUS_PROJECT";
@@ -104,8 +105,17 @@ pub struct AgentApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admin::AdminConfig;
+    use crate::browser_auth::BrowserAuthConfig;
+    use crate::models::group_subscription::GroupFilterInfo;
     use crate::test_support::serial_test_guard;
     use axum::body::to_bytes;
+    use diesel::prelude::*;
+    use diesel::r2d2::{ConnectionManager, Pool};
+    use diesel_migrations::MigrationHarness;
+    use pika_test_utils::spawn_one_shot_server;
+    use std::collections::HashSet;
+    use std::future::Future;
     struct EnvGuard {
         prior: Vec<(&'static str, Option<String>)>,
     }
@@ -152,6 +162,103 @@ mod tests {
             (INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV, None),
             (INCUS_OPENCLAW_PROXY_HOST_ENV, None),
         ]
+    }
+
+    fn init_test_db_connection() -> Option<PgConnection> {
+        dotenv::dotenv().ok();
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for agent_api db test");
+            return None;
+        };
+        let mut conn = match PgConnection::establish(&url) {
+            Ok(conn) => conn,
+            Err(err) => {
+                eprintln!("SKIP: postgres unavailable for agent_api db test: {err}");
+                return None;
+            }
+        };
+        conn.run_pending_migrations(crate::models::MIGRATIONS)
+            .expect("run migrations");
+        Some(conn)
+    }
+
+    fn init_test_db_pool() -> Option<Pool<ConnectionManager<PgConnection>>> {
+        dotenv::dotenv().ok();
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for agent_api db test pool");
+            return None;
+        };
+        if let Err(err) = PgConnection::establish(&url) {
+            eprintln!("SKIP: postgres unavailable for agent_api db test pool: {err}");
+            return None;
+        }
+        let manager = ConnectionManager::<PgConnection>::new(url);
+        let db_pool = Pool::builder()
+            .max_size(4)
+            .build(manager)
+            .expect("build test db pool");
+        let mut conn = db_pool.get().expect("get migration connection");
+        conn.run_pending_migrations(crate::models::MIGRATIONS)
+            .expect("run migrations");
+        Some(db_pool)
+    }
+
+    fn clear_test_database(conn: &mut PgConnection) {
+        diesel::sql_query(
+            "TRUNCATE TABLE managed_environment_events, agent_instances, agent_allowlist_audit, agent_allowlist, group_subscriptions, subscription_info RESTART IDENTITY CASCADE",
+        )
+        .execute(conn)
+        .expect("truncate test tables");
+    }
+
+    fn test_state(db_pool: Pool<ConnectionManager<PgConnection>>) -> State {
+        let (sender, _receiver) = tokio::sync::watch::channel(GroupFilterInfo::default());
+        State {
+            db_pool,
+            apns_client: None,
+            fcm_client: None,
+            apns_topic: String::new(),
+            channel: std::sync::Arc::new(tokio::sync::Mutex::new(sender)),
+            admin_config: std::sync::Arc::new(AdminConfig {
+                bootstrap_admins: HashSet::new(),
+                browser_auth: BrowserAuthConfig::new(
+                    b"0123456789abcdef0123456789abcdef".to_vec(),
+                    true,
+                    false,
+                    None,
+                )
+                .expect("browser auth config"),
+            }),
+            min_app_version: "0.0.0".to_string(),
+            trust_forwarded_host: false,
+        }
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    async fn with_env_overrides_async<T, F, Fut>(vars: &[(&str, Option<&str>)], f: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let _serial = serial_test_guard();
+        let prior = vars
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), std::env::var(name).ok()))
+            .collect::<Vec<_>>();
+        for (name, value) in vars {
+            match value {
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+        let result = f().await;
+        for (name, value) in prior {
+            match value {
+                Some(value) => unsafe { std::env::set_var(&name, value) },
+                None => unsafe { std::env::remove_var(&name) },
+            }
+        }
+        result
     }
 
     #[test]
@@ -357,6 +464,95 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body");
         assert_eq!(json["error"], AgentApiErrorCode::RecoverFailed.as_str());
         assert_eq!(json["request_id"], "req-123");
+    }
+
+    #[test]
+    fn load_visible_agent_row_hides_legacy_microvm_rows_without_mutating_them() {
+        let _guard = serial_test_guard();
+        let Some(mut conn) = init_test_db_connection() else {
+            return;
+        };
+        clear_test_database(&mut conn);
+
+        let owner_npub = "npub1legacyrowhidden";
+        AgentInstance::create_with_provider(
+            &mut conn,
+            owner_npub,
+            "agent-legacy-hidden",
+            Some("vm-legacy-hidden"),
+            "microvm",
+            None,
+            AGENT_PHASE_READY,
+        )
+        .expect("seed legacy active row");
+
+        let visible = load_visible_agent_row(&mut conn, owner_npub).expect("load visible row");
+        assert!(
+            visible.is_none(),
+            "legacy rows should be hidden from managed-agent reads"
+        );
+
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.phase, AGENT_PHASE_READY);
+        assert_eq!(latest.vm_id.as_deref(), Some("vm-legacy-hidden"));
+
+        clear_test_database(&mut conn);
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn cleanup_legacy_managed_agent_row_deletes_vm_before_retiring_row() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1cleanuplegacyrow";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        AgentInstance::create_with_provider(
+            &mut conn,
+            owner_npub,
+            "agent-cleanup-legacy",
+            Some("vm-cleanup-legacy"),
+            "microvm",
+            None,
+            AGENT_PHASE_READY,
+        )
+        .expect("seed legacy row");
+        drop(conn);
+
+        let (base_url, rx) = spawn_one_shot_server("204 No Content", "");
+        with_env_overrides_async(
+            &[(MICROVM_SPAWNER_URL_ENV, Some(base_url.as_str()))],
+            || async {
+                let cleaned =
+                    cleanup_legacy_managed_agent_row(&state, owner_npub, "req-cleanup-legacy")
+                        .await
+                        .expect("cleanup should succeed");
+                assert!(cleaned);
+            },
+        )
+        .await;
+
+        let request = rx.recv().expect("captured delete request");
+        assert_eq!(request.method, "DELETE");
+        assert_eq!(request.path, "/vms/vm-cleanup-legacy");
+        assert_eq!(
+            request.headers.get("x-request-id").map(String::as_str),
+            Some("req-cleanup-legacy")
+        );
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.phase, AGENT_PHASE_ERROR);
+        assert_eq!(latest.vm_id, None);
+
+        clear_test_database(&mut conn);
     }
 }
 
@@ -3136,7 +3332,6 @@ fn load_visible_agent_row(
             if stored_provider_kind_from_db_value(&row.provider).ok()
                 == Some(StoredManagedVmProviderKind::LegacyMicrovm) =>
         {
-            retire_legacy_managed_agent_row(conn, &row)?;
             None
         }
         other => other,
@@ -3180,6 +3375,103 @@ fn retire_legacy_managed_agent_row(
         "retired legacy microvm managed-agent row after hard cut"
     );
     Ok(())
+}
+
+fn load_legacy_cleanup_candidate(
+    conn: &mut PgConnection,
+    owner_npub: &str,
+) -> Result<Option<AgentInstance>, AgentApiError> {
+    let active = AgentInstance::find_active_by_owner(conn, owner_npub)
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    let latest = if active.is_none() {
+        AgentInstance::find_latest_by_owner(conn, owner_npub)
+            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+    } else {
+        None
+    };
+    Ok(select_visible_agent_row(active, latest).filter(|row| {
+        stored_provider_kind_from_db_value(&row.provider).ok()
+            == Some(StoredManagedVmProviderKind::LegacyMicrovm)
+    }))
+}
+
+fn required_legacy_microvm_spawner_url() -> anyhow::Result<String> {
+    let value = std::env::var(MICROVM_SPAWNER_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "{} must be set to clean up legacy managed-agent microVM rows",
+                MICROVM_SPAWNER_URL_ENV
+            )
+        })?;
+    let mut url = Url::parse(&value)
+        .with_context(|| format!("{MICROVM_SPAWNER_URL_ENV} must be a valid URL, got {value:?}"))?;
+    anyhow::ensure!(
+        matches!(url.scheme(), "http" | "https"),
+        "{MICROVM_SPAWNER_URL_ENV} must use http or https, got {:?}",
+        url.scheme()
+    );
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.to_string().trim_end_matches('/').to_string())
+}
+
+async fn delete_legacy_microvm_vm(vm_id: &str, request_id: &str) -> anyhow::Result<()> {
+    let base_url = required_legacy_microvm_spawner_url()?;
+    let url = format!("{base_url}/vms/{vm_id}");
+    let response = reqwest::Client::new()
+        .delete(&url)
+        .header("x-request-id", request_id)
+        .send()
+        .await
+        .with_context(|| format!("send legacy microvm delete for {vm_id}"))?;
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    anyhow::bail!("legacy microvm delete failed for {vm_id}: http {status} {body}");
+}
+
+async fn cleanup_legacy_managed_agent_row(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+) -> Result<bool, AgentApiError> {
+    let candidate = {
+        let mut conn = state.db_pool.get().map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
+        load_legacy_cleanup_candidate(&mut conn, owner_npub)?
+    };
+    let Some(candidate) = candidate else {
+        return Ok(false);
+    };
+
+    if let Some(vm_id) = candidate.vm_id.as_deref() {
+        delete_legacy_microvm_vm(vm_id, request_id)
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    request_id = %request_id,
+                    owner_npub = %owner_npub,
+                    agent_id = %candidate.agent_id,
+                    vm_id = %vm_id,
+                    error = %err,
+                    "failed to delete legacy managed-agent microvm before hard-cut reprovision"
+                );
+                AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+            })?;
+    }
+
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    retire_legacy_managed_agent_row(&mut conn, &candidate)
+        .map_err(|err| err.with_request_id(request_id.to_string()))?;
+    Ok(true)
 }
 
 fn normalize_loaded_agent_row(
@@ -3749,6 +4041,7 @@ async fn provision_agent_for_owner(
     request_id: &str,
     requested: Option<&ManagedVmProvisionParams>,
 ) -> Result<AgentInstance, AgentApiError> {
+    cleanup_legacy_managed_agent_row(state, owner_npub, request_id).await?;
     let bot_identity = generate_provisioning_bot_identity().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
@@ -3789,14 +4082,6 @@ async fn provision_agent_for_owner(
             AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
         })?;
         conn.transaction::<AgentInstance, anyhow::Error, _>(|conn| {
-            if let Some(active) = AgentInstance::find_active_by_owner(conn, owner_npub)? {
-                if stored_provider_kind_from_db_value(&active.provider)?
-                    == StoredManagedVmProviderKind::LegacyMicrovm
-                {
-                    retire_legacy_managed_agent_row(conn, &active)
-                        .map_err(|_| anyhow!("failed to retire legacy managed-agent row"))?;
-                }
-            }
             let created = AgentInstance::create_with_provider(
                 conn,
                 owner_npub,
@@ -4148,6 +4433,7 @@ pub(crate) async fn reset_agent_for_owner(
     request_id: &str,
     requested: Option<&ManagedVmProvisionParams>,
 ) -> Result<ManagedEnvironmentAction, AgentApiError> {
+    cleanup_legacy_managed_agent_row(state, owner_npub, request_id).await?;
     let existing = {
         let mut conn = state.db_pool.get().map_err(|_| {
             AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
