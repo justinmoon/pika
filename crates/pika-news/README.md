@@ -25,7 +25,7 @@ bootstrap_admin_npubs = ["npub1..."]
 
 - `repos`: legacy repo slug list; keep `["sledtools/pika"]`.
 - `forge_repo`: canonical forge metadata for the single hosted `pika` bare repo.
-- `ci/forge-lanes.toml`: checked-in source of truth for canonical pre-merge lane selection and nightly lane definitions. The forge reads it from `master`, not from branch heads.
+- `ci/forge-lanes.toml`: checked-in source of truth for canonical pre-merge lane selection and nightly lane definitions. Branch pushes are evaluated against the branch head's proposed manifest; nightly uses the default branch manifest.
 - `poll_interval_secs`: interval used by hosted mode repair scans of the canonical bare repo.
 - `model`: Anthropic model name for tutorial generation.
 - `api_key_env`: environment variable containing the API key.
@@ -42,6 +42,7 @@ bootstrap_admin_npubs = ["npub1..."]
 
 - Branch-push pre-merge CI is now orchestrated by the forge from `ci/forge-lanes.toml`.
 - Nightly scheduling is now orchestrated by the forge service from the same manifest.
+- GitHub mirrors the same manifest through `scripts/forge-github-ci-shim.py` and `.github/workflows/pre-merge.yml`, but that path is advisory only.
 - GitHub Actions release and TestFlight workflows remain in place, but GitHub is no longer the canonical control plane for day-to-day pre-merge or nightly CI.
 
 ## Local mode

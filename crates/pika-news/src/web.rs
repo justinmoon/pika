@@ -23,6 +23,7 @@ use crate::branch_store::{
 use crate::ci;
 use crate::config::Config;
 use crate::forge;
+use crate::mirror;
 use crate::model;
 use crate::poller;
 use crate::render::is_safe_http_url;
@@ -161,6 +162,7 @@ struct CiLaneView {
 
 #[derive(Clone)]
 struct NightlyLaneView {
+    id: i64,
     lane_id: String,
     title: String,
     entrypoint: String,
@@ -240,11 +242,12 @@ pub async fn serve(
                     poller::poll_once_limited(&state.store, &state.config, state.max_prs),
                     worker::run_generation_pass(&state.store, &state.config),
                     ci::run_ci_pass(&state.store, &state.config),
+                    mirror::run_mirror_pass(&state.store, &state.config, "background"),
                 )
             })
             .await
             {
-                Ok((poll_result, worker_result, ci_result)) => {
+                Ok((poll_result, worker_result, ci_result, mirror_result)) => {
                     match poll_result {
                         Ok(pr)
                             if pr.branches_seen > 0
@@ -298,6 +301,23 @@ pub async fn serve(
                             eprintln!("pika-news ci runner error: {}", err);
                         }
                     }
+                    match mirror_result {
+                        Ok(mirror)
+                            if mirror.attempted
+                                && (mirror.status.as_deref() != Some("success")
+                                    || mirror.lagging_ref_count.unwrap_or(0) > 0) =>
+                        {
+                            eprintln!(
+                                "mirror: status={} lagging_refs={}",
+                                mirror.status.as_deref().unwrap_or("unknown"),
+                                mirror.lagging_ref_count.unwrap_or(-1)
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            eprintln!("pika-news mirror runner error: {}", err);
+                        }
+                    }
                 }
                 Err(err) => {
                     eprintln!("pika-news background task join error: {}", err);
@@ -321,6 +341,14 @@ pub async fn serve(
         .route("/news/pr/:pr_id", get(detail_handler))
         .route("/news/branch/:pr_id/merge", post(merge_handler))
         .route("/news/branch/:pr_id/close", post(close_handler))
+        .route(
+            "/news/branch/:branch_id/ci/rerun/:lane_run_id",
+            post(rerun_branch_ci_lane_handler),
+        )
+        .route(
+            "/news/nightly/:nightly_run_id/rerun/:lane_run_id",
+            post(rerun_nightly_lane_handler),
+        )
         .route("/news/inbox", get(inbox_handler))
         .route("/news/admin", get(admin_handler))
         .route("/news/inbox/review/:pr_id", get(inbox_review_handler))
@@ -331,6 +359,14 @@ pub async fn serve(
         .route(
             "/news/api/admin/allowlist",
             get(api_admin_allowlist_handler).post(api_admin_allowlist_upsert_handler),
+        )
+        .route(
+            "/news/api/admin/forge-status",
+            get(api_admin_forge_status_handler),
+        )
+        .route(
+            "/news/api/admin/mirror/sync",
+            post(api_admin_mirror_sync_handler),
         )
         .route(
             "/news/api/inbox/neighbors/:pr_id",
@@ -726,6 +762,7 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
 
 fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
     NightlyLaneView {
+        id: lane.id,
         lane_id: lane.lane_id,
         title: lane.title,
         entrypoint: lane.entrypoint,
@@ -988,6 +1025,80 @@ async fn close_handler(
         }
         Ok(Err(err)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn rerun_branch_ci_lane_handler(
+    State(state): State<Arc<AppState>>,
+    Path((branch_id, lane_run_id)): Path<(i64, i64)>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
+        return resp;
+    }
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || store.rerun_branch_ci_lane(lane_run_id)).await {
+        Ok(Ok(Some(rerun_suite_id))) => {
+            state.poll_notify.notify_one();
+            Json(serde_json::json!({
+                "status": "ok",
+                "branch_id": branch_id,
+                "rerun_suite_id": rerun_suite_id
+            }))
+            .into_response()
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "branch lane not found"})),
+        )
+            .into_response(),
+        Ok(Err(err)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn rerun_nightly_lane_handler(
+    State(state): State<Arc<AppState>>,
+    Path((nightly_run_id, lane_run_id)): Path<(i64, i64)>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
+        return resp;
+    }
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || store.rerun_nightly_lane(lane_run_id)).await {
+        Ok(Ok(Some(rerun_run_id))) => {
+            state.poll_notify.notify_one();
+            Json(serde_json::json!({
+                "status": "ok",
+                "nightly_run_id": nightly_run_id,
+                "rerun_run_id": rerun_run_id
+            }))
+            .into_response()
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "nightly lane not found"})),
+        )
+            .into_response(),
+        Ok(Err(err)) => (
+            StatusCode::CONFLICT,
             Json(serde_json::json!({"error": err.to_string()})),
         )
             .into_response(),
@@ -1729,6 +1840,77 @@ async fn api_admin_allowlist_handler(
     }
 }
 
+async fn api_admin_forge_status_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let _admin_npub = match require_admin_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    let store = state.store.clone();
+    let config = state.config.clone();
+    match tokio::task::spawn_blocking(move || mirror::get_mirror_status(&store, &config)).await {
+        Ok(Ok(Some((mirror_status, mirror_history)))) => Json(serde_json::json!({
+            "mirror_status": mirror_status,
+            "mirror_history": mirror_history,
+        }))
+        .into_response(),
+        Ok(Ok(None)) => Json(serde_json::json!({
+            "mirror_status": null,
+            "mirror_history": [],
+        }))
+        .into_response(),
+        Ok(Err(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_admin_mirror_sync_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let _admin_npub = match require_admin_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    let store = state.store.clone();
+    let config = state.config.clone();
+    match tokio::task::spawn_blocking(move || mirror::run_mirror_pass(&store, &config, "manual"))
+        .await
+    {
+        Ok(Ok(result)) => {
+            state.poll_notify.notify_one();
+            Json(serde_json::json!({
+                "attempted": result.attempted,
+                "status": result.status,
+                "lagging_ref_count": result.lagging_ref_count,
+            }))
+            .into_response()
+        }
+        Ok(Err(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_admin_allowlist_upsert_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -2208,6 +2390,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
+                mirror_remote: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -2265,6 +2448,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
+                mirror_remote: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -2358,6 +2542,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: bare.to_str().expect("bare path").to_string(),
                 default_branch: "master".to_string(),
+                mirror_remote: None,
                 ci_command: vec!["./ci.sh".to_string()],
                 hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
             }),

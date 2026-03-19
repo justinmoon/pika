@@ -11,6 +11,7 @@
       .lane:first-child { border-top: none; padding-top: 0; margin-top: 0; }
       .lane pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; font-size: 0.82rem; }
       .muted { color: var(--text-muted); }
+      .lane-btn { margin-top: 0.5rem; }
 {% endblock %}
 
 {% block body %}
@@ -62,9 +63,64 @@
           {% when None %}
           <p class="muted">No logs yet.</p>
           {% endmatch %}
+          {% if lane.status != "queued" && lane.status != "running" %}
+          <button
+            type="button"
+            class="secondary-btn lane-btn lane-rerun-btn"
+            data-lane-run-id="{{ lane.id }}"
+            style="display:none;"
+          >Rerun Lane</button>
+          {% endif %}
         </article>
         {% endfor %}
         {% endif %}
       </section>
     </main>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      (function () {
+        const rerunButtons = Array.from(document.querySelectorAll('.lane-rerun-btn'));
+        const nightlyRunId = {{ nightly_run_id }};
+
+        function authToken() {
+          return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
+        }
+
+        function showRerunButtons() {
+          const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
+          rerunButtons.forEach((button) => {
+            button.style.display = canForgeWrite ? '' : 'none';
+          });
+        }
+
+        async function rerunLane(button) {
+          const token = authToken();
+          if (!token) return;
+          const originalLabel = button.textContent;
+          button.disabled = true;
+          button.textContent = 'Queueing...';
+          try {
+            const res = await fetch(`/news/nightly/${nightlyRunId}/rerun/${button.dataset.laneRunId}`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'rerun failed');
+            window.location.reload();
+          } catch (err) {
+            button.disabled = false;
+            button.textContent = err.message || originalLabel;
+          }
+        }
+
+        rerunButtons.forEach((button) => {
+          button.addEventListener('click', () => rerunLane(button));
+        });
+
+        window.addEventListener('pika-auth', showRerunButtons);
+        showRerunButtons();
+      })();
+    </script>
 {% endblock %}

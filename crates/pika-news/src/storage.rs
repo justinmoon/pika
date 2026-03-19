@@ -2459,6 +2459,11 @@ fn migrations() -> Vec<Migration> {
             name: "0014_branch_inbox",
             sql: include_str!("../migrations/0014_branch_inbox.sql"),
         },
+        Migration {
+            version: 15,
+            name: "0015_mirror_sync_runs",
+            sql: include_str!("../migrations/0015_mirror_sync_runs.sql"),
+        },
     ]
 }
 

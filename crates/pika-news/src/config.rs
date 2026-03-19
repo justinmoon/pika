@@ -56,6 +56,8 @@ pub struct ForgeRepoConfig {
     pub canonical_git_dir: String,
     #[serde(default = "default_default_branch")]
     pub default_branch: String,
+    #[serde(default)]
+    pub mirror_remote: Option<String>,
     #[serde(default = "default_ci_command")]
     pub ci_command: Vec<String>,
     #[serde(default)]
@@ -167,6 +169,7 @@ bind_port = 8080
 [forge_repo]
 canonical_git_dir = "/srv/pika.git"
 default_branch = "master"
+mirror_remote = "github"
 ci_command = ["just", "pre-merge"]
 "#;
 
@@ -186,6 +189,7 @@ ci_command = ["just", "pre-merge"]
         assert_eq!(forge.repo, super::DEFAULT_FORGE_REPO);
         assert_eq!(forge.canonical_git_dir, "/srv/pika.git");
         assert_eq!(forge.default_branch, "master");
+        assert_eq!(forge.mirror_remote.as_deref(), Some("github"));
         assert_eq!(forge.ci_command, vec!["just", "pre-merge"]);
     }
 

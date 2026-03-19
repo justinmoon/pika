@@ -41,6 +41,7 @@
       .ci-run:first-child { border-top: none; padding-top: 0; margin-top: 0; }
       .ci-run pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; font-size: 0.82rem; }
       .muted { color: var(--text-muted); }
+      .lane-btn { margin-top: 0.5rem; }
       button:disabled { opacity: 0.55; cursor: default; }
       .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
       .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
@@ -167,6 +168,14 @@
             {% when None %}
             <p class="muted">No logs yet.</p>
             {% endmatch %}
+            {% if lane.status != "queued" && lane.status != "running" %}
+            <button
+              type="button"
+              class="secondary-btn lane-btn lane-rerun-btn"
+              data-lane-run-id="{{ lane.id }}"
+              style="display:none;"
+            >Rerun Lane</button>
+            {% endif %}
           </details>
           {% endfor %}
           {% endif %}
@@ -252,6 +261,7 @@
         const reviewNextBtn = document.getElementById('review-next');
         const reviewDismissBtn = document.getElementById('review-dismiss');
         const reviewPosEl = document.getElementById('review-pos');
+        const rerunButtons = Array.from(document.querySelectorAll('.lane-rerun-btn'));
         const branchId = {{ branch_id }};
         const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
 
@@ -260,9 +270,13 @@
         }
 
         function showActions() {
-          if (!actionWrap) return;
           const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
-          actionWrap.style.display = canForgeWrite ? 'flex' : 'none';
+          if (actionWrap) {
+            actionWrap.style.display = canForgeWrite ? 'flex' : 'none';
+          }
+          rerunButtons.forEach((button) => {
+            button.style.display = canForgeWrite ? '' : 'none';
+          });
         }
 
         async function branchAction(path, button, busyLabel, doneLabel) {
@@ -297,6 +311,16 @@
             branchAction(`/news/branch/${branchId}/close`, closeBtn, 'Closing branch...', 'Branch closed.');
           });
         }
+        rerunButtons.forEach((button) => {
+          button.addEventListener('click', () => {
+            branchAction(
+              `/news/branch/${branchId}/ci/rerun/${button.dataset.laneRunId}`,
+              button,
+              'Queueing lane rerun...',
+              'Lane rerun queued.'
+            );
+          });
+        });
 
         async function refreshReviewControls() {
           if (!reviewMode || !reviewPrevBtn || !reviewNextBtn || !reviewDismissBtn || !reviewPosEl) return;

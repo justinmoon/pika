@@ -10,6 +10,7 @@
       .status { margin-top: 0.75rem; font-size: 0.9rem; color: var(--text-secondary); }
       .error { color: #b91c1c; }
       .success { color: #166534; }
+      .warning { color: #92400e; }
       form { display: grid; gap: 0.75rem; }
       label { display: grid; gap: 0.3rem; font-size: 0.92rem; }
       input[type=text] { width: 100%; padding: 0.65rem 0.75rem; border-radius: 10px; border: 1px solid var(--input-border); background: var(--surface-solid); color: var(--text); }
@@ -23,6 +24,10 @@
       th { font-size: 0.82rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
       td code { font-size: 0.82rem; }
       .empty { color: var(--text-muted); padding: 1rem 0; }
+      .mirror-history { display: grid; gap: 0.75rem; margin-top: 1rem; }
+      .mirror-event { border: 1px solid var(--border); border-radius: 12px; padding: 0.85rem; background: var(--surface); }
+      .mirror-meta { display: flex; gap: 0.75rem; flex-wrap: wrap; color: var(--text-muted); font-size: 0.9rem; margin-top: 0.45rem; }
+      .mirror-error { white-space: pre-wrap; margin-top: 0.6rem; font-size: 0.9rem; }
 {% endblock %}
 
 {% block body %}
@@ -97,6 +102,16 @@
             <tbody id="allowlist-rows"></tbody>
           </table>
         </section>
+
+        <section class="panel">
+          <h2>GitHub Mirror</h2>
+          <p class="muted">git.pikachat.org is canonical. GitHub is a mirror and advisory CI surface.</p>
+          <div class="btn-row">
+            <button class="secondary-btn" id="mirror-sync-btn" type="button">Sync Mirror Now</button>
+          </div>
+          <div id="mirror-status" class="status">Loading mirror status...</div>
+          <div id="mirror-history" class="mirror-history"></div>
+        </section>
       </div>
     </main>
 {% endblock %}
@@ -120,6 +135,9 @@
         var tableEl = document.getElementById('allowlist-table');
         var emptyEl = document.getElementById('allowlist-empty');
         var rowsEl = document.getElementById('allowlist-rows');
+        var mirrorStatusEl = document.getElementById('mirror-status');
+        var mirrorHistoryEl = document.getElementById('mirror-history');
+        var mirrorSyncBtn = document.getElementById('mirror-sync-btn');
 
         function getToken() {
           return window.pikaAuth && window.pikaAuth.getToken();
@@ -209,6 +227,93 @@
           return div.innerHTML;
         }
 
+        function formatMirrorStatus(status) {
+          if (!status) {
+            return {
+              html: 'Mirror not configured.',
+              className: 'status muted'
+            };
+          }
+          var stateClass = status.status === 'failed'
+            ? 'error'
+            : ((status.lagging_ref_count || 0) > 0 ? 'warning' : 'success');
+          var remoteHead = status.remote_default_head || 'missing';
+          var localHead = status.local_default_head || 'missing';
+          return {
+            className: 'status ' + stateClass,
+            html:
+              'remote <code>' + escapeHtml(status.remote_name) + '</code> · ' +
+              'status <strong>' + escapeHtml(status.status) + '</strong> · ' +
+              'lagging refs <strong>' + escapeHtml(String(status.lagging_ref_count || 0)) + '</strong> · ' +
+              'synced refs <strong>' + escapeHtml(String(status.synced_ref_count || 0)) + '</strong><br />' +
+              'canonical ' + escapeHtml(localHead) + ' · mirror ' + escapeHtml(remoteHead) +
+              (status.last_successful_sync_at ? ' · last success ' + escapeHtml(status.last_successful_sync_at) : '')
+          };
+        }
+
+        function renderMirrorStatus(status, history) {
+          var rendered = formatMirrorStatus(status);
+          mirrorStatusEl.className = rendered.className;
+          mirrorStatusEl.innerHTML = rendered.html;
+
+          if (!history || history.length === 0) {
+            mirrorHistoryEl.innerHTML = '<div class="empty">No mirror sync attempts recorded yet.</div>';
+            return;
+          }
+
+          mirrorHistoryEl.innerHTML = history.map(function (run) {
+            var stateClass = run.status === 'failed'
+              ? 'error'
+              : ((run.lagging_ref_count || 0) > 0 ? 'warning' : 'success');
+            var errorBlock = run.error_text
+              ? '<div class="mirror-error ' + stateClass + '">' + escapeHtml(run.error_text) + '</div>'
+              : '';
+            return '' +
+              '<div class="mirror-event">' +
+                '<div><strong>' + escapeHtml(run.status) + '</strong> · ' + escapeHtml(run.trigger_source) + '</div>' +
+                '<div class="mirror-meta">' +
+                  '<span>created ' + escapeHtml(run.created_at || '') + '</span>' +
+                  '<span>finished ' + escapeHtml(run.finished_at || '') + '</span>' +
+                  '<span>lagging refs ' + escapeHtml(String(run.lagging_ref_count || 0)) + '</span>' +
+                  '<span>synced refs ' + escapeHtml(String(run.synced_ref_count || 0)) + '</span>' +
+                '</div>' +
+                '<div class="mirror-meta">' +
+                  '<span>canonical ' + escapeHtml(run.local_default_head || 'missing') + '</span>' +
+                  '<span>mirror ' + escapeHtml(run.remote_default_head || 'missing') + '</span>' +
+                '</div>' +
+                errorBlock +
+              '</div>';
+          }).join('');
+        }
+
+        async function loadMirrorStatus(token) {
+          mirrorStatusEl.className = 'status muted';
+          mirrorStatusEl.textContent = 'Loading mirror status...';
+          mirrorHistoryEl.innerHTML = '';
+          try {
+            var res = await fetch('/news/api/admin/forge-status', {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401) {
+              clearAuth();
+              loadAdminPage();
+              return;
+            }
+            if (res.status === 403) {
+              forbiddenEl.style.display = '';
+              contentEl.style.display = 'none';
+              return;
+            }
+            var data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to load mirror status');
+            renderMirrorStatus(data.mirror_status, data.mirror_history);
+          } catch (e) {
+            mirrorStatusEl.className = 'status error';
+            mirrorStatusEl.textContent = e.message;
+            mirrorHistoryEl.innerHTML = '';
+          }
+        }
+
         async function loadAdminPage() {
           var token = getToken();
           if (!token) {
@@ -243,11 +348,48 @@
             renderBootstrapAdmins(data.bootstrap_admin_npubs || []);
             renderLegacyAllowed(data.legacy_allowed_npubs || []);
             renderEntries(data.entries || []);
+            loadMirrorStatus(token);
             loadingEl.style.display = 'none';
             contentEl.style.display = '';
           } catch (e) {
             loadingEl.style.display = 'none';
             showStatus(e.message, false);
+          }
+        }
+
+        async function syncMirror() {
+          var token = getToken();
+          if (!token) {
+            loadAdminPage();
+            return;
+          }
+          mirrorSyncBtn.disabled = true;
+          mirrorStatusEl.className = 'status muted';
+          mirrorStatusEl.textContent = 'Syncing mirror...';
+          try {
+            var res = await fetch('/news/api/admin/mirror/sync', {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401) {
+              clearAuth();
+              loadAdminPage();
+              return;
+            }
+            if (res.status === 403) {
+              forbiddenEl.style.display = '';
+              contentEl.style.display = 'none';
+              return;
+            }
+            var data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Mirror sync failed');
+            await loadMirrorStatus(token);
+            showStatus('Mirror sync completed.', true);
+          } catch (e) {
+            mirrorStatusEl.className = 'status error';
+            mirrorStatusEl.textContent = e.message;
+          } finally {
+            mirrorSyncBtn.disabled = false;
           }
         }
 
@@ -302,6 +444,7 @@
         });
 
         resetEl.addEventListener('click', resetForm);
+        mirrorSyncBtn.addEventListener('click', syncMirror);
 
         if (window.pikaAuth && window.pikaAuth.isAuthed()) {
           loadAdminPage();
