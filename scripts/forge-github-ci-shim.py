@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import tomllib
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 
 def repo_root() -> Path:
@@ -86,11 +87,36 @@ def load_manifest(path: Path) -> dict:
 
 
 def match_path(path: str, patterns: list[str]) -> bool:
-    posix = PurePosixPath(path)
     for pattern in patterns:
-        if posix.match(pattern):
+        if glob_match(path, pattern):
             return True
     return False
+
+
+def glob_match(path: str, pattern: str) -> bool:
+    return re.fullmatch(glob_to_regex(pattern), path) is not None
+
+
+def glob_to_regex(pattern: str) -> str:
+    parts: list[str] = ["^"]
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "*":
+            if i + 1 < len(pattern) and pattern[i + 1] == "*":
+                parts.append(".*")
+                i += 2
+            else:
+                parts.append("[^/]*")
+                i += 1
+        elif ch == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(ch))
+            i += 1
+    parts.append("$")
+    return "".join(parts)
 
 
 def changed_paths(base: str, head: str, compare_repo_root: Path, head_repo_root: Path | None) -> list[str]:

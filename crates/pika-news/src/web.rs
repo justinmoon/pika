@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -204,6 +205,8 @@ struct DetailTemplate {
     steps: Vec<StepView>,
     diff_json: Option<String>,
     ci_runs: Vec<CiRunView>,
+    page_notices: Vec<PageNoticeView>,
+    latest_failed_lane_count: usize,
     review_mode: bool,
 }
 
@@ -223,6 +226,8 @@ struct NightlyTemplate {
     started_at: Option<String>,
     finished_at: Option<String>,
     lanes: Vec<NightlyLaneView>,
+    page_notices: Vec<PageNoticeView>,
+    failed_lane_count: usize,
 }
 
 #[derive(Template)]
@@ -269,6 +274,12 @@ struct StepView {
 struct MediaLinkView {
     href: String,
     label: String,
+}
+
+#[derive(Clone)]
+struct PageNoticeView {
+    tone: String,
+    message: String,
 }
 
 #[derive(Clone)]
@@ -492,6 +503,109 @@ fn collect_forge_startup_issues(
     }
 
     issues
+}
+
+fn push_page_notice(
+    notices: &mut Vec<PageNoticeView>,
+    seen: &mut BTreeSet<String>,
+    tone: &str,
+    message: &str,
+) {
+    if seen.insert(message.to_string()) {
+        notices.push(PageNoticeView {
+            tone: tone.to_string(),
+            message: message.to_string(),
+        });
+    }
+}
+
+fn branch_page_notices(state: &AppState) -> Vec<PageNoticeView> {
+    let Ok(health) = state.forge_health.lock() else {
+        return Vec::new();
+    };
+    if !health.enabled {
+        return Vec::new();
+    }
+    let mut notices = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for issue in &health.issues {
+        match issue.code.as_str() {
+            "canonical_repo_unavailable" => push_page_notice(
+                &mut notices,
+                &mut seen,
+                "error",
+                "Forge repo access is degraded. Branch state and CI may be stale until canonical repo access is fixed.",
+            ),
+            "webhook_secret_missing" | "hook_install_failed" => push_page_notice(
+                &mut notices,
+                &mut seen,
+                "warning",
+                "Webhook refresh is unavailable. New pushes may appear on the next poll instead of immediately.",
+            ),
+            _ => {}
+        }
+    }
+
+    if health.poller.state == "error" {
+        push_page_notice(
+            &mut notices,
+            &mut seen,
+            "warning",
+            "Forge polling hit an error. Recent branch updates may be stale until it recovers.",
+        );
+    }
+    if health.generation_worker.state == "error" {
+        push_page_notice(
+            &mut notices,
+            &mut seen,
+            "warning",
+            "Summary generation hit an error. New tutorial updates may be delayed until it recovers.",
+        );
+    }
+    if health.ci.state == "error" {
+        push_page_notice(
+            &mut notices,
+            &mut seen,
+            "error",
+            "Forge CI hit an error. New lane runs may stay queued until the runner recovers.",
+        );
+    }
+
+    notices
+}
+
+fn nightly_page_notices(state: &AppState) -> Vec<PageNoticeView> {
+    let Ok(health) = state.forge_health.lock() else {
+        return Vec::new();
+    };
+    if !health.enabled {
+        return Vec::new();
+    }
+    let mut notices = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for issue in &health.issues {
+        if issue.code.as_str() == "canonical_repo_unavailable" {
+            push_page_notice(
+                &mut notices,
+                &mut seen,
+                "error",
+                "Forge repo access is degraded. Nightly state may be stale until canonical repo access is fixed.",
+            );
+        }
+    }
+
+    if health.ci.state == "error" {
+        push_page_notice(
+            &mut notices,
+            &mut seen,
+            "error",
+            "Forge CI hit an error. New nightly lanes may stay queued until the runner recovers.",
+        );
+    }
+
+    notices
 }
 
 pub async fn serve(
@@ -860,7 +974,7 @@ async fn nightly_handler(
                     .into_response();
             }
         };
-    let template = render_nightly_template(nightly);
+    let template = render_nightly_template_with_notices(nightly, nightly_page_notices(&state));
     match template.render() {
         Ok(rendered) => Html(rendered).into_response(),
         Err(err) => (
@@ -967,7 +1081,12 @@ async fn detail_page(
             }
         };
 
-    match render_detail_template(detail, ci_runs, review_mode) {
+    match render_detail_template_with_notices(
+        detail,
+        ci_runs,
+        review_mode,
+        branch_page_notices(&state),
+    ) {
         Ok(template) => match template.render() {
             Ok(rendered) => Html(rendered).into_response(),
             Err(err) => (
@@ -1009,14 +1128,33 @@ fn map_nightly_feed_item(item: NightlyFeedItem) -> NightlyFeedItemView {
     }
 }
 
+#[cfg(test)]
 fn render_detail_template(
     record: BranchDetailRecord,
     ci_runs: Vec<BranchCiRunRecord>,
     review_mode: bool,
 ) -> anyhow::Result<DetailTemplate> {
+    render_detail_template_with_notices(record, ci_runs, review_mode, Vec::new())
+}
+
+fn render_detail_template_with_notices(
+    record: BranchDetailRecord,
+    ci_runs: Vec<BranchCiRunRecord>,
+    review_mode: bool,
+    page_notices: Vec<PageNoticeView>,
+) -> anyhow::Result<DetailTemplate> {
     let mut steps = Vec::new();
     let mut executive_html = None;
     let mut media_links = Vec::new();
+    let latest_failed_lane_count = ci_runs
+        .first()
+        .map(|run| {
+            run.lanes
+                .iter()
+                .filter(|lane| lane.status == "failed")
+                .count()
+        })
+        .unwrap_or(0);
 
     if let Some(tutorial_json) = &record.tutorial_json {
         let tutorial: TutorialDoc = serde_json::from_str(tutorial_json)
@@ -1087,11 +1225,26 @@ fn render_detail_template(
                 lanes: run.lanes.into_iter().map(map_ci_lane_view).collect(),
             })
             .collect(),
+        page_notices,
+        latest_failed_lane_count,
         review_mode,
     })
 }
 
+#[cfg(test)]
 fn render_nightly_template(run: NightlyRunRecord) -> NightlyTemplate {
+    render_nightly_template_with_notices(run, Vec::new())
+}
+
+fn render_nightly_template_with_notices(
+    run: NightlyRunRecord,
+    page_notices: Vec<PageNoticeView>,
+) -> NightlyTemplate {
+    let failed_lane_count = run
+        .lanes
+        .iter()
+        .filter(|lane| lane.status == "failed")
+        .count();
     NightlyTemplate {
         page_title: format!("{} nightly #{}", run.repo, run.nightly_run_id),
         repo: run.repo,
@@ -1106,6 +1259,8 @@ fn render_nightly_template(run: NightlyRunRecord) -> NightlyTemplate {
         started_at: run.started_at,
         finished_at: run.finished_at,
         lanes: run.lanes.into_iter().map(map_nightly_lane_view).collect(),
+        page_notices,
+        failed_lane_count,
     }
 }
 
@@ -1796,7 +1951,11 @@ async fn regenerate_handler(
         }
         Ok(Ok(false)) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "no artifact found for this PR"})),
+            Json(serde_json::json!({"error": if state.config.effective_forge_repo().is_some() {
+                "no tutorial artifact found for this branch"
+            } else {
+                "no artifact found for this PR"
+            }})),
         )
             .into_response(),
         Ok(Err(e)) => (

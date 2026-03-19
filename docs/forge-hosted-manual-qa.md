@@ -31,13 +31,15 @@ guessing which surfaces matter.
    - the summary/detail page renders
    - the branch id is stable and numeric
    - the CI section appears
+   - no unexpected forge warning banner is shown
 
 ## CI Visibility
 
 1. Wait for the branch CI lanes to start.
 2. Confirm the branch page shows lane-level statuses.
 3. Expand at least one lane and confirm logs are visible.
-4. If you manually rerun a lane, confirm the rerun shows:
+4. If a lane fails, confirm the branch page highlights the failed lane and explains where to look for logs or rerun it.
+5. If you manually rerun a lane, confirm the rerun shows:
    - `manual rerun of run #...`
    - `manual rerun of lane #...`
 
@@ -79,4 +81,5 @@ guessing which surfaces matter.
 1. Wait for or manually seed a nightly run on the forge side.
 2. Confirm the nightly appears on `/news`.
 3. Open the nightly page and confirm lane-level status and logs render.
-4. If you rerun a nightly lane, confirm provenance is visible on the nightly page.
+4. If a nightly lane fails, confirm the nightly page highlights the failed lane and points at logs/rerun.
+5. If you rerun a nightly lane, confirm provenance is visible on the nightly page.

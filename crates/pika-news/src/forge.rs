@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -360,9 +361,14 @@ pub fn inspect_mirror(
 
     let mut lagging = 0_i64;
     let mut synced = 0_i64;
-    for ref_name in local_heads.keys().chain(remote_heads.keys()) {
-        let local = local_heads.get(ref_name);
-        let remote = remote_heads.get(ref_name);
+    let ref_names = local_heads
+        .keys()
+        .chain(remote_heads.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for ref_name in ref_names {
+        let local = local_heads.get(&ref_name);
+        let remote = remote_heads.get(&ref_name);
         if local == remote {
             synced += 1;
         } else {
@@ -712,8 +718,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        close_branch, create_merge_commit, current_branch_head, install_hooks, merge_branch,
-        publish_merge_refs, run_ci_command_for_head_with_heartbeat, write_merge_tree,
+        close_branch, create_merge_commit, current_branch_head, inspect_mirror, install_hooks,
+        merge_branch, publish_merge_refs, run_ci_command_for_head_with_heartbeat, write_merge_tree,
     };
     use crate::config::ForgeRepoConfig;
 
@@ -966,5 +972,47 @@ mod tests {
 
         assert!(err.to_string().contains("run ci command"));
         assert_eq!(worktree_count(&forge_repo), before);
+    }
+
+    #[test]
+    fn inspect_mirror_counts_refs_once_per_name() {
+        let (root, mut forge_repo, seed) = setup_repo();
+        let mirror = root.path().join("mirror.git");
+        git(
+            root.path(),
+            &["init", "--bare", mirror.to_str().expect("mirror path")],
+        );
+        git(
+            root.path(),
+            &[
+                "--git-dir",
+                &forge_repo.canonical_git_dir,
+                "remote",
+                "add",
+                "github",
+                mirror.to_str().expect("mirror path"),
+            ],
+        );
+        git(
+            &seed,
+            &[
+                "remote",
+                "add",
+                "github",
+                mirror.to_str().expect("mirror path"),
+            ],
+        );
+        git(&seed, &["push", "github", "master"]);
+        forge_repo.mirror_remote = Some("github".to_string());
+
+        git(&seed, &["checkout", "-b", "feature/mirror-counts"]);
+        std::fs::write(seed.join("counts.txt"), "v1\n").expect("write counts");
+        git(&seed, &["add", "counts.txt"]);
+        git(&seed, &["commit", "-m", "counts"]);
+        git(&seed, &["push", "origin", "feature/mirror-counts"]);
+
+        let outcome = inspect_mirror(&forge_repo, "github").expect("inspect mirror");
+        assert_eq!(outcome.synced_ref_count, 1);
+        assert_eq!(outcome.lagging_ref_count, 1);
     }
 }

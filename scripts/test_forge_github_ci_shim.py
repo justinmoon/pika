@@ -117,6 +117,103 @@ command = ["python3", "-c", "print('nightly')"]
             self.assertEqual(payload["changed_paths"], ["docs/guide.md"])
             self.assertEqual([lane["id"] for lane in payload["include"]], ["docs"])
 
+    def test_branch_selection_matches_hidden_workflow_globs_in_unsynced_fork_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            upstream = root / "upstream"
+            fork = root / "fork"
+            git(root, "init", upstream.as_posix())
+            git(upstream, "config", "user.name", "Test User")
+            git(upstream, "config", "user.email", "test@example.com")
+            (upstream / "ci").mkdir()
+            (upstream / ".github" / "workflows").mkdir(parents=True)
+            (upstream / "README.md").write_text("base\n", encoding="utf-8")
+            (upstream / ".github" / "workflows" / "pre-merge.yml").write_text(
+                "name: base\n",
+                encoding="utf-8",
+            )
+            (upstream / "ci" / "forge-lanes.toml").write_text(
+                """
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "workflow"
+title = "workflow"
+entrypoint = "printf workflow"
+command = ["python3", "-c", "print('workflow')"]
+paths = [".github/**"]
+
+[[nightly.lanes]]
+id = "nightly"
+title = "nightly"
+entrypoint = "printf nightly"
+command = ["python3", "-c", "print('nightly')"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            git(
+                upstream,
+                "add",
+                "README.md",
+                ".github/workflows/pre-merge.yml",
+                "ci/forge-lanes.toml",
+            )
+            git(upstream, "commit", "-m", "base")
+            git(root, "clone", upstream.as_posix(), fork.as_posix())
+            git(fork, "config", "user.name", "Test User")
+            git(fork, "config", "user.email", "test@example.com")
+
+            (fork / ".github" / "workflows" / "pre-merge.yml").write_text(
+                "name: fork change\n",
+                encoding="utf-8",
+            )
+            git(fork, "add", ".github/workflows/pre-merge.yml")
+            git(fork, "commit", "-m", "workflow change")
+            head = git(fork, "rev-parse", "HEAD")
+
+            (upstream / "README.md").write_text("upstream advanced\n", encoding="utf-8")
+            git(upstream, "add", "README.md")
+            git(upstream, "commit", "-m", "upstream advance")
+            base = git(upstream, "rev-parse", "HEAD")
+
+            self.assertNotEqual(
+                subprocess.run(
+                    ["git", "cat-file", "-e", f"{base}^{{commit}}"],
+                    cwd=fork,
+                    text=True,
+                    capture_output=True,
+                ).returncode,
+                0,
+            )
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "select",
+                    "--mode",
+                    "branch",
+                    "--base",
+                    base,
+                    "--head",
+                    head,
+                    "--compare-repo-root",
+                    str(upstream),
+                    "--head-repo-root",
+                    str(fork),
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, "FORGE_GITHUB_CI_REPO_ROOT": str(fork)},
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["changed_paths"], [".github/workflows/pre-merge.yml"])
+            self.assertEqual([lane["id"] for lane in payload["include"]], ["workflow"])
+
     def test_branch_selection_uses_branch_head_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
