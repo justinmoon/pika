@@ -40,7 +40,49 @@ case "$command" in
 esac
 
 find_xctestrun_file() {
-  find "$ROOT/$DERIVED_DATA_PATH/Build/Products" -name '*.xctestrun' -print | head -n 1
+  local marker_path="$ROOT/$DERIVED_DATA_PATH/last-ios-ui-test-xctestrun.txt"
+  if [[ -f "$marker_path" ]]; then
+    local marked_file
+    marked_file="$(<"$marker_path")"
+    if [[ -n "$marked_file" && -f "$marked_file" ]]; then
+      printf '%s\n' "$marked_file"
+      return
+    fi
+  fi
+
+  python3 - "$ROOT/$DERIVED_DATA_PATH/Build/Products" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+if not root.exists():
+    raise SystemExit(0)
+
+files = [path for path in root.rglob("*.xctestrun") if path.is_file()]
+if not files:
+    raise SystemExit(0)
+
+files.sort(key=lambda path: (path.stat().st_mtime_ns, str(path)), reverse=True)
+print(files[0])
+PY
+}
+
+clear_old_xctestrun_files() {
+  local products_dir="$ROOT/$DERIVED_DATA_PATH/Build/Products"
+  if [[ -d "$products_dir" ]]; then
+    find "$products_dir" -name '*.xctestrun' -type f -delete
+  fi
+  rm -f "$ROOT/$DERIVED_DATA_PATH/last-ios-ui-test-xctestrun.txt"
+}
+
+record_xctestrun_file() {
+  local xctestrun_file
+  xctestrun_file="$(find_xctestrun_file)"
+  if [[ -z "$xctestrun_file" ]]; then
+    echo "error: build-for-testing did not produce an .xctestrun file" >&2
+    exit 1
+  fi
+  printf '%s\n' "$xctestrun_file" > "$ROOT/$DERIVED_DATA_PATH/last-ios-ui-test-xctestrun.txt"
 }
 
 resolve_sim_udid() {
@@ -151,7 +193,9 @@ printf '%s\n' "$udid" > "$ROOT/$DERIVED_DATA_PATH/last-ios-ui-test-udid.txt"
 case "$command" in
   prepare)
     ensure_base_artifacts
+    clear_old_xctestrun_files
     run_xcodebuild build-for-testing "$PREPARE_TIMEOUT_SEC" "$udid" "${skip_args[@]}"
+    record_xctestrun_file
     ;;
   run)
     xctestrun_file="$(find_xctestrun_file)"
