@@ -21,6 +21,10 @@
       <p class="meta">{{ repo }} · scheduled {{ scheduled_for }} · created {{ created_at }}</p>
       <p><span class="status">nightly: {{ status }}</span></p>
       <p class="meta">source <code>{{ source_ref }}</code> @ <code>{{ source_head_sha }}</code></p>
+      {% match rerun_of_run_id %}
+      {% when Some with (original_run_id) %}
+      <p class="meta">manual rerun of nightly #{{ original_run_id }}</p>
+      {% when None %}{% endmatch %}
       {% match started_at %}
       {% when Some with (started_at) %}
       <p class="meta">started {{ started_at }}</p>
@@ -46,6 +50,10 @@
         <article class="lane">
           <p><strong>{{ lane.title }}</strong> · {{ lane.status }} · <code>{{ lane.entrypoint }}</code></p>
           <p class="muted">lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
+          {% match lane.rerun_of_lane_run_id %}
+          {% when Some with (original_lane_run_id) %}
+          <p class="muted">manual rerun of lane #{{ original_lane_run_id }}</p>
+          {% when None %}{% endmatch %}
           {% match lane.started_at %}
           {% when Some with (started_at) %}
           <p class="muted">started {{ started_at }}</p>

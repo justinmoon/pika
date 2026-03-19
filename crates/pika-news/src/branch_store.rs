@@ -83,6 +83,7 @@ pub struct BranchCiRunRecord {
     pub source_head_sha: String,
     pub status: String,
     pub lane_count: usize,
+    pub rerun_of_run_id: Option<i64>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -98,6 +99,7 @@ pub struct BranchCiLaneRecord {
     pub status: String,
     pub log_text: Option<String>,
     pub retry_count: i64,
+    pub rerun_of_lane_run_id: Option<i64>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -137,6 +139,7 @@ pub struct NightlyRunRecord {
     pub status: String,
     pub summary: Option<String>,
     pub scheduled_for: String,
+    pub rerun_of_run_id: Option<i64>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -152,6 +155,7 @@ pub struct NightlyLaneRecord {
     pub status: String,
     pub log_text: Option<String>,
     pub retry_count: i64,
+    pub rerun_of_lane_run_id: Option<i64>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -556,7 +560,7 @@ impl Store {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, source_head_sha, status, created_at, started_at, finished_at
+                    "SELECT id, source_head_sha, status, rerun_of_run_id, created_at, started_at, finished_at
                      FROM branch_ci_runs
                      WHERE branch_id = ?1
                      ORDER BY id DESC
@@ -569,17 +573,25 @@ impl Store {
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 })
                 .context("query branch ci runs")?;
 
             let mut runs = Vec::new();
             for row in rows {
-                let (run_id, source_head_sha, status, created_at, started_at, finished_at) =
-                    row.context("read branch ci run row")?;
+                let (
+                    run_id,
+                    source_head_sha,
+                    status,
+                    rerun_of_run_id,
+                    created_at,
+                    started_at,
+                    finished_at,
+                ) = row.context("read branch ci run row")?;
                 let lanes = list_branch_ci_run_lanes(conn, run_id)?;
                 let lane_count = lanes.len();
                 runs.push(BranchCiRunRecord {
@@ -587,6 +599,7 @@ impl Store {
                     source_head_sha,
                     status,
                     lane_count,
+                    rerun_of_run_id,
                     created_at,
                     started_at,
                     finished_at,
@@ -762,7 +775,7 @@ impl Store {
         self.with_connection(|conn| {
             let row = conn
                 .query_row(
-                    "SELECT nr.id, r.repo, nr.source_ref, nr.source_head_sha, nr.status, nr.summary, nr.scheduled_for, nr.created_at, nr.started_at, nr.finished_at
+                    "SELECT nr.id, r.repo, nr.source_ref, nr.source_head_sha, nr.status, nr.summary, nr.scheduled_for, nr.rerun_of_run_id, nr.created_at, nr.started_at, nr.finished_at
                      FROM nightly_runs nr
                      JOIN repos r ON r.id = nr.repo_id
                      WHERE nr.id = ?1",
@@ -776,15 +789,16 @@ impl Store {
                             row.get::<_, String>(4)?,
                             row.get::<_, Option<String>>(5)?,
                             row.get::<_, String>(6)?,
-                            row.get::<_, String>(7)?,
-                            row.get::<_, Option<String>>(8)?,
+                            row.get::<_, Option<i64>>(7)?,
+                            row.get::<_, String>(8)?,
                             row.get::<_, Option<String>>(9)?,
+                            row.get::<_, Option<String>>(10)?,
                         ))
                     },
                 )
                 .optional()
                 .context("query nightly run detail")?;
-            let Some((id, repo, source_ref, source_head_sha, status, summary, scheduled_for, created_at, started_at, finished_at)) = row else {
+            let Some((id, repo, source_ref, source_head_sha, status, summary, scheduled_for, rerun_of_run_id, created_at, started_at, finished_at)) = row else {
                 return Ok(None);
             };
             let lanes = list_nightly_run_lanes(conn, id)?;
@@ -796,6 +810,7 @@ impl Store {
                 status,
                 summary,
                 scheduled_for,
+                rerun_of_run_id,
                 created_at,
                 started_at,
                 finished_at,
@@ -914,8 +929,9 @@ impl Store {
                     entrypoint,
                     command_json,
                     status,
-                    log_text
-                 ) VALUES (?1, ?2, ?3, ?4, 'queued', ?5)",
+                    log_text,
+                    rerun_of_run_id
+                 ) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6)",
                 params![
                     row.branch_id,
                     row.source_head_sha,
@@ -926,6 +942,7 @@ impl Store {
                         "Manual rerun of lane {} from branch CI run #{}",
                         row.lane_id, row.original_run_id
                     ),
+                    row.original_run_id,
                 ],
             )
             .context("insert rerun branch ci suite")?;
@@ -937,14 +954,16 @@ impl Store {
                     title,
                     entrypoint,
                     command_json,
-                    status
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
+                    status,
+                    rerun_of_lane_run_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6)",
                 params![
                     rerun_suite_id,
                     row.lane_id,
                     row.title,
                     row.entrypoint,
-                    row.command_json
+                    row.command_json,
+                    lane_run_id
                 ],
             )
             .context("insert rerun branch ci lane")?;
@@ -1008,8 +1027,9 @@ impl Store {
                     source_head_sha,
                     status,
                     summary,
-                    scheduled_for
-                 ) VALUES (?1, ?2, ?3, 'queued', ?4, ?5)",
+                    scheduled_for,
+                    rerun_of_run_id
+                 ) VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6)",
                 params![
                     row.repo_id,
                     row.source_ref,
@@ -1019,6 +1039,7 @@ impl Store {
                         row.original_run_id, row.lane_id
                     ),
                     scheduled_for,
+                    row.original_run_id,
                 ],
             )
             .context("insert rerun nightly run")?;
@@ -1030,14 +1051,16 @@ impl Store {
                     title,
                     entrypoint,
                     command_json,
-                    status
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
+                    status,
+                    rerun_of_lane_run_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6)",
                 params![
                     rerun_run_id,
                     row.lane_id,
                     row.title,
                     row.entrypoint,
-                    row.command_json
+                    row.command_json,
+                    lane_run_id
                 ],
             )
             .context("insert rerun nightly lane")?;
@@ -1937,7 +1960,7 @@ fn list_branch_ci_run_lanes(
 ) -> anyhow::Result<Vec<BranchCiLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, created_at, started_at, finished_at
+            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
              FROM branch_ci_run_lanes
              WHERE branch_ci_run_id = ?1
              ORDER BY id ASC",
@@ -1953,9 +1976,10 @@ fn list_branch_ci_run_lanes(
                 status: row.get(4)?,
                 log_text: row.get(5)?,
                 retry_count: row.get(6)?,
-                created_at: row.get(7)?,
-                started_at: row.get(8)?,
-                finished_at: row.get(9)?,
+                rerun_of_lane_run_id: row.get(7)?,
+                created_at: row.get(8)?,
+                started_at: row.get(9)?,
+                finished_at: row.get(10)?,
             })
         })
         .context("query branch ci lane rows")?;
@@ -1972,7 +1996,7 @@ fn list_nightly_run_lanes(
 ) -> anyhow::Result<Vec<NightlyLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, created_at, started_at, finished_at
+            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
              FROM nightly_run_lanes
              WHERE nightly_run_id = ?1
              ORDER BY id ASC",
@@ -1988,9 +2012,10 @@ fn list_nightly_run_lanes(
                 status: row.get(4)?,
                 log_text: row.get(5)?,
                 retry_count: row.get(6)?,
-                created_at: row.get(7)?,
-                started_at: row.get(8)?,
-                finished_at: row.get(9)?,
+                rerun_of_lane_run_id: row.get(7)?,
+                created_at: row.get(8)?,
+                started_at: row.get(9)?,
+                finished_at: row.get(10)?,
             })
         })
         .context("query nightly lane rows")?;
@@ -2307,8 +2332,13 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].id, rerun_suite_id);
         assert_eq!(runs[0].status, "queued");
+        assert_eq!(runs[0].rerun_of_run_id, Some(failed_lane.suite_id));
         assert_eq!(runs[0].lanes.len(), 1);
         assert_eq!(runs[0].lanes[0].lane_id, "pika");
+        assert_eq!(
+            runs[0].lanes[0].rerun_of_lane_run_id,
+            Some(failed_lane.lane_run_id)
+        );
     }
 
     #[test]
@@ -2371,8 +2401,13 @@ mod tests {
             .expect("rerun nightly detail")
             .expect("rerun nightly exists");
         assert_eq!(rerun.status, "queued");
+        assert_eq!(rerun.rerun_of_run_id, Some(failed_lane.nightly_run_id));
         assert_eq!(rerun.lanes.len(), 1);
         assert_eq!(rerun.lanes[0].lane_id, "nightly_pika");
+        assert_eq!(
+            rerun.lanes[0].rerun_of_lane_run_id,
+            Some(failed_lane.lane_run_id)
+        );
     }
 
     #[test]

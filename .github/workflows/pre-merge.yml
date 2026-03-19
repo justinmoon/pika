@@ -74,7 +74,12 @@ jobs:
           )
 
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            args+=(--base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}")
+            args+=(
+              --base "${{ github.event.pull_request.base.sha }}"
+              --head "${{ github.event.pull_request.head.sha }}"
+              --compare-repo-root "$GITHUB_WORKSPACE"
+              --head-repo-root "$GITHUB_WORKSPACE/pr"
+            )
           elif [[ "${{ steps.mode.outputs.lane_mode }}" == "branch" ]]; then
             args+=(--all)
           fi

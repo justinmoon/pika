@@ -24,6 +24,99 @@ def git(cwd: Path, *args: str) -> str:
 
 
 class ForgeGithubCiShimTests(unittest.TestCase):
+    def test_branch_selection_uses_merge_base_for_unsynced_fork_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            upstream = root / "upstream"
+            fork = root / "fork"
+            git(root, "init", upstream.as_posix())
+            git(upstream, "config", "user.name", "Test User")
+            git(upstream, "config", "user.email", "test@example.com")
+            (upstream / "ci").mkdir()
+            (upstream / "docs").mkdir()
+            (upstream / "README.md").write_text("base\n", encoding="utf-8")
+            (upstream / "docs" / "guide.md").write_text("docs\n", encoding="utf-8")
+            (upstream / "ci" / "forge-lanes.toml").write_text(
+                """
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "docs"
+title = "docs"
+entrypoint = "printf docs"
+command = ["python3", "-c", "print('docs')"]
+paths = ["docs/**"]
+
+[[branch.lanes]]
+id = "rust"
+title = "rust"
+entrypoint = "printf rust"
+command = ["python3", "-c", "print('rust')"]
+paths = ["Cargo.toml"]
+
+[[nightly.lanes]]
+id = "nightly"
+title = "nightly"
+entrypoint = "printf nightly"
+command = ["python3", "-c", "print('nightly')"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            git(upstream, "add", "README.md", "docs/guide.md", "ci/forge-lanes.toml")
+            git(upstream, "commit", "-m", "base")
+            git(root, "clone", upstream.as_posix(), fork.as_posix())
+            git(fork, "config", "user.name", "Test User")
+            git(fork, "config", "user.email", "test@example.com")
+
+            (fork / "docs" / "guide.md").write_text("docs changed in fork\n", encoding="utf-8")
+            git(fork, "add", "docs/guide.md")
+            git(fork, "commit", "-m", "fork docs change")
+            head = git(fork, "rev-parse", "HEAD")
+
+            (upstream / "README.md").write_text("upstream advanced\n", encoding="utf-8")
+            git(upstream, "add", "README.md")
+            git(upstream, "commit", "-m", "upstream advance")
+            base = git(upstream, "rev-parse", "HEAD")
+
+            self.assertNotEqual(base, head)
+            self.assertNotEqual(
+                subprocess.run(
+                    ["git", "cat-file", "-e", f"{base}^{{commit}}"],
+                    cwd=fork,
+                    text=True,
+                    capture_output=True,
+                ).returncode,
+                0,
+            )
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "select",
+                    "--mode",
+                    "branch",
+                    "--base",
+                    base,
+                    "--head",
+                    head,
+                    "--compare-repo-root",
+                    str(upstream),
+                    "--head-repo-root",
+                    str(fork),
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, "FORGE_GITHUB_CI_REPO_ROOT": str(fork)},
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["changed_paths"], ["docs/guide.md"])
+            self.assertEqual([lane["id"] for lane in payload["include"]], ["docs"])
+
     def test_branch_selection_uses_branch_head_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -178,6 +271,8 @@ command = ["python3", "-c", "print('nightly')"]
         self.assertNotIn("pull_request_target:", workflow)
         self.assertIn("path: pr", workflow)
         self.assertIn("FORGE_GITHUB_CI_REPO_ROOT", workflow)
+        self.assertIn("--compare-repo-root \"$GITHUB_WORKSPACE\"", workflow)
+        self.assertIn("--head-repo-root \"$GITHUB_WORKSPACE/pr\"", workflow)
 
 
 if __name__ == "__main__":

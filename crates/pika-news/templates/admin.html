@@ -234,10 +234,22 @@
               className: 'status muted'
             };
           }
+          var remoteName = escapeHtml(runtime.remote_name || (status && status.remote_name) || 'unknown');
           if (!runtime.background_enabled) {
+            if (status && status.last_attempt) {
+              return {
+                html:
+                  'Mirror remote <code>' + remoteName + '</code> is configured, but background sync is disabled. ' +
+                  'Recent status reflects manual sync attempts only.<br />' +
+                  'last success ' + escapeHtml(status.last_success_at || 'never') + ' · ' +
+                  'last failure ' + escapeHtml(status.last_failure_at || 'none') + ' · ' +
+                  'consecutive failures <strong>' + escapeHtml(String(status.consecutive_failure_count || 0)) + '</strong>',
+                className: 'status warning'
+              };
+            }
             return {
               html:
-                'Mirror remote <code>' + escapeHtml(runtime.remote_name || 'unknown') + '</code> is configured, but background sync is disabled. ' +
+                'Mirror remote <code>' + remoteName + '</code> is configured, but background sync is disabled. ' +
                 'Manual sync is still available. Set <code>forge_repo.mirror_poll_interval_secs</code> to a value above 0 to re-enable background sync.',
               className: 'status warning'
             };
@@ -245,13 +257,18 @@
           if (!status || !status.last_attempt) {
             return {
               html:
-                'Mirror remote <code>' + escapeHtml(runtime.remote_name || 'unknown') + '</code> is configured. ' +
+                'Mirror remote <code>' + remoteName + '</code> is configured and background sync is enabled. ' +
                 'No sync attempts recorded yet. Background interval: <strong>' + escapeHtml(String(runtime.background_interval_secs || 0)) + 's</strong>.',
               className: 'status muted'
             };
           }
 
           var lastAttempt = status.last_attempt;
+          var backgroundState = status.current_failure_kind === 'config'
+            ? 'background sync enabled but blocked by config or credentials'
+            : (lastAttempt.status === 'failed'
+              ? 'background sync enabled but currently failing'
+              : 'background sync enabled');
           var stateClass = status.current_failure_kind === 'config'
             ? 'error'
             : (lastAttempt.status === 'failed'
@@ -269,6 +286,7 @@
             className: 'status ' + stateClass,
             html:
               'remote <code>' + escapeHtml(status.remote_name) + '</code> · ' +
+              backgroundState + ' · ' +
               'last attempt <strong>' + escapeHtml(lastAttempt.status) + '</strong> at ' + escapeHtml(lastAttempt.finished_at || lastAttempt.created_at || 'unknown') + ' · ' +
               lagText + '<br />' +
               'last success ' + escapeHtml(status.last_success_at || 'never') + ' · ' +

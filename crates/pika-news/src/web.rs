@@ -82,6 +82,7 @@ struct NightlyTemplate {
     source_ref: String,
     source_head_sha: String,
     scheduled_for: String,
+    rerun_of_run_id: Option<i64>,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
@@ -140,6 +141,7 @@ struct CiRunView {
     source_head_sha: String,
     status: String,
     lane_count: usize,
+    rerun_of_run_id: Option<i64>,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
@@ -155,6 +157,7 @@ struct CiLaneView {
     status: String,
     log_text: Option<String>,
     retry_count: i64,
+    rerun_of_lane_run_id: Option<i64>,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
@@ -169,6 +172,7 @@ struct NightlyLaneView {
     status: String,
     log_text: Option<String>,
     retry_count: i64,
+    rerun_of_lane_run_id: Option<i64>,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
@@ -729,6 +733,7 @@ fn render_detail_template(
                 source_head_sha: run.source_head_sha,
                 status: run.status,
                 lane_count: run.lane_count,
+                rerun_of_run_id: run.rerun_of_run_id,
                 created_at: run.created_at,
                 started_at: run.started_at,
                 finished_at: run.finished_at,
@@ -749,6 +754,7 @@ fn render_nightly_template(run: NightlyRunRecord) -> NightlyTemplate {
         source_ref: run.source_ref,
         source_head_sha: run.source_head_sha,
         scheduled_for: run.scheduled_for,
+        rerun_of_run_id: run.rerun_of_run_id,
         created_at: run.created_at,
         started_at: run.started_at,
         finished_at: run.finished_at,
@@ -765,6 +771,7 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
         status: lane.status,
         log_text: lane.log_text,
         retry_count: lane.retry_count,
+        rerun_of_lane_run_id: lane.rerun_of_lane_run_id,
         created_at: lane.created_at,
         started_at: lane.started_at,
         finished_at: lane.finished_at,
@@ -780,6 +787,7 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
         status: lane.status,
         log_text: lane.log_text,
         retry_count: lane.retry_count,
+        rerun_of_lane_run_id: lane.rerun_of_lane_run_id,
         created_at: lane.created_at,
         started_at: lane.started_at,
         finished_at: lane.finished_at,
@@ -2241,7 +2249,7 @@ mod tests {
 
     use super::{
         inbox_review_handler, markdown_to_safe_html, render_detail_template,
-        rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
+        render_nightly_template, rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
         should_backfill_managed_allowlist_entry, verify_signature, AppState,
     };
     use crate::auth::AuthState;
@@ -2835,5 +2843,109 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         assert!(rendered.contains("feature/render-history"));
         assert!(rendered.contains("branch-ci-ok"));
         assert!(rendered.contains("merge commit"));
+    }
+
+    #[test]
+    fn branch_detail_renders_manual_rerun_provenance() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/rerun-ui", "head-rerun"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-rerun",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pika".to_string(),
+                    title: "check-pika".to_string(),
+                    entrypoint: "just checks::pre-merge-pika".to_string(),
+                    command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
+                    paths: vec![],
+                }],
+            )
+            .expect("queue ci");
+        let failed = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim ci")
+            .into_iter()
+            .next()
+            .expect("ci lane");
+        store
+            .finish_branch_ci_lane_run(failed.lane_run_id, failed.claim_token, "failed", "boom")
+            .expect("finish ci");
+        store
+            .rerun_branch_ci_lane(branch.branch_id, failed.lane_run_id)
+            .expect("rerun ci")
+            .expect("rerun suite");
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("branch ci runs");
+        let rendered = render_detail_template(detail, ci_runs, false)
+            .expect("render detail template")
+            .render()
+            .expect("render detail html");
+        assert!(rendered.contains("manual rerun of run #"));
+        assert!(rendered.contains("manual rerun of lane #"));
+    }
+
+    #[test]
+    fn nightly_page_renders_manual_rerun_provenance() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        let lane = crate::ci_manifest::ForgeLane {
+            id: "nightly_pika".to_string(),
+            title: "nightly-pika".to_string(),
+            entrypoint: "just checks::nightly-pika-e2e".to_string(),
+            command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
+            paths: vec![],
+        };
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-head",
+                "2026-03-19T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue nightly");
+        let failed = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly")
+            .into_iter()
+            .next()
+            .expect("nightly lane");
+        store
+            .finish_nightly_lane_run(failed.lane_run_id, failed.claim_token, "failed", "boom")
+            .expect("finish nightly");
+        let rerun_run_id = store
+            .rerun_nightly_lane(failed.nightly_run_id, failed.lane_run_id)
+            .expect("rerun nightly")
+            .expect("rerun run");
+
+        let run = store
+            .get_nightly_run(rerun_run_id)
+            .expect("nightly detail")
+            .expect("nightly run");
+        let rendered = render_nightly_template(run)
+            .render()
+            .expect("render nightly html");
+        assert!(rendered.contains("manual rerun of nightly #"));
+        assert!(rendered.contains("manual rerun of lane #"));
     }
 }

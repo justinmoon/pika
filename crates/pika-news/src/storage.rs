@@ -2464,6 +2464,11 @@ fn migrations() -> Vec<Migration> {
             name: "0015_mirror_sync_runs",
             sql: include_str!("../migrations/0015_mirror_sync_runs.sql"),
         },
+        Migration {
+            version: 16,
+            name: "0016_ci_rerun_provenance",
+            sql: include_str!("../migrations/0016_ci_rerun_provenance.sql"),
+        },
     ]
 }
 

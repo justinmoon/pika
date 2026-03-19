@@ -25,6 +25,61 @@ def manifest_path() -> Path:
     return repo_root() / "ci" / "forge-lanes.toml"
 
 
+def git_output(cwd: Path, args: list[str]) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return completed.stdout.strip()
+
+
+def git_has_commit(cwd: Path, commit: str) -> bool:
+    completed = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+    )
+    return completed.returncode == 0
+
+
+def fetch_head_into_compare_repo(compare_repo_root: Path, head_repo_root: Path, head: str) -> None:
+    temp_ref = "refs/forge-github-ci/head"
+    subprocess.run(
+        ["git", "fetch", "--no-tags", str(head_repo_root), f"+HEAD:{temp_ref}"],
+        cwd=compare_repo_root,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    fetched = git_output(compare_repo_root, ["rev-parse", temp_ref])
+    if fetched != head and not git_has_commit(compare_repo_root, head):
+        raise SystemExit(
+            f"fetched head {fetched} from {head_repo_root} but expected {head}"
+        )
+
+
+def ensure_compare_commits(
+    compare_repo_root: Path, base: str, head: str, head_repo_root: Path | None
+) -> None:
+    if not git_has_commit(compare_repo_root, base):
+        raise SystemExit(f"missing base commit {base} in comparison repo {compare_repo_root}")
+    if git_has_commit(compare_repo_root, head):
+        return
+    if head_repo_root is None:
+        raise SystemExit(
+            f"missing head commit {head} in comparison repo {compare_repo_root}"
+        )
+    fetch_head_into_compare_repo(compare_repo_root, head_repo_root, head)
+    if not git_has_commit(compare_repo_root, head):
+        raise SystemExit(
+            f"missing head commit {head} in comparison repo {compare_repo_root} after fetch"
+        )
+
+
 def load_manifest(path: Path) -> dict:
     with path.open("rb") as fh:
         return tomllib.load(fh)
@@ -38,12 +93,10 @@ def match_path(path: str, patterns: list[str]) -> bool:
     return False
 
 
-def changed_paths(base: str, head: str) -> list[str]:
-    output = subprocess.check_output(
-        ["git", "diff", "--name-only", f"{base}..{head}"],
-        cwd=repo_root(),
-        text=True,
-    )
+def changed_paths(base: str, head: str, compare_repo_root: Path, head_repo_root: Path | None) -> list[str]:
+    ensure_compare_commits(compare_repo_root, base, head, head_repo_root)
+    merge_base = git_output(compare_repo_root, ["merge-base", base, head])
+    output = git_output(compare_repo_root, ["diff", "--name-only", f"{merge_base}..{head}"])
     return [line.strip() for line in output.splitlines() if line.strip()]
 
 
@@ -78,14 +131,22 @@ def lane_to_matrix_entry(lane: dict, mode: str) -> dict:
     }
 
 
-def select_lanes(manifest: dict, mode: str, base: str | None, head: str | None, force_all: bool) -> dict:
+def select_lanes(
+    manifest: dict,
+    mode: str,
+    base: str | None,
+    head: str | None,
+    force_all: bool,
+    compare_repo_root: Path | None,
+    head_repo_root: Path | None,
+) -> dict:
     lanes = lane_catalog(manifest, mode)
     changed = []
     selected = []
     if mode == "nightly" or force_all or not base or not head:
         selected = lanes
     else:
-        changed = changed_paths(base, head)
+        changed = changed_paths(base, head, compare_repo_root or repo_root(), head_repo_root)
         if not changed or "ci/forge-lanes.toml" in changed:
             selected = lanes
         else:
@@ -124,7 +185,17 @@ def write_github_output(path: str, payload: dict) -> None:
 
 def cmd_select(args: argparse.Namespace) -> int:
     manifest = load_manifest(manifest_path())
-    payload = select_lanes(manifest, args.mode, args.base, args.head, args.all)
+    compare_repo_root = Path(args.compare_repo_root).resolve() if args.compare_repo_root else None
+    head_repo_root = Path(args.head_repo_root).resolve() if args.head_repo_root else None
+    payload = select_lanes(
+        manifest,
+        args.mode,
+        args.base,
+        args.head,
+        args.all,
+        compare_repo_root,
+        head_repo_root,
+    )
     if args.github_output:
         write_github_output(args.github_output, payload)
     print(json.dumps(payload, indent=2))
@@ -156,6 +227,8 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("--base")
     select.add_argument("--head")
     select.add_argument("--all", action="store_true")
+    select.add_argument("--compare-repo-root")
+    select.add_argument("--head-repo-root")
     select.add_argument("--github-output")
     select.set_defaults(func=cmd_select)
 
