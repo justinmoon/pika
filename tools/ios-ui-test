@@ -130,12 +130,10 @@ PY
 }
 
 ensure_base_artifacts() {
-  if [ -d "$PROJECT_PATH" ] \
-    && [ -d "$IOS_DIR/Frameworks/PikaCore.xcframework" ] \
-    && [ -d "$IOS_DIR/Frameworks/PikaNSE.xcframework" ] \
-    && [ -d "$IOS_DIR/Frameworks/PikaShare.xcframework" ]; then
-    return
-  fi
+  # The standalone human/local path should always regenerate these checked-in
+  # artifacts so the suite never runs against a stale Xcode project or stale
+  # Rust-generated xcframeworks. The prepared remote fast path bypasses this by
+  # using a recorded .xctestrun from the current prepare step.
   just ios-xcframework ios-xcodeproj
 }
 
