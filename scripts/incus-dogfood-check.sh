@@ -90,36 +90,30 @@ if [[ -z "$vm_id" ]]; then
   exit 0
 fi
 
+remote_incus() {
+  ssh "$remote_host" "sudo incus $*"
+}
+
 echo "== Incus instance =="
-ssh "$remote_host" \
-  "incus list --project '$project' --format json | python3 - <<'PY' '$vm_id'
-import json, sys
-target = sys.argv[1]
-rows = json.load(sys.stdin)
-matches = [row for row in rows if row.get('name') == target]
-if not matches:
-    print('missing')
-else:
-    row = matches[0]
-    print(json.dumps({'name': row.get('name'), 'status': row.get('status')}, indent=2))
-PY"
+instance_status="$(remote_incus "list --project '$project' '$vm_id' --format csv -c ns" | tr -d '\r' || true)"
+if [[ -z "$instance_status" ]]; then
+  echo "missing"
+else
+  printf '%s\n' "$instance_status"
+fi
 
 echo
 echo "== Incus state volume =="
-ssh "$remote_host" \
-  "incus storage volume list '$storage_pool' --project '$project' --format json | python3 - <<'PY' '${vm_id}-state'
-import json, sys
-target = sys.argv[1]
-rows = json.load(sys.stdin)
-matches = [row for row in rows if row.get('name') == target]
-if not matches:
-    print('missing')
-else:
-    row = matches[0]
-    print(json.dumps({'name': row.get('name'), 'type': row.get('type')}, indent=2))
-PY"
+volume_status="$(
+  remote_incus "storage volume list '$storage_pool' --project '$project' --format csv -c nt" \
+    | awk -F, -v target="${vm_id}-state" '$1 == target { print $0 }'
+)"
+if [[ -z "$volume_status" ]]; then
+  echo "missing"
+else
+  printf '%s\n' "$volume_status"
+fi
 
 echo
 echo "== Guest ready marker =="
-ssh "$remote_host" \
-  "incus file pull --project '$project' '$vm_id'/workspace/pika-agent/service-ready.json - 2>/dev/null || echo missing"
+remote_incus "file pull --project '$project' '$vm_id'/workspace/pika-agent/service-ready.json -" 2>/dev/null || echo "missing"
