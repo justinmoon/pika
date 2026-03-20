@@ -99,6 +99,8 @@ pub struct BranchCiLaneRecord {
     pub title: String,
     pub entrypoint: String,
     pub status: String,
+    pub pikaci_run_id: Option<String>,
+    pub pikaci_target_id: Option<String>,
     pub log_text: Option<String>,
     pub retry_count: i64,
     pub rerun_of_lane_run_id: Option<i64>,
@@ -156,6 +158,8 @@ pub struct NightlyLaneRecord {
     pub title: String,
     pub entrypoint: String,
     pub status: String,
+    pub pikaci_run_id: Option<String>,
+    pub pikaci_target_id: Option<String>,
     pub log_text: Option<String>,
     pub retry_count: i64,
     pub rerun_of_lane_run_id: Option<i64>,
@@ -1786,6 +1790,30 @@ impl Store {
         })
     }
 
+    pub fn record_branch_ci_lane_pikaci_run(
+        &self,
+        lane_run_id: i64,
+        claim_token: i64,
+        pikaci_run_id: &str,
+        pikaci_target_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE branch_ci_run_lanes
+                     SET pikaci_run_id = ?1,
+                         pikaci_target_id = ?2
+                     WHERE id = ?3 AND status = 'running' AND claim_token = ?4",
+                    params![pikaci_run_id, pikaci_target_id, lane_run_id, claim_token],
+                )
+                .with_context(|| format!("record branch lane pikaci run {}", lane_run_id))?;
+            if updated == 0 {
+                bail!("{CI_LANE_LEASE_LOST}");
+            }
+            Ok(())
+        })
+    }
+
     pub fn claim_pending_nightly_lane_runs(
         &self,
         limit: usize,
@@ -1945,6 +1973,30 @@ impl Store {
             Ok(())
         })
     }
+
+    pub fn record_nightly_lane_pikaci_run(
+        &self,
+        lane_run_id: i64,
+        claim_token: i64,
+        pikaci_run_id: &str,
+        pikaci_target_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE nightly_run_lanes
+                     SET pikaci_run_id = ?1,
+                         pikaci_target_id = ?2
+                     WHERE id = ?3 AND status = 'running' AND claim_token = ?4",
+                    params![pikaci_run_id, pikaci_target_id, lane_run_id, claim_token],
+                )
+                .with_context(|| format!("record nightly lane pikaci run {}", lane_run_id))?;
+            if updated == 0 {
+                bail!("{CI_LANE_LEASE_LOST}");
+            }
+            Ok(())
+        })
+    }
 }
 
 fn ensure_repo_metadata(
@@ -2048,7 +2100,7 @@ fn list_branch_ci_run_lanes(
 ) -> anyhow::Result<Vec<BranchCiLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
+            "SELECT id, lane_id, title, entrypoint, status, pikaci_run_id, pikaci_target_id, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
              FROM branch_ci_run_lanes
              WHERE branch_ci_run_id = ?1
              ORDER BY id ASC",
@@ -2062,12 +2114,14 @@ fn list_branch_ci_run_lanes(
                 title: row.get(2)?,
                 entrypoint: row.get(3)?,
                 status: row.get(4)?,
-                log_text: row.get(5)?,
-                retry_count: row.get(6)?,
-                rerun_of_lane_run_id: row.get(7)?,
-                created_at: row.get(8)?,
-                started_at: row.get(9)?,
-                finished_at: row.get(10)?,
+                pikaci_run_id: row.get(5)?,
+                pikaci_target_id: row.get(6)?,
+                log_text: row.get(7)?,
+                retry_count: row.get(8)?,
+                rerun_of_lane_run_id: row.get(9)?,
+                created_at: row.get(10)?,
+                started_at: row.get(11)?,
+                finished_at: row.get(12)?,
             })
         })
         .context("query branch ci lane rows")?;
@@ -2084,7 +2138,7 @@ fn list_nightly_run_lanes(
 ) -> anyhow::Result<Vec<NightlyLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
+            "SELECT id, lane_id, title, entrypoint, status, pikaci_run_id, pikaci_target_id, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
              FROM nightly_run_lanes
              WHERE nightly_run_id = ?1
              ORDER BY id ASC",
@@ -2098,12 +2152,14 @@ fn list_nightly_run_lanes(
                 title: row.get(2)?,
                 entrypoint: row.get(3)?,
                 status: row.get(4)?,
-                log_text: row.get(5)?,
-                retry_count: row.get(6)?,
-                rerun_of_lane_run_id: row.get(7)?,
-                created_at: row.get(8)?,
-                started_at: row.get(9)?,
-                finished_at: row.get(10)?,
+                pikaci_run_id: row.get(5)?,
+                pikaci_target_id: row.get(6)?,
+                log_text: row.get(7)?,
+                retry_count: row.get(8)?,
+                rerun_of_lane_run_id: row.get(9)?,
+                created_at: row.get(10)?,
+                started_at: row.get(11)?,
+                finished_at: row.get(12)?,
             })
         })
         .context("query nightly lane rows")?;
@@ -2463,6 +2519,43 @@ mod tests {
     }
 
     #[test]
+    fn branch_lane_persists_pikaci_run_metadata() {
+        let store = open_store();
+        let branch = store
+            .upsert_branch_record(&upsert_input("feature/pikaci-meta", "head-meta"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(branch.branch_id, "head-meta", &[sample_lane("pika")])
+            .expect("queue ci suite");
+        let job = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim ci job")
+            .into_iter()
+            .next()
+            .expect("ci lane");
+        store
+            .record_branch_ci_lane_pikaci_run(
+                job.lane_run_id,
+                job.claim_token,
+                "pikaci-run-1",
+                Some("pre-merge-pika-rust"),
+            )
+            .expect("persist branch pikaci metadata");
+
+        let runs = store
+            .list_branch_ci_runs(branch.branch_id, 4)
+            .expect("list ci runs");
+        assert_eq!(
+            runs[0].lanes[0].pikaci_run_id.as_deref(),
+            Some("pikaci-run-1")
+        );
+        assert_eq!(
+            runs[0].lanes[0].pikaci_target_id.as_deref(),
+            Some("pre-merge-pika-rust")
+        );
+    }
+
+    #[test]
     fn rerun_failed_nightly_lane_creates_new_single_lane_run() {
         let store = open_store();
         let repo_id = store
@@ -2528,6 +2621,55 @@ mod tests {
         assert_eq!(
             rerun.lanes[0].rerun_of_lane_run_id,
             Some(failed_lane.lane_run_id)
+        );
+    }
+
+    #[test]
+    fn nightly_lane_persists_pikaci_run_metadata() {
+        let store = open_store();
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-meta",
+                "2026-03-17T08:00:00Z",
+                &[sample_lane("nightly_pika")],
+            )
+            .expect("queue nightly");
+        let job = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly job")
+            .into_iter()
+            .next()
+            .expect("nightly lane");
+        store
+            .record_nightly_lane_pikaci_run(
+                job.lane_run_id,
+                job.claim_token,
+                "pikaci-nightly-1",
+                Some("pre-merge-pika-rust"),
+            )
+            .expect("persist nightly pikaci metadata");
+
+        let nightly = store
+            .get_nightly_run(job.nightly_run_id)
+            .expect("nightly detail")
+            .expect("nightly exists");
+        assert_eq!(
+            nightly.lanes[0].pikaci_run_id.as_deref(),
+            Some("pikaci-nightly-1")
+        );
+        assert_eq!(
+            nightly.lanes[0].pikaci_target_id.as_deref(),
+            Some("pre-merge-pika-rust")
         );
     }
 
