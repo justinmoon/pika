@@ -1219,7 +1219,7 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
         "staged fixture workspace build must validate pikahut clippy before remote execute so the microVM lane stays offline"
     );
     assert!(
-        linux_rust.contains("ln -s ${pikaRelayPkg}/bin/pika-relay \"$out/bin/pika-relay\""),
+        linux_rust.contains("cp ${pikaRelayPkg}/bin/pika-relay \"$out/bin/pika-relay\""),
         "staged fixture workspace build must install pika-relay for remote fixture smoke so the guest does not fall back to go build"
     );
     assert!(
@@ -1233,6 +1233,14 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
 
     for (member, required_snippet) in [
         ("cli", "cp -R ${./cli}/. \"$out/cli\""),
+        (
+            "cli/src/main.rs",
+            "cp ${./config/channels.json} \"$out/config/channels.json\"",
+        ),
+        (
+            "tests/support/nostr_connect.rs",
+            "cp -R ${./tests/support} \"$out/tests/support\"",
+        ),
         (
             "crates/pika-agent-protocol",
             "cp -R ${./crates/pika-agent-protocol} \"$out/crates/pika-agent-protocol\"",

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Instant;
 
 use anyhow::{Context, anyhow};
 use chrono::Utc;
@@ -24,11 +25,12 @@ use crate::executor::{
 };
 use crate::model::{
     ExecuteNode, JobLogMetadata, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
-    PrepareNode, PreparedOutputConsumerKind, PreparedOutputExposure, PreparedOutputExposureAccess,
-    PreparedOutputExposureKind, PreparedOutputFulfillmentLaunchRequest,
-    PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus,
-    PreparedOutputFulfillmentTransportPathContract, PreparedOutputFulfillmentTransportRequest,
-    PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
+    PrepareNode, PrepareTimingRecord, PreparedOutputConsumerKind, PreparedOutputExposure,
+    PreparedOutputExposureAccess, PreparedOutputExposureKind,
+    PreparedOutputFulfillmentLaunchRequest, PreparedOutputFulfillmentResult,
+    PreparedOutputFulfillmentStatus, PreparedOutputFulfillmentTransportPathContract,
+    PreparedOutputFulfillmentTransportRequest, PreparedOutputHandoff,
+    PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
     PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
     PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord,
     RunLifecycleEvent, RunLogsMetadata, RunPlanRecord, RunRecord, RunStatus, RunnerKind,
@@ -317,6 +319,7 @@ fn run_jobs_against_snapshot(
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
+        prepare_timings: Vec::new(),
         jobs: Vec::new(),
     };
     write_run_record(&prepared.run_dir, &run_record)?;
@@ -343,15 +346,16 @@ fn run_jobs_against_snapshot(
             .map(Path::new),
     };
 
-    let prepared_node_ids = match run_prepare_nodes(
+    let prepare_outcome = match run_prepare_nodes(
         &prepared.run_dir,
         &plan.prepares,
         &prepared_outputs_path,
         prepared_output_consumer_kind,
         invocation,
     ) {
-        Ok(node_ids) => node_ids,
+        Ok(outcome) => outcome,
         Err(failure) => {
+            run_record.prepare_timings = failure.timings.clone();
             mark_prepare_failure(&mut run_record, &plan, &failure)?;
             run_record.status = RunStatus::Failed;
             run_record.finished_at = Some(Utc::now().to_rfc3339());
@@ -364,9 +368,11 @@ fn run_jobs_against_snapshot(
             return Ok(run_record);
         }
     };
+    run_record.prepare_timings = prepare_outcome.timings.clone();
 
     let mut run_failed = false;
-    let mut completed_node_ids: HashSet<String> = prepared_node_ids.into_iter().collect();
+    let mut completed_node_ids: HashSet<String> =
+        prepare_outcome.completed_node_ids.into_iter().collect();
     let mut pending: Vec<usize> = (0..plan.jobs.len()).collect();
     let mut active: HashMap<usize, PlannedJob> = HashMap::new();
     let (tx, rx) = mpsc::channel::<(usize, anyhow::Result<JobRecord>)>();
@@ -384,10 +390,13 @@ fn run_jobs_against_snapshot(
             };
             let planned_job_index = pending.remove(next_ready_pos);
             let planned_job = plan.jobs[planned_job_index].clone();
+            let pre_execution_prepare_duration_ms =
+                prepare_duration_for_job(&planned_job, &run_record.prepare_timings);
             let running_record = running_job_record(
                 &planned_job.job,
                 &planned_job.execute_node_id,
                 &planned_job.ctx,
+                pre_execution_prepare_duration_ms,
             );
             write_job_record(&planned_job.ctx.job_dir, &running_record)?;
             upsert_run_job_record(&mut run_record, running_record);
@@ -415,10 +424,11 @@ fn run_jobs_against_snapshot(
             let tx = tx.clone();
             let planned_job_for_thread = planned_job.clone();
             thread::spawn(move || {
-                let result = run_one_job(
+                let result = run_one_job_with_prepare_duration(
                     &planned_job_for_thread.job,
                     &planned_job_for_thread.execute_node_id,
                     &planned_job_for_thread.ctx,
+                    pre_execution_prepare_duration_ms,
                 );
                 let _ = tx.send((planned_job_index, result));
             });
@@ -447,6 +457,7 @@ fn run_jobs_against_snapshot(
                 &planned_job.job,
                 &planned_job.execute_node_id,
                 &planned_job.ctx,
+                prepare_duration_for_job(&planned_job, &run_record.prepare_timings),
                 format!("{err:#}"),
                 None,
             ),
@@ -478,6 +489,7 @@ fn run_jobs_against_snapshot(
                 &planned_job.job,
                 &planned_job.execute_node_id,
                 &planned_job.ctx,
+                prepare_duration_for_job(planned_job, &run_record.prepare_timings),
                 "not run because an earlier execute node failed".to_string(),
             );
             write_job_record(&planned_job.ctx.job_dir, &skipped)?;
@@ -551,6 +563,7 @@ pub fn record_skipped_run_with_reporter(
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
+        prepare_timings: Vec::new(),
         jobs: Vec::new(),
     };
     write_run_record(&run_dir, &run_record)?;
@@ -560,8 +573,14 @@ pub fn record_skipped_run_with_reporter(
     Ok(run_record)
 }
 
-fn run_one_job(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> anyhow::Result<JobRecord> {
-    let mut job_record = running_job_record(job, plan_node_id, ctx);
+fn run_one_job_with_prepare_duration(
+    job: &JobSpec,
+    plan_node_id: &str,
+    ctx: &HostContext,
+    pre_execution_prepare_duration_ms: Option<u64>,
+) -> anyhow::Result<JobRecord> {
+    let mut job_record =
+        running_job_record(job, plan_node_id, ctx, pre_execution_prepare_duration_ms);
     let outcome = run_job_on_runner(job, ctx);
 
     let finished_at = Utc::now().to_rfc3339();
@@ -584,7 +603,12 @@ fn run_one_job(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> anyhow::
     Ok(job_record)
 }
 
-fn running_job_record(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> JobRecord {
+fn running_job_record(
+    job: &JobSpec,
+    plan_node_id: &str,
+    ctx: &HostContext,
+    pre_execution_prepare_duration_ms: Option<u64>,
+) -> JobRecord {
     JobRecord {
         id: job.id.to_string(),
         description: job.description.to_string(),
@@ -598,6 +622,7 @@ fn running_job_record(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> J
         finished_at: None,
         exit_code: None,
         message: None,
+        pre_execution_prepare_duration_ms,
         remote_linux_vm_execution: None,
     }
 }
@@ -606,6 +631,7 @@ fn failed_job_record(
     job: &JobSpec,
     plan_node_id: &str,
     ctx: &HostContext,
+    pre_execution_prepare_duration_ms: Option<u64>,
     message: String,
     exit_code: Option<i32>,
 ) -> JobRecord {
@@ -614,7 +640,7 @@ fn failed_job_record(
         finished_at: Some(Utc::now().to_rfc3339()),
         exit_code,
         message: Some(message),
-        ..running_job_record(job, plan_node_id, ctx)
+        ..running_job_record(job, plan_node_id, ctx, pre_execution_prepare_duration_ms)
     }
 }
 
@@ -622,14 +648,34 @@ fn skipped_job_record(
     job: &JobSpec,
     plan_node_id: &str,
     ctx: &HostContext,
+    pre_execution_prepare_duration_ms: Option<u64>,
     message: String,
 ) -> JobRecord {
     JobRecord {
         status: RunStatus::Skipped,
         finished_at: Some(Utc::now().to_rfc3339()),
         message: Some(message),
-        ..running_job_record(job, plan_node_id, ctx)
+        ..running_job_record(job, plan_node_id, ctx, pre_execution_prepare_duration_ms)
     }
+}
+
+fn prepare_duration_for_job(
+    planned_job: &PlannedJob,
+    timings: &[PrepareTimingRecord],
+) -> Option<u64> {
+    prepare_duration_for_dependencies(&planned_job.depends_on, timings)
+}
+
+fn prepare_duration_for_dependencies(
+    dependencies: &[String],
+    timings: &[PrepareTimingRecord],
+) -> Option<u64> {
+    let duration_ms = timings
+        .iter()
+        .filter(|timing| dependencies.iter().any(|dep| dep == &timing.node_id))
+        .map(|timing| timing.duration_ms)
+        .sum::<u64>();
+    (duration_ms > 0).then_some(duration_ms)
 }
 
 fn prepare_job_workspace(
@@ -864,6 +910,12 @@ struct PlannedPrepare {
 struct PrepareFailure {
     node_id: String,
     message: String,
+    timings: Vec<PrepareTimingRecord>,
+}
+
+struct PrepareRunOutcome {
+    completed_node_ids: Vec<String>,
+    timings: Vec<PrepareTimingRecord>,
 }
 
 struct PreparedOutputMaterialization<'a> {
@@ -3772,10 +3824,11 @@ fn run_prepare_nodes(
     prepared_outputs_path: &Path,
     consumer_kind: PreparedOutputConsumerKind,
     invocation: PreparedOutputInvocationConfig<'_>,
-) -> Result<Vec<String>, PrepareFailure> {
+) -> Result<PrepareRunOutcome, PrepareFailure> {
     let prepared_output_consumer = selected_prepared_output_consumer(consumer_kind);
     let mut completed = HashSet::new();
     let mut completed_order = Vec::new();
+    let mut timings = Vec::new();
     let mut pending: Vec<_> = prepares.iter().collect();
 
     while !pending.is_empty() {
@@ -3786,10 +3839,13 @@ fn run_prepare_nodes(
             return Err(PrepareFailure {
                 node_id: "prepare-scheduler".to_string(),
                 message: "no ready prepare nodes; unresolved dependencies in run plan".to_string(),
+                timings,
             });
         };
         let prepare = pending.remove(next_ready_pos);
-        match &prepare.action {
+        let started_at = Utc::now();
+        let started = Instant::now();
+        let action_result = match &prepare.action {
             PrepareAction::NixBuildOutput {
                 installable,
                 output_name,
@@ -3797,7 +3853,7 @@ fn run_prepare_nodes(
                 handoff,
                 mount_paths,
                 log_paths,
-            } => {
+            } => (|| -> Result<(), String> {
                 let output_path = realize_nix_build_output(
                     run_dir,
                     installable,
@@ -3806,10 +3862,7 @@ fn run_prepare_nodes(
                     log_paths,
                     invocation,
                 )
-                .map_err(|err| PrepareFailure {
-                    node_id: prepare.node_id.clone(),
-                    message: format!("{err:#}"),
-                })?;
+                .map_err(|err| format!("{err:#}"))?;
                 append_log_line_many(
                     log_paths,
                     &format!(
@@ -3818,10 +3871,7 @@ fn run_prepare_nodes(
                         output_path.display()
                     ),
                 )
-                .map_err(|err| PrepareFailure {
-                    node_id: prepare.node_id.clone(),
-                    message: format!("{err:#}"),
-                })?;
+                .map_err(|err| format!("{err:#}"))?;
                 if let Some(handoff) = handoff {
                     let materialization = PreparedOutputMaterialization {
                         node_id: &prepare.node_id,
@@ -3854,10 +3904,7 @@ fn run_prepare_nodes(
                                 "{message}; also failed to persist prepared-output failure state: {record_err:#}"
                             );
                         }
-                        PrepareFailure {
-                            node_id: prepare.node_id.clone(),
-                            message,
-                        }
+                        message
                     })?;
                     upsert_prepared_output_record(
                         prepared_outputs_path,
@@ -3879,10 +3926,7 @@ fn run_prepare_nodes(
                             requested_exposures: consumer_result.requested_exposures,
                         },
                     )
-                    .map_err(|err| PrepareFailure {
-                        node_id: prepare.node_id.clone(),
-                        message: format!("{err:#}"),
-                    })?;
+                    .map_err(|err| format!("{err:#}"))?;
                     append_log_line_many(
                         log_paths,
                         &format!(
@@ -3892,59 +3936,64 @@ fn run_prepare_nodes(
                             prepared_outputs_path.display()
                         ),
                     )
-                    .map_err(|err| PrepareFailure {
-                        node_id: prepare.node_id.clone(),
-                        message: format!("{err:#}"),
-                    })?;
+                    .map_err(|err| format!("{err:#}"))?;
                 } else {
                     for mount_path in mount_paths {
-                        repoint_prepare_mount(mount_path, &output_path).map_err(|err| {
-                            PrepareFailure {
-                                node_id: prepare.node_id.clone(),
-                                message: format!("{err:#}"),
-                            }
-                        })?;
+                        repoint_prepare_mount(mount_path, &output_path)
+                            .map_err(|err| format!("{err:#}"))?;
                     }
                 }
-            }
+                Ok(())
+            })(),
             PrepareAction::VfkitRunner {
                 installable,
                 runner_link,
                 log_paths,
-            } => {
-                let log_path = log_paths.first().ok_or_else(|| PrepareFailure {
-                    node_id: prepare.node_id.clone(),
-                    message: "missing vfkit runner prepare log path".to_string(),
-                })?;
-                prepare_vfkit_runner_link(installable, runner_link, log_path).map_err(|err| {
-                    PrepareFailure {
-                        node_id: prepare.node_id.clone(),
-                        message: format!("{err:#}"),
-                    }
-                })?;
-            }
+            } => (|| -> Result<(), String> {
+                let log_path = log_paths
+                    .first()
+                    .ok_or_else(|| "missing vfkit runner prepare log path".to_string())?;
+                prepare_vfkit_runner_link(installable, runner_link, log_path)
+                    .map_err(|err| format!("{err:#}"))?;
+                Ok(())
+            })(),
             PrepareAction::RemoteLinuxVmBackend {
                 job,
                 ctx,
                 log_paths,
-            } => {
-                let log_path = log_paths.first().ok_or_else(|| PrepareFailure {
-                    node_id: prepare.node_id.clone(),
-                    message: "missing remote Linux VM backend prepare log path".to_string(),
+            } => (|| -> Result<(), String> {
+                let log_path = log_paths.first().ok_or_else(|| {
+                    "missing remote Linux VM backend prepare log path".to_string()
                 })?;
-                prepare_remote_linux_vm_backend(job, ctx.as_ref(), log_path).map_err(|err| {
-                    PrepareFailure {
-                        node_id: prepare.node_id.clone(),
-                        message: format!("{err:#}"),
-                    }
-                })?;
-            }
+                prepare_remote_linux_vm_backend(job, ctx.as_ref(), log_path)
+                    .map_err(|err| format!("{err:#}"))?;
+                Ok(())
+            })(),
+        };
+        let finished_at = Utc::now();
+        let timing = PrepareTimingRecord {
+            node_id: prepare.node_id.clone(),
+            started_at: started_at.to_rfc3339(),
+            finished_at: finished_at.to_rfc3339(),
+            duration_ms: started.elapsed().as_millis() as u64,
+        };
+        if let Err(message) = action_result {
+            timings.push(timing);
+            return Err(PrepareFailure {
+                node_id: prepare.node_id.clone(),
+                message,
+                timings,
+            });
         }
+        timings.push(timing);
         completed.insert(prepare.node_id.clone());
         completed_order.push(prepare.node_id.clone());
     }
 
-    Ok(completed_order)
+    Ok(PrepareRunOutcome {
+        completed_node_ids: completed_order,
+        timings,
+    })
 }
 
 fn mark_prepare_failure(
@@ -3968,6 +4017,7 @@ fn mark_prepare_failure(
                     &planned_job.job,
                     &planned_job.execute_node_id,
                     &planned_job.ctx,
+                    prepare_duration_for_job(planned_job, &failure.timings),
                     message,
                     None,
                 ),
@@ -3983,6 +4033,7 @@ fn mark_prepare_failure(
                     &planned_job.job,
                     &planned_job.execute_node_id,
                     &planned_job.ctx,
+                    prepare_duration_for_job(planned_job, &failure.timings),
                     message,
                 ),
             )
@@ -4227,7 +4278,7 @@ mod tests {
     };
     use crate::model::{
         ExecuteNode, GuestCommand, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
-        PrepareNode, PreparedOutputConsumerKind, PreparedOutputExposure,
+        PrepareNode, PrepareTimingRecord, PreparedOutputConsumerKind, PreparedOutputExposure,
         PreparedOutputExposureAccess, PreparedOutputExposureKind, PreparedOutputFulfillmentResult,
         PreparedOutputFulfillmentStatus, PreparedOutputFulfillmentTransportPathContract,
         PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
@@ -4246,6 +4297,8 @@ mod tests {
             .lock()
             .expect("env lock");
         let previous = std::env::var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES").ok();
+        let previous_backend = std::env::var("PIKACI_REMOTE_LINUX_VM_BACKEND").ok();
+        let previous_ssh_host = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV).ok();
         match value {
             Some(value) => {
                 // SAFETY: tests serialize process environment access with ENV_LOCK.
@@ -4256,6 +4309,10 @@ mod tests {
                 unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
             }
         }
+        // SAFETY: tests serialize process environment access with ENV_LOCK.
+        unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") };
+        // SAFETY: tests serialize process environment access with ENV_LOCK.
+        unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) };
         let result = action();
         match previous {
             Some(previous) => {
@@ -4265,6 +4322,26 @@ mod tests {
             None => {
                 // SAFETY: tests serialize process environment access with ENV_LOCK.
                 unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
+            }
+        }
+        match previous_backend {
+            Some(previous) => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", previous) };
+            }
+            None => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") };
+            }
+        }
+        match previous_ssh_host {
+            Some(previous) => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::set_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, previous) };
+            }
+            None => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) };
             }
         }
         result
@@ -4395,6 +4472,7 @@ mod tests {
                 changed_files: vec![],
                 filters: vec![],
                 message: None,
+                prepare_timings: vec![],
                 jobs: vec![JobRecord {
                     id: "job-one".to_string(),
                     description: "job".to_string(),
@@ -4408,6 +4486,7 @@ mod tests {
                     finished_at: Some("2026-03-19T00:00:05Z".to_string()),
                     exit_code: Some(1),
                     message: Some("boom".to_string()),
+                    pre_execution_prepare_duration_ms: None,
                     remote_linux_vm_execution: None,
                 }],
             },
@@ -7707,6 +7786,7 @@ EOF
             changed_files: Vec::new(),
             filters: Vec::new(),
             message: None,
+            prepare_timings: Vec::new(),
             jobs: Vec::new(),
         };
 
@@ -7716,6 +7796,26 @@ EOF
             &PrepareFailure {
                 node_id: "prepare-pika-core-lib-app-flows-tests-runner".to_string(),
                 message: "runner build failed".to_string(),
+                timings: vec![
+                    PrepareTimingRecord {
+                        node_id: "prepare-pika-core-lib-app-flows-tests-runner".to_string(),
+                        started_at: "2026-03-19T17:00:00Z".to_string(),
+                        finished_at: "2026-03-19T17:00:03Z".to_string(),
+                        duration_ms: 3000,
+                    },
+                    PrepareTimingRecord {
+                        node_id: "prepare-pika-core-linux-rust-workspace-deps".to_string(),
+                        started_at: "2026-03-19T17:00:03Z".to_string(),
+                        finished_at: "2026-03-19T17:00:05Z".to_string(),
+                        duration_ms: 2000,
+                    },
+                    PrepareTimingRecord {
+                        node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                        started_at: "2026-03-19T17:00:05Z".to_string(),
+                        finished_at: "2026-03-19T17:00:09Z".to_string(),
+                        duration_ms: 4000,
+                    },
+                ],
             },
         )
         .expect("record prepare failure");
@@ -7734,6 +7834,7 @@ EOF
                 .unwrap_or_default()
                 .contains("prepare node `prepare-pika-core-lib-app-flows-tests-runner` failed")
         );
+        assert_eq!(app_flows.pre_execution_prepare_duration_ms, Some(9000));
         let messaging = run_record
             .jobs
             .iter()
@@ -7743,6 +7844,7 @@ EOF
         assert!(messaging.message.as_deref().unwrap_or_default().contains(
             "prepare phase stopped after `prepare-pika-core-lib-app-flows-tests-runner` failed"
         ));
+        assert_eq!(messaging.pre_execution_prepare_duration_ms, Some(6000));
 
         let _ = fs::remove_dir_all(&root);
     }
